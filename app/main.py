@@ -2,7 +2,7 @@
 Application entry point.
 
 Run locally with:
-    uvicorn     .main:app --reload --port 8000
+    uvicorn app.main:app --reload --port 8000
 
 Or simply:
     python -m app.main
@@ -12,12 +12,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.database import engine
+from app.models.base import Base
 from app.routers import auth, general, uploads
 
 app = FastAPI(
     title=settings.APP_NAME,
     debug=settings.DEBUG,
 )
+
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 app.add_middleware(
     CORSMiddleware,

@@ -10,17 +10,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # ── App ──────────────────────────────────────────────
+   
     APP_NAME: str = "Wellstaq API"
     APP_ENV: str = "development"  # development | staging | production
     APP_PORT: int = 8000
     DEBUG: bool = True
 
-    # ── Database ─────────────────────────────────────────
-    # Example: postgresql+asyncpg://user:password@localhost:5432/wellstaq
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/wellstaq"
+    # Database
+    DATABASE_URL: str = "sqlite+aiosqlite:///./app.db"
 
-    # ── Auth / JWT ───────────────────────────────────────
+    #PRODUCTION PURPOSE
+    #DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/wellstaq"
+
+    # Auth / JWT
     # Generate a real secret with: openssl rand -hex 32
     JWT_SECRET_KEY: str = "CHANGE_ME_BEFORE_PRODUCTION"
     JWT_ALGORITHM: str = "HS256"
