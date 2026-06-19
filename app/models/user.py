@@ -168,6 +168,19 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         foreign_keys="PostSave.user_id",
     )
 
+    group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
+    "GroupChatMessage", back_populates="user", foreign_keys="GroupChatMessage.user_id",
+    )
+    pinned_group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
+        "GroupChatMessage", back_populates="pinned_by_user", foreign_keys="GroupChatMessage.pinned_by",
+    )
+    sent_direct_messages: Mapped[list["DirectMessage"]] = relationship(
+        "DirectMessage", back_populates="sender", foreign_keys="DirectMessage.sender_id",
+    )
+    received_direct_messages: Mapped[list["DirectMessage"]] = relationship(
+        "DirectMessage", back_populates="recipient", foreign_keys="DirectMessage.recipient_id",
+    )
+
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_name"),
     )

@@ -9,5 +9,6 @@ from app.models.branch import Branch
 from app.models.department import Department
 from app.models.club import Club, ClubMember
 from app.models.event import Event, EventParticipant
+from app.models.chat import DirectMessage, GroupChatMessage
 
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]
