@@ -8,8 +8,8 @@ the real app.db file. Each test session starts with a clean slate.
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.main import app
 from app.core.database import get_db
 from app.models.base import Base
@@ -22,6 +22,16 @@ test_engine = create_async_engine(
     echo=False,  # set True to debug SQL in tests
 )
 
+# ── Enable FK enforcement — SQLite skips this by default ─────────────────────
+# Without this, FK violations silently pass instead of raising IntegrityError.
+# PostgreSQL enforces FKs automatically; this pragma brings SQLite in line.
+@event.listens_for(test_engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 TestSessionLocal = async_sessionmaker(
     bind=test_engine,
     expire_on_commit=False,
@@ -33,19 +43,20 @@ TestSessionLocal = async_sessionmaker(
 async def create_tables():
     """Create all tables once per test session."""
     async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
     yield
     async with test_engine.begin() as conn:
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
         await conn.run_sync(Base.metadata.drop_all)
-
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncSession:
     """Fresh DB session per test, rolled back after each test."""
     async with TestSessionLocal() as session:
+        await session.execute(text("PRAGMA foreign_keys=ON"))
         yield session
-        await session.rollback()  # ← keeps tests isolated
-
+        await session.rollback()
 
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession) -> AsyncClient:
