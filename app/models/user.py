@@ -99,6 +99,18 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     cascade="all, delete-orphan",
     )
 
+    created_events: Mapped[list["Event"]] = relationship(
+    "Event",
+    back_populates="creator",
+    foreign_keys="Event.created_by",
+    )
+
+    event_participations: Mapped[list["EventParticipant"]] = relationship(
+        "EventParticipant",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
 
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_name"),

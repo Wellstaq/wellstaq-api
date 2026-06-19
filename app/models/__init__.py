@@ -8,5 +8,6 @@ from app.models.organization import Organization
 from app.models.branch import Branch
 from app.models.department import Department
 from app.models.club import Club, ClubMember
+from app.models.event import Event, EventParticipant
 
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

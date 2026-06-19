@@ -66,7 +66,11 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     "Department",
     back_populates="branch",
     )   
-
+    
+    events: Mapped[list["Event"]] = relationship(
+    "Event",
+    back_populates="branch",
+    )
    
     def __repr__(self) -> str:
         return f"<Branch id={self.id} name={self.name} org={self.organization_id}>"

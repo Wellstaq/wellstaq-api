@@ -76,6 +76,10 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cascade="all, delete-orphan",
     )
 
+    events: Mapped[list["Event"]] = relationship(
+        "Event",
+        back_populates="organization",
+    )
     """ ── Member relationship (added when org FK on users is uncommented) ─
     members = relationship("User", foreign_keys="User.organization_id", back_populates="organization")
     """
