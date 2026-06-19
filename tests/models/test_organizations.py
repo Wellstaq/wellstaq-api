@@ -1,5 +1,5 @@
 """
-Organization model tests.
+Organization and OrganizationInvite model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
@@ -9,8 +9,9 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timedelta, timezone
 
-from app.models.organization import Organization
+from app.models.organization import Organization, OrganizationInvite
 from app.models.user import User
 
 
@@ -34,6 +35,23 @@ def make_org(owner_id: str, **overrides) -> Organization:
         owner_id=owner_id,
     )
     return Organization(**{**defaults, **overrides})
+
+
+def make_invite(
+    organization_id: str,
+    invited_by_id: str,
+    email: str = "guest@example.com",
+    **overrides,
+) -> OrganizationInvite:
+    defaults = dict(
+        organization_id=organization_id,
+        invited_email=email,
+        invite_code="some-secure-token-123",
+        status="pending",
+        invited_by=invited_by_id,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    return OrganizationInvite(**{**defaults, **overrides})
 
 
 # ── Organization model ─────────────────────────────────────────────────────────
@@ -198,6 +216,7 @@ async def test_organization_owner_cannot_be_deleted(db_session: AsyncSession):
         )
         await db_session.flush()
 
+
 @pytest.mark.asyncio
 async def test_one_user_can_own_multiple_orgs(db_session: AsyncSession):
     """No constraint prevents one user from owning multiple organizations."""
@@ -216,7 +235,7 @@ async def test_one_user_can_own_multiple_orgs(db_session: AsyncSession):
     assert len(orgs) == 2
 
 
-# ── Relationships ──────────────────────────────────────────────────────────────
+# ── Organization Relationships ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_organization_owner_relationship(db_session: AsyncSession):
@@ -248,3 +267,291 @@ async def test_user_owned_organizations_relationship(db_session: AsyncSession):
     assert len(user.owned_organizations) == 2
     slugs = {o.slug for o in user.owned_organizations}
     assert slugs == {"org-a", "org-b"}
+
+
+# ── OrganizationInvite model ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_organization_invite_persists(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id, email="newhire@example.com")
+    db_session.add(invite)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(OrganizationInvite).where(OrganizationInvite.id == invite.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.invited_email == "newhire@example.com"  # fixed: was fetched.email
+    assert fetched.status == "pending"
+    assert fetched.organization_id == org.id
+    assert fetched.invited_by == manager.id
+
+
+@pytest.mark.asyncio
+async def test_invite_id_is_uuid_format(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    parts = invite.id.split("-")
+    assert len(parts) == 5
+    assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_invite_timestamps_auto_set(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    assert invite.created_at is not None
+    assert invite.updated_at is not None
+    assert invite.expires_at is not None
+
+
+@pytest.mark.asyncio
+async def test_invite_default_status_is_pending(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    assert invite.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_invite_optional_fields_nullable(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    assert invite.branch_id is None
+    assert invite.accepted_at is None
+    assert invite.accepted_by_id is None
+
+
+@pytest.mark.asyncio
+async def test_invite_code_unique(db_session: AsyncSession):
+    """Two invites cannot share the same invite_code."""
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    db_session.add(make_invite(org.id, manager.id, invite_code="same-code"))
+    await db_session.flush()
+
+    db_session.add(make_invite(
+        org.id, manager.id,
+        email="other@example.com",
+        invite_code="same-code",
+    ))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_invite_org_fk_must_exist(db_session: AsyncSession):
+    """organization_id must reference a real organization."""
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    invite = make_invite(
+        organization_id="00000000-0000-0000-0000-000000000000",
+        invited_by_id=manager.id,
+    )
+    db_session.add(invite)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_organization_cascades_to_invites(db_session: AsyncSession):
+    """Deleting an organization cascades to its invites."""
+    manager = make_user(email="boss@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    await db_session.delete(org)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(OrganizationInvite).where(OrganizationInvite.id == invite.id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_invite_accepted_by_nullable_on_user_delete(db_session: AsyncSession):
+    """ondelete=SET NULL on accepted_by_id — invite row survives user deletion."""
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    acceptor = make_user(email="acceptor@example.com")
+    db_session.add(acceptor)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id, accepted_by_id=acceptor.id)
+    db_session.add(invite)
+    await db_session.flush()
+
+    await db_session.execute(
+        text("DELETE FROM users WHERE id = :id"),
+        {"id": acceptor.id}
+    )
+    await db_session.flush()
+    await db_session.refresh(invite)
+
+    assert invite.accepted_by_id is None  # nulled out
+    assert invite.id is not None          # row still exists
+
+
+# ── OrganizationInvite Relationships ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_organization_invite_dual_user_relationships(db_session: AsyncSession):
+    """A manager sends an invite; a new user accepts it."""
+    manager = make_user(email="sender@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id, email="receiver@example.com")
+    db_session.add(invite)
+    await db_session.flush()
+
+    new_user = make_user(email="receiver@example.com")
+    db_session.add(new_user)
+    await db_session.flush()
+
+    invite.status = "accepted"
+    invite.accepted_by_id = new_user.id
+    await db_session.flush()
+
+    await db_session.refresh(manager, ["sent_invites"])
+    await db_session.refresh(new_user, ["joined_via_invite"])
+    await db_session.refresh(invite, ["inviter", "accepted_by_user", "organization"])
+
+    assert invite.inviter.id == manager.id
+    assert invite.accepted_by_user.id == new_user.id
+    assert invite.organization.id == org.id
+    assert len(manager.sent_invites) == 1
+    assert manager.sent_invites[0].id == invite.id
+    assert new_user.joined_via_invite is not None
+    assert new_user.joined_via_invite.id == invite.id
+
+
+@pytest.mark.asyncio
+async def test_invite_organization_relationship(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+    await db_session.refresh(invite, ["organization"])
+
+    assert invite.organization is not None
+    assert invite.organization.id == org.id
+
+
+@pytest.mark.asyncio
+async def test_invite_inviter_relationship(db_session: AsyncSession):
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    invite = make_invite(org.id, manager.id)
+    db_session.add(invite)
+    await db_session.flush()
+    await db_session.refresh(invite, ["inviter"])
+
+    assert invite.inviter is not None
+    assert invite.inviter.id == manager.id
+
+
+@pytest.mark.asyncio
+async def test_organization_invites_relationship(db_session: AsyncSession):
+    """org.invites loads all invite rows for that org."""
+    manager = make_user(email="manager@example.com")
+    db_session.add(manager)
+    await db_session.flush()
+
+    org = make_org(manager.id)
+    db_session.add(org)
+    await db_session.flush()
+
+    db_session.add(make_invite(org.id, manager.id, email="a@example.com", invite_code="code-a"))
+    db_session.add(make_invite(org.id, manager.id, email="b@example.com", invite_code="code-b"))
+    await db_session.flush()
+    await db_session.refresh(org, ["invites"])
+
+    assert len(org.invites) == 2

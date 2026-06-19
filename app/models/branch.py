@@ -58,19 +58,32 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     members: Mapped[list["User"]] = relationship(
-    "User",
-    back_populates="branch",
-    foreign_keys="User.branch_id",
+        "User",
+        back_populates="branch",
+        foreign_keys="User.branch_id",
     )
     departments: Mapped[list["Department"]] = relationship(
-    "Department",
-    back_populates="branch",
+        "Department",
+        back_populates="branch",
     )   
     
     events: Mapped[list["Event"]] = relationship(
-    "Event",
-    back_populates="branch",
+        "Event",
+        back_populates="branch",
     )
-   
+    challenges: Mapped[list["Challenge"]] = relationship(
+        "Challenge",
+        back_populates="branch",
+    )
+
+    invites: Mapped[list["OrganizationInvite"]] = relationship(
+        "OrganizationInvite",
+        back_populates="branch",
+        cascade="all, delete-orphan",
+    )
+    posts: Mapped[list["Post"]] = relationship(
+        "Post",
+        back_populates="branch",
+    )
     def __repr__(self) -> str:
         return f"<Branch id={self.id} name={self.name} org={self.organization_id}>"

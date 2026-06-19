@@ -67,6 +67,10 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="club",
         cascade="all, delete-orphan",
     )
+    posts: Mapped[list["Post"]] = relationship(
+        "Post",
+        back_populates="club",
+    )
 
     def __repr__(self) -> str:
         return f"<Club id={self.id} name={self.name} org={self.organization_id} privacy={self.privacy}>"

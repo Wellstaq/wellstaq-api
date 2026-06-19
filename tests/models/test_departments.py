@@ -5,13 +5,15 @@ All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
 """
 
+from datetime import date
+
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
-from app.models.department import Department
+from app.models.department import Department, DepartmentMember, DepartmentRankSnapshot
 from app.models.organization import Organization
 from app.models.user import User
 
@@ -51,6 +53,21 @@ def make_department(organization_id: str, **overrides) -> Department:
     return Department(**{**defaults, **overrides})
 
 
+def make_department_member(department_id: str, user_id: str, **overrides) -> DepartmentMember:
+    return DepartmentMember(department_id=department_id, user_id=user_id, **overrides)
+
+
+def make_rank_snapshot(department_id: str, **overrides) -> DepartmentRankSnapshot:
+    defaults = dict(
+        rank=1,
+        total_activities=42,
+        avg_daily_steps=8500.50,
+        period_start=date(2026, 1, 1),
+        period_end=date(2026, 1, 31),
+    )
+    return DepartmentRankSnapshot(department_id=department_id, **{**defaults, **overrides})
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 async def setup_org(
@@ -74,6 +91,13 @@ async def setup_branch(db_session: AsyncSession, org_id: str, **overrides) -> Br
     db_session.add(branch)
     await db_session.flush()
     return branch
+
+
+async def setup_department(db_session: AsyncSession, org_id: str, **overrides) -> Department:
+    dept = make_department(org_id, **overrides)
+    db_session.add(dept)
+    await db_session.flush()
+    return dept
 
 
 # ── Department model ───────────────────────────────────────────────────────────
@@ -365,3 +389,214 @@ async def test_branch_departments_relationship(db_session: AsyncSession):
     await db_session.refresh(branch, ["departments"])
 
     assert len(branch.departments) == 2
+
+
+# DepartmentMember model
+
+@pytest.mark.asyncio
+async def test_department_member_persists(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    membership = make_department_member(department.id, member.id, role="lead")
+    db_session.add(membership)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentMember).where(DepartmentMember.id == membership.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.department_id == department.id
+    assert fetched.user_id == member.id
+    assert fetched.role == "lead"
+
+
+@pytest.mark.asyncio
+async def test_department_member_id_is_uuid_format(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    membership = make_department_member(department.id, member.id)
+    db_session.add(membership)
+    await db_session.flush()
+
+    parts = membership.id.split("-")
+    assert len(parts) == 5
+    assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_department_member_joined_at_auto_set(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    membership = make_department_member(department.id, member.id)
+    db_session.add(membership)
+    await db_session.flush()
+
+    assert membership.joined_at is not None
+
+
+@pytest.mark.asyncio
+async def test_department_member_duplicate_raises(db_session: AsyncSession):
+    """A user can only join a given department once."""
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    db_session.add(make_department_member(department.id, member.id))
+    await db_session.flush()
+
+    db_session.add(make_department_member(department.id, member.id))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_department_member_different_departments_same_user(db_session: AsyncSession):
+    """A user can join multiple different departments."""
+    _, org = await setup_org(db_session)
+    dept_a = await setup_department(db_session, org.id, name="Engineering")
+    dept_b = await setup_department(db_session, org.id, name="Marketing")
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    db_session.add(make_department_member(dept_a.id, member.id))
+    db_session.add(make_department_member(dept_b.id, member.id))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentMember).where(DepartmentMember.user_id == member.id)
+    )
+    assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
+    """Leaving a department deletes the membership row (same pattern as
+    post_likes unlike)."""
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    member = make_user(email="member@example.com", role_name="employee")
+    db_session.add(member)
+    await db_session.flush()
+
+    membership = make_department_member(department.id, member.id)
+    db_session.add(membership)
+    await db_session.flush()
+    membership_id = membership.id
+
+    await db_session.delete(membership)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentMember).where(DepartmentMember.id == membership_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+# DepartmentRankSnapshot model
+
+@pytest.mark.asyncio
+async def test_department_rank_snapshot_persists(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    snapshot = make_rank_snapshot(department.id)
+    db_session.add(snapshot)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentRankSnapshot).where(DepartmentRankSnapshot.id == snapshot.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.department_id == department.id
+    assert fetched.rank == 1
+    assert fetched.total_activities == 42
+    assert fetched.period_start == date(2026, 1, 1)
+    assert fetched.period_end == date(2026, 1, 31)
+
+
+@pytest.mark.asyncio
+async def test_department_rank_snapshot_id_is_uuid_format(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    snapshot = make_rank_snapshot(department.id)
+    db_session.add(snapshot)
+    await db_session.flush()
+
+    parts = snapshot.id.split("-")
+    assert len(parts) == 5
+    assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_department_rank_snapshot_computed_at_auto_set(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    snapshot = make_rank_snapshot(department.id)
+    db_session.add(snapshot)
+    await db_session.flush()
+
+    assert snapshot.computed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_department_can_have_multiple_rank_snapshots(db_session: AsyncSession):
+    """A department accumulates one snapshot per period — multiple rows
+    expected over time, no uniqueness constraint."""
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    db_session.add(
+        make_rank_snapshot(
+            department.id, period_start=date(2026, 1, 1), period_end=date(2026, 1, 31)
+        )
+    )
+    db_session.add(
+        make_rank_snapshot(
+            department.id, period_start=date(2026, 2, 1), period_end=date(2026, 2, 28)
+        )
+    )
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentRankSnapshot).where(DepartmentRankSnapshot.department_id == department.id)
+    )
+    assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_department_rank_snapshot_avg_daily_steps_is_numeric(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    department = await setup_department(db_session, org.id)
+
+    snapshot = make_rank_snapshot(department.id, avg_daily_steps=9123.75)
+    db_session.add(snapshot)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(DepartmentRankSnapshot).where(DepartmentRankSnapshot.id == snapshot.id)
+    )
+    fetched = result.scalar_one()
+    assert float(fetched.avg_daily_steps) == 9123.75

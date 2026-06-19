@@ -2,9 +2,8 @@
 User model — core identity only.
 
 Design principles:
-- Keep this table lean: identity fields only.
 - Settings, devices, and auth providers live in their own tables
-  (1-to-1 or 1-to-many) so this table stays narrow and fast.
+  (1-to-1 or 1-to-many)
 - role_name is a plain string label — permission logic lives in a
   separate permissions table (built later).
 - hashed_password is nullable: OAuth-only users have no password.
@@ -17,6 +16,7 @@ from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKe
 from datetime import datetime, timezone
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import relationship
+from typing import Optional
 
 
 
@@ -24,21 +24,21 @@ from sqlalchemy.orm import relationship
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "users"
 
-    # ── Identity ──────────────────────────────────────────────────────────
+    #Identity
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     phone_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # ── Role (dynamic label — permissions resolved separately) ─────────────
+    #  Role (dynamic label: permissions resolved separately)
     role_name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # ── Status ────────────────────────────────────────────────────────────
+    # Status
     # pending | active | inactive | suspended
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", index=True)
 
-    # ── Auth (nullable: OAuth users may have no password) ─────────────────
+    # Auth (nullable: OAuth users may have no password)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     
@@ -46,7 +46,6 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     String(36),
     ForeignKey("organizations.id", ondelete="SET NULL"),
     nullable=True,
-    index=True,
     )
     branch_id: Mapped[str | None] = mapped_column(
     String(36),
@@ -54,18 +53,16 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     nullable=True,
     index=True,
     )
-    
-    #invitation link unique to one user
-    invite_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
-    # ── Soft delete audit ─────────────────────────────────────────────────
+    
+    # Soft delete audit
     deleted_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
-    # ── Location ──────────────────────────────────────────────────────────
+    # Location
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     state: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
-    # ── Relationships ─────────────────────────────────────────────────────
+    # Relationships 
     settings: Mapped["UserSettings"] = relationship(
         "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
@@ -76,33 +73,38 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         "UserAuthProvider", back_populates="user", cascade="all, delete-orphan"
     )   
     owned_organizations: Mapped[list["Organization"]] = relationship(
-    "Organization",
-    back_populates="owner",
-    foreign_keys="Organization.owner_id",
+        "Organization",
+        back_populates="owner",
+        foreign_keys="Organization.owner_id",
     )
 
     managed_branches: Mapped[list["Branch"]] = relationship(
-    "Branch",
-    back_populates="manager",
-    foreign_keys="Branch.manager_id",
+        "Branch",
+        back_populates="manager",
+        foreign_keys="Branch.manager_id",
     )
 
     branch: Mapped["Branch"] = relationship(
-    "Branch",
-    back_populates="members",
-    foreign_keys=[branch_id],
+        "Branch",
+        back_populates="members",
+        foreign_keys=[branch_id],
     )
 
     club_memberships: Mapped[list["ClubMember"]] = relationship(
-    "ClubMember",
-    back_populates="user",
-    cascade="all, delete-orphan",
+        "ClubMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    department_memberships: Mapped[list["DepartmentMember"]] = relationship(
+        "DepartmentMember",
+        back_populates="user",
+        foreign_keys="DepartmentMember.user_id",
     )
 
     created_events: Mapped[list["Event"]] = relationship(
-    "Event",
-    back_populates="creator",
-    foreign_keys="Event.created_by",
+        "Event",
+        back_populates="creator",
+        foreign_keys="Event.created_by",
     )
 
     event_participations: Mapped[list["EventParticipant"]] = relationship(
@@ -110,13 +112,66 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    created_challenges: Mapped[list["Challenge"]] = relationship(
+        "Challenge",
+        back_populates="creator",
+        foreign_keys="Challenge.created_by",
+    )
 
+    challenge_participations: Mapped[list["ChallengeParticipant"]] = relationship(
+        "ChallengeParticipant",
+        back_populates="user",
+        foreign_keys="ChallengeParticipant.user_id",
+    )
+
+   
+    sent_invites: Mapped[list["OrganizationInvite"]] = relationship(
+        "OrganizationInvite",
+        back_populates="inviter",
+        foreign_keys="OrganizationInvite.invited_by",  
+    )
+    
+    joined_via_invite: Mapped[Optional["OrganizationInvite"]] = relationship(
+        "OrganizationInvite",
+        back_populates="accepted_by_user",
+        foreign_keys="OrganizationInvite.accepted_by_id", 
+        uselist=False,
+    )
+
+    posts: Mapped[list["Post"]] = relationship(
+    "Post",
+    back_populates="user",
+    foreign_keys="Post.user_id",
+    )
+
+    post_likes: Mapped[list["PostLike"]] = relationship(
+        "PostLike",
+        back_populates="user",
+        foreign_keys="PostLike.user_id",
+    )
+
+    post_comments: Mapped[list["PostComment"]] = relationship(
+        "PostComment",
+        back_populates="user",
+        foreign_keys="PostComment.user_id",
+    )
+
+    post_shares: Mapped[list["PostShare"]] = relationship(
+        "PostShare",
+        back_populates="user",
+        foreign_keys="PostShare.user_id",
+    )
+
+    post_saves: Mapped[list["PostSave"]] = relationship(
+        "PostSave",
+        back_populates="user",
+        foreign_keys="PostSave.user_id",
+    )
 
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_name"),
-        # ix_users_branch_id removed — already covered by index=True on branch_id column
-        Index("ix_users_status", "status"),
     )
+    
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} role={self.role_name}>"
 
@@ -126,7 +181,7 @@ UserSettings — all per-user toggles and preferences.
 
 One row per user (1-to-1). Kept separate from users so the core
 users table stays narrow. Settings are read less frequently than
-identity fields — separating them avoids loading unused columns
+identity fields, separating them avoids loading unused columns
 on every auth check.
 
 2FA notes:
@@ -148,26 +203,26 @@ class UserSettings(Base, UUIDPrimaryKeyMixin, TimestampMixin):
          unique=True,
         index=True,
     )
-    # ── Notification toggles ──────────────────────────────────────────────
+    # Notification toggles
     email_notifications: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     push_notifications: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     challenge_reminders: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # ── Privacy toggles ───────────────────────────────────────────────────
+    # Privacy toggles
     # True = anyone can see profile; False = only the user
     public_profile: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # True = wellness progress visible to team/org; False = private
     show_wellness_to_team: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    # ── Theme ─────────────────────────────────────────────────────────────
+    # Theme 
     # light | dark
     theme: Mapped[str] = mapped_column(String(10), nullable=False, default="light")
 
-    # ── Two-factor authentication ─────────────────────────────────────────
+    # Two-factor authentication 
     two_fa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # totp | sms | email — null until 2FA is configured
+    # totp | sms | email : null until 2FA is configured
     two_fa_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Encrypted TOTP secret — null for sms/email methods
+    # Encrypted TOTP secret : null for sms/email methods
     two_fa_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     #user relationship
