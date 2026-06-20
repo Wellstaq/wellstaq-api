@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, timezone
 
-from app.models.organization import Organization, OrganizationInvite
-from app.models.user import User
+from app.models import Organization, OrganizationInvite
+from app.models import User
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import User, UserSettings, UserAuthProvider, UserDevice
+from app.models import User, UserSettings, UserAuthProvider, UserDevice
 
 # ── Factories ─────────────────────────────────────────────────────────────────
 

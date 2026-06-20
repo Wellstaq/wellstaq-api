@@ -12,10 +12,10 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.branch import Branch
-from app.models.department import Department, DepartmentMember, DepartmentRankSnapshot
-from app.models.organization import Organization
-from app.models.user import User
+from app.models import Branch
+from app.models import Department, DepartmentMember, DepartmentRankSnapshot
+from app.models import Organization
+from app.models import User
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────

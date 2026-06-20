@@ -10,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.branch import Branch
-from app.models.challenge import Challenge, ChallengeParticipant, WellbeingChallenge
-from app.models.organization import Organization
-from app.models.user import User
+from app.models import Branch
+from app.models import Challenge, ChallengeParticipant, WellbeingChallenge
+from app.models import Organization
+from app.models import User
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────

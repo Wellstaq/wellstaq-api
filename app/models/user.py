@@ -181,6 +181,13 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         "DirectMessage", back_populates="recipient", foreign_keys="DirectMessage.recipient_id",
     )
 
+    notifications: Mapped[list["Notification"]] = relationship(
+    "Notification", back_populates="user", foreign_keys="Notification.user_id",
+    )
+    triggered_notifications: Mapped[list["Notification"]] = relationship(
+        "Notification", back_populates="actor", foreign_keys="Notification.actor_id",
+    )
+
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_name"),
     )

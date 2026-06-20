@@ -10,12 +10,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.club import Club
-from app.models.hashtag import Hashtag
-from app.models.organization import Organization
-from app.models.post import Post, PostComment, PostHashtag, PostLike, PostSave, PostShare
-from app.models.user import User
-
+from app.models import (
+    Club,
+    Hashtag,
+    Organization,
+    Post,
+    PostComment,
+    PostHashtag,
+    PostLike,
+    PostSave,
+    PostShare,
+    User,
+)
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 

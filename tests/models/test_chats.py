@@ -10,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.club import Club
-from app.models.organization import Organization
-from app.models.user import User
-from app.models.chat import DirectMessage, GroupChatMessage
+from app.models import Club
+from app.models import Organization
+from app.models import User
+from app.models import DirectMessage, GroupChatMessage
 
 
 # Factories
