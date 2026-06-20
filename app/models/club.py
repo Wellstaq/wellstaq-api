@@ -32,8 +32,12 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # public | private — validated at app layer, no DB enum constraint
     privacy: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
 
-    # ── Category (FK added when categories table exists) ──────────────────
-    #category_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    category_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # ── Org scope ─────────────────────────────────────────────────────────
     # Clubs are org-wide — intentionally no branch_id
@@ -59,9 +63,11 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[organization_id],
     )
 
-    """ ── Category relationship (added when categories table exists) ──────
-    category = relationship("Category", back_populates="clubs")
-    """
+    category: Mapped["Category"] = relationship(
+        "Category",
+        back_populates="clubs",
+    )
+
     members: Mapped[list["ClubMember"]] = relationship(
         "ClubMember",
         back_populates="club",

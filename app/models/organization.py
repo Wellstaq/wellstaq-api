@@ -16,7 +16,6 @@ from sqlalchemy import ForeignKey, Index, Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from typing import Optional
-
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
@@ -84,6 +83,18 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     "Challenge",
     back_populates="organization",
     )
+
+    activity_feed: Mapped[list["UserActivityFeed"]] = relationship(
+        "UserActivityFeed",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+    wellbeing_challenges: Mapped[list["OrganizationWellbeingChallenge"]] = relationship(
+        "OrganizationWellbeingChallenge",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
    
     invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
@@ -101,9 +112,8 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     direct_messages: Mapped[list["DirectMessage"]] = relationship("DirectMessage", back_populates="organization")
     notifications: Mapped[list["Notification"]] = relationship("Notification", back_populates="organization")
     
-    """ ── Member relationship (added when org FK on users is uncommented) ─
     members = relationship("User", foreign_keys="User.organization_id", back_populates="organization")
-    """
+
     
 
     def __repr__(self) -> str:
@@ -196,3 +206,4 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<OrganizationInvite id={self.id} code={self.invite_code} status={self.status}>"
+

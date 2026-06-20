@@ -10,14 +10,9 @@ from datetime import date, datetime, time as dt_time, timezone
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.models  import Event, EventParticipant, Branch, Organization, User
 
-from app.models import Branch
-from app.models  import Event, EventParticipant
-from app.models import Organization
-from app.models import User
-
-
-# ── Factories ─────────────────────────────────────────────────────────────────
+# Factories 
 
 def make_user(**overrides) -> User:
     defaults = dict(

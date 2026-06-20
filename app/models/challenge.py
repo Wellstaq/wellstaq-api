@@ -5,9 +5,6 @@ Design principles:
 - A challenge belongs to exactly one organization.
 - branch_id is nullable: null means the challenge sits at the org level
   rather than under a specific branch.
-- wellbeing_challenge_id links to the category/theme this challenge
-  belongs to (WellbeingChallenge) — nullable since a challenge may not
-  be tied to a predefined theme.
 - created_by references the User who created this challenge (audit trail).
 - ChallengeParticipant is the join model tracking a user's participation
   in a challenge — a user may only join a given challenge once
@@ -154,25 +151,3 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<ChallengeParticipant id={self.id} challenge={self.challenge_id} user={self.user_id}>"
 
-"""
-WellbeingChallenge model — a category/theme that challenges can belong to.
-
-Design principles:
-- Simple lookup/category table (e.g. "Fitness", "Mental Health", "Nutrition").
-- A WellbeingChallenge can have many Challenge instances under it.
-"""
-
-
-class WellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    __tablename__ = "wellbeing_challenges"
-
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-
-    # ── Relationships ──────────────────────────────────────────────────────
-    challenges: Mapped[list["Challenge"]] = relationship(
-        "Challenge",
-        back_populates="wellbeing_challenge",
-    )
-
-    def __repr__(self) -> str:
-        return f"<WellbeingChallenge id={self.id} name={self.name}>"

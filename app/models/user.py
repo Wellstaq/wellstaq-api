@@ -77,7 +77,11 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         back_populates="owner",
         foreign_keys="Organization.owner_id",
     )
-
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="members",
+        foreign_keys=[organization_id],
+    )
     managed_branches: Mapped[list["Branch"]] = relationship(
         "Branch",
         back_populates="manager",
@@ -186,6 +190,35 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     )
     triggered_notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="actor", foreign_keys="Notification.actor_id",
+    )
+
+    wellbeing_baselines: Mapped[list["UserWellbeingBaseline"]] = relationship(
+    "UserWellbeingBaseline",
+    back_populates="user",
+    cascade="all, delete-orphan",
+    )
+
+    priorities: Mapped[list["UserPriority"]] = relationship(
+        "UserPriority",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    daily_checkins: Mapped[list["DailyCheckin"]] = relationship(
+        "DailyCheckin",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    activity_feed: Mapped[list["UserActivityFeed"]] = relationship(
+        "UserActivityFeed",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    wellbeing_scores: Mapped[list["WellbeingScore"]] = relationship(
+        "WellbeingScore",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (

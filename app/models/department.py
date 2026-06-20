@@ -47,9 +47,12 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     avatar_initial: Mapped[str | None] = mapped_column(String(10), nullable=True)
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Category (FK added when categories table exists)
-    # category_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-
+    category_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Org / branch scope
     organization_id: Mapped[str] = mapped_column(
         String(36),
@@ -97,9 +100,10 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
-    """ Category relationship (added when categories table exists)
-    category = relationship("Category", back_populates="departments")
-    """
+    category: Mapped["Category"] = relationship(
+        "Category",
+        back_populates="departments",
+    )
 
     def __repr__(self) -> str:
         return f"<Department id={self.id} name={self.name} org={self.organization_id}>"

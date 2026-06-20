@@ -10,10 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch
-from app.models import Challenge, ChallengeParticipant, WellbeingChallenge
-from app.models import Organization
-from app.models import User
+from app.models import (
+    Branch,
+    Challenge, 
+    ChallengeParticipant, 
+    Organization,
+    User
+)
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
@@ -56,10 +59,6 @@ def make_challenge(organization_id: str, **overrides) -> Challenge:
 
 def make_participant(challenge_id: str, user_id: str, **overrides) -> ChallengeParticipant:
     return ChallengeParticipant(challenge_id=challenge_id, user_id=user_id, **overrides)
-
-def make_wellbeing_challenge(**overrides) -> WellbeingChallenge:
-    defaults = dict(name="Fitness")
-    return WellbeingChallenge(**{**defaults, **overrides})
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -230,61 +229,4 @@ async def test_challenge_participant_same_user_different_challenges(db_session: 
     assert len(result.scalars().all()) == 2
 
 
-    
-# ── WellbeingChallenge model ──────────────────────────────────────────────────
  
-@pytest.mark.asyncio
-async def test_wellbeing_challenge_persists(db_session: AsyncSession):
-    theme = make_wellbeing_challenge()
-    db_session.add(theme)
-    await db_session.flush()
- 
-    result = await db_session.execute(
-        select(WellbeingChallenge).where(WellbeingChallenge.id == theme.id)
-    )
-    fetched = result.scalar_one()
-    assert fetched.name == "Fitness"
- 
- 
-@pytest.mark.asyncio
-async def test_wellbeing_challenge_id_is_uuid_format(db_session: AsyncSession):
-    theme = make_wellbeing_challenge()
-    db_session.add(theme)
-    await db_session.flush()
- 
-    parts = theme.id.split("-")
-    assert len(parts) == 5
-    assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
- 
- 
-@pytest.mark.asyncio
-async def test_wellbeing_challenge_can_have_multiple_challenges(db_session: AsyncSession):
-    _, org = await setup_org(db_session)
-    theme = make_wellbeing_challenge()
-    db_session.add(theme)
-    await db_session.flush()
- 
-    db_session.add(
-        Challenge(name="10k Steps", organization_id=org.id, wellbeing_challenge_id=theme.id)
-    )
-    db_session.add(
-        Challenge(name="Daily Walk", organization_id=org.id, wellbeing_challenge_id=theme.id)
-    )
-    await db_session.flush()
- 
-    result = await db_session.execute(
-        select(Challenge).where(Challenge.wellbeing_challenge_id == theme.id)
-    )
-    assert len(result.scalars().all()) == 2
- 
- 
-@pytest.mark.asyncio
-async def test_challenge_can_exist_without_wellbeing_challenge(db_session: AsyncSession):
-    """A challenge isn't required to belong to a theme/category."""
-    _, org = await setup_org(db_session)
- 
-    challenge = Challenge(name="Custom Challenge", organization_id=org.id)
-    db_session.add(challenge)
-    await db_session.flush()
- 
-    assert challenge.wellbeing_challenge_id is None
