@@ -289,6 +289,32 @@ async def test_notification_can_be_marked_read(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_notification_can_be_system_wide_with_no_organization(db_session: AsyncSession):
+    """organization_id is nullable — a system notification has no org
+    scope and no triggering actor."""
+    recipient = make_user(email="system_recipient@example.com")
+    db_session.add(recipient)
+    await db_session.flush()
+
+    notification = Notification(
+        user_id=recipient.id,
+        organization_id=None,
+        actor_id=None,
+        notification_type="announcement",
+        body="Scheduled maintenance tonight at 10pm",
+    )
+    db_session.add(notification)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(Notification).where(Notification.id == notification.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.organization_id is None
+    assert fetched.actor_id is None
+    assert fetched.user_id == recipient.id
+
+@pytest.mark.asyncio
 async def test_user_can_have_multiple_notifications(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 

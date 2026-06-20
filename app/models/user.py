@@ -171,6 +171,11 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         back_populates="user",
         foreign_keys="PostSave.user_id",
     )
+    stories: Mapped[list["Story"]] = relationship(
+        "Story",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
     "GroupChatMessage", back_populates="user", foreign_keys="GroupChatMessage.user_id",

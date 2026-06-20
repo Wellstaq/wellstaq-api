@@ -41,6 +41,11 @@ UserActivityFeed design principles:
 - activity_type is a free string (app-layer validated).
 - organization_id is required (NOT NULL), ondelete=CASCADE — per
   decision, every activity always happens within an org context.
+- Both relationships (user, organization) specify foreign_keys=
+  explicitly even though each only has one FK candidate column — this
+  matches the convention used everywhere else in the codebase (Branch,
+  Department, Event, Challenge), and avoids relying on SQLAlchemy's
+  FK-inference holding correctly as the model surface grows.
 - The `metadata` column is named "metadata" in the DBML/DB, but
   `Base.metadata` is a reserved SQLAlchemy attribute (it holds the
   ORM's internal table/schema registry) — naming a Python attribute
@@ -83,6 +88,7 @@ class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     user: Mapped["User"] = relationship(
         "User",
         back_populates="priorities",
+        foreign_keys=[user_id],
     )
 
     def __repr__(self) -> str:
@@ -125,6 +131,7 @@ class DailyCheckin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     user: Mapped["User"] = relationship(
         "User",
         back_populates="daily_checkins",
+        foreign_keys=[user_id],
     )
 
     __table_args__ = (
@@ -182,13 +189,18 @@ class UserActivityFeed(Base, UUIDPrimaryKeyMixin):
     )
 
     # ── Relationships ─────────────────────────────────────────────────────
+    # foreign_keys= specified explicitly on both, even with only one FK
+    # candidate each — matches the convention used on Branch, Department,
+    # Event, Challenge, rather than relying on SQLAlchemy's inference.
     user: Mapped["User"] = relationship(
         "User",
         back_populates="activity_feed",
+        foreign_keys=[user_id],
     )
     organization: Mapped["Organization"] = relationship(
         "Organization",
         back_populates="activity_feed",
+        foreign_keys=[organization_id],
     )
 
     __table_args__ = (

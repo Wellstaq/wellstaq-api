@@ -17,8 +17,12 @@ from app.models import Hashtag, HashtagTrendSnapshot, Organization, User
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 
-def make_hashtag(tag_name: str = "fitness", **overrides) -> Hashtag:
-    defaults = dict(tag_name=tag_name, total_post_count=0)
+def make_hashtag(organization_id: str, tag_name: str = "fitness", **overrides) -> Hashtag:
+    defaults = dict(
+        organization_id=organization_id,
+        tag_name=tag_name,
+        total_post_count=0,
+    )
     return Hashtag(**{**defaults, **overrides})
 
 
@@ -82,7 +86,8 @@ async def setup_org(
 
 @pytest.mark.asyncio
 async def test_hashtag_persists(db_session: AsyncSession):
-    hashtag = make_hashtag()
+    _, org = await setup_org(db_session)
+    hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -92,11 +97,13 @@ async def test_hashtag_persists(db_session: AsyncSession):
     fetched = result.scalar_one()
     assert fetched.tag_name == "fitness"
     assert fetched.total_post_count == 0
+    assert fetched.organization_id == org.id
 
 
 @pytest.mark.asyncio
 async def test_hashtag_id_is_uuid_format(db_session: AsyncSession):
-    hashtag = make_hashtag()
+    _, org = await setup_org(db_session)
+    hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -106,18 +113,45 @@ async def test_hashtag_id_is_uuid_format(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_hashtag_tag_name_must_be_unique(db_session: AsyncSession):
-    db_session.add(make_hashtag(tag_name="wellness"))
+async def test_hashtag_tag_name_must_be_unique_within_org(db_session: AsyncSession):
+    """tag_name uniqueness is scoped per organization, not global —
+    see UniqueConstraint('organization_id', 'tag_name', ...) on Hashtag."""
+    _, org = await setup_org(db_session)
+
+    db_session.add(make_hashtag(org.id, tag_name="wellness"))
     await db_session.flush()
 
-    db_session.add(make_hashtag(tag_name="wellness"))
+    db_session.add(make_hashtag(org.id, tag_name="wellness"))
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
 
 @pytest.mark.asyncio
+async def test_same_tag_name_allowed_across_different_orgs(db_session: AsyncSession):
+    """The same tag_name can exist independently in different orgs since
+    the unique constraint is (organization_id, tag_name), not tag_name alone."""
+    owner_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    owner_b = make_user(email="owner_b@example.com")
+    db_session.add(owner_b)
+    await db_session.flush()
+    org_b = make_org(owner_b.id, slug="org-b")
+    db_session.add(org_b)
+    await db_session.flush()
+
+    db_session.add(make_hashtag(org_a.id, tag_name="shared-name"))
+    db_session.add(make_hashtag(org_b.id, tag_name="shared-name"))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(Hashtag).where(Hashtag.tag_name == "shared-name")
+    )
+    assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
 async def test_hashtag_total_post_count_defaults_to_zero(db_session: AsyncSession):
-    hashtag = Hashtag(tag_name="mindfulness")
+    _, org = await setup_org(db_session)
+    hashtag = Hashtag(organization_id=org.id, tag_name="mindfulness")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -126,7 +160,8 @@ async def test_hashtag_total_post_count_defaults_to_zero(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_hashtag_total_post_count_can_increment(db_session: AsyncSession):
-    hashtag = make_hashtag(tag_name="running")
+    _, org = await setup_org(db_session)
+    hashtag = make_hashtag(org.id, tag_name="running")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -140,6 +175,27 @@ async def test_hashtag_total_post_count_can_increment(db_session: AsyncSession):
     assert fetched.total_post_count == 1
 
 
+@pytest.mark.asyncio
+async def test_hashtag_organization_id_required(db_session: AsyncSession):
+    """organization_id is NOT NULL — hashtags are always scoped to an org."""
+    hashtag = Hashtag(organization_id=None, tag_name="orphan-tag")
+    db_session.add(hashtag)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_hashtag_organization_relationship(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    hashtag = make_hashtag(org.id)
+    db_session.add(hashtag)
+    await db_session.flush()
+    await db_session.refresh(hashtag, ["organization"])
+
+    assert hashtag.organization is not None
+    assert hashtag.organization.id == org.id
+
+
 # ════════════════════════════════════════════════
 # HashtagTrendSnapshot model
 # ════════════════════════════════════════════════
@@ -147,7 +203,7 @@ async def test_hashtag_total_post_count_can_increment(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
-    hashtag = make_hashtag(tag_name="snapshot-fitness")
+    hashtag = make_hashtag(org.id, tag_name="snapshot-fitness")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -168,7 +224,7 @@ async def test_hashtag_trend_snapshot_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
-    hashtag = make_hashtag(tag_name="snapshot-uuid")
+    hashtag = make_hashtag(org.id, tag_name="snapshot-uuid")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -184,7 +240,7 @@ async def test_hashtag_trend_snapshot_id_is_uuid_format(db_session: AsyncSession
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_window_fields(db_session: AsyncSession):
     _, org = await setup_org(db_session)
-    hashtag = make_hashtag(tag_name="snapshot-window")
+    hashtag = make_hashtag(org.id, tag_name="snapshot-window")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -208,7 +264,7 @@ async def test_hashtag_can_have_multiple_trend_snapshots(db_session: AsyncSessio
     """Snapshots accumulate over time — one row per computation run, no
     uniqueness constraint."""
     _, org = await setup_org(db_session)
-    hashtag = make_hashtag(tag_name="snapshot-multi")
+    hashtag = make_hashtag(org.id, tag_name="snapshot-multi")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -237,7 +293,7 @@ async def test_hashtag_can_have_multiple_trend_snapshots(db_session: AsyncSessio
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_score_is_numeric(db_session: AsyncSession):
     _, org = await setup_org(db_session)
-    hashtag = make_hashtag(tag_name="snapshot-numeric")
+    hashtag = make_hashtag(org.id, tag_name="snapshot-numeric")
     db_session.add(hashtag)
     await db_session.flush()
 
@@ -264,7 +320,13 @@ async def test_same_hashtag_different_orgs_have_separate_snapshots(db_session: A
     db_session.add(org_b)
     await db_session.flush()
 
-    hashtag = make_hashtag(tag_name="snapshot-multiorg")
+    # NOTE: same hashtag row reused across both orgs here intentionally,
+    # to test that *snapshots* (not the Hashtag row itself) can carry
+    # different scores per org. This is independent of the org-scoped
+    # uniqueness on Hashtag.tag_name above — a snapshot's organization_id
+    # doesn't have to match the hashtag's own organization_id at the DB
+    # level (no constraint enforces that linkage), so this remains valid.
+    hashtag = make_hashtag(org_a.id, tag_name="snapshot-multiorg")
     db_session.add(hashtag)
     await db_session.flush()
 

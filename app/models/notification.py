@@ -4,9 +4,19 @@ user_activity_feed (which logs what the user themself did). This is what
 was done TO/AROUND them.
 
 Design principles:
+- organization_id is nullable: this is what distinguishes a SYSTEM
+  notification (platform-wide, not scoped to any single org — e.g. "Your
+  account was created", a platform maintenance notice, or a broadcast
+  sent to every user regardless of org) from an ORGANIZATION notification
+  (e.g. "Ada liked your post", "New department announcement" — generated
+  within and scoped to one tenant). A notification's actual tenant
+  isolation is enforced by user_id (the recipient already belongs to
+  exactly one org); organization_id here is denormalized context for
+  filtering/audit, not the sole isolation mechanism.
 - actor_id = who triggered this notification (who liked/commented/
   messaged). Nullable — system-generated notifications (e.g. scheduled
-  event reminders) have no triggering user.
+  event reminders, or any organization_id IS NULL system notification)
+  have no triggering user.
 - reference_id / reference_type point to the exact related record, same
   polymorphic pattern as GroupChatMessage.conversation_type — a single
   column can't carry a real FK to multiple different tables, so
@@ -18,12 +28,24 @@ Design principles:
 - notification_type and reference_type are constrained to known sets of
   values via CHECK constraints, same approach as conversation_type on
   GroupChatMessage — guards against typos while staying easy to extend
-  via a future migration that updates the allowed list.
+  via a future migration that updates the allowed list. "announcement"
+  covers both an org-level announcement (organization_id set) and a
+  platform-wide one (organization_id null) — the type doesn't change,
+  the scope does.
 - body is required — every notification must have preview text, even if
   it's brief. image_url is optional (e.g. liker's avatar, event cover
   photo); plenty of notifications (text-only announcements) won't have
   one.
 - is_read / read_at track whether the recipient has seen it.
+
+Tenant isolation note: cross-org leakage isn't possible through this
+table structurally, since every notification has exactly one user_id
+recipient (a user belongs to exactly one org). The app/service layer is
+still responsible for ensuring actor_id (when set) makes sense in
+context — e.g. an org-scoped "liked_post" notification's actor should
+belong to the same org as the recipient. The DB can't enforce that two
+independent FKs agree on a third column without a trigger; same accepted
+cost as the PostHashtag / hashtag-organization-match check.
 """
 
 from datetime import datetime
@@ -58,17 +80,21 @@ REFERENCE_TYPES = (
 class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "notifications"
 
-    # Recipient
+    # Recipient — tenant isolation lives here, not on organization_id
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
 
-    organization_id: Mapped[str] = mapped_column(
+    # Nullable — null means this is a SYSTEM/platform-wide notification,
+    # not scoped to any single organization. Set means it's an
+    # ORGANIZATION notification generated within that tenant's context.
+    organization_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
@@ -135,4 +161,5 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<Notification id={self.id} user={self.user_id} type={self.notification_type}>"
+        scope = self.organization_id or "system"
+        return f"<Notification id={self.id} user={self.user_id} scope={scope} type={self.notification_type}>"

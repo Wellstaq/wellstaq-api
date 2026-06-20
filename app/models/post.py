@@ -15,6 +15,24 @@ Design principles:
   single-column lookups on its leftmost column.
 - PostComment.parent_comment_id is a self-referential FK: null = top-level
   comment, set = reply to another comment.
+
+Tenant isolation:
+- organization_id is denormalized directly onto PostHashtag, PostLike,
+  PostComment, PostShare, and PostSave — not just derivable through
+  post_id. This is deliberate: a DB FK/CHECK constraint cannot compare
+  values across two different tables' rows, so nothing at the schema
+  level can stop a request from creating e.g. a PostLike where the
+  acting user belongs to a different org than the target post. Having
+  organization_id directly on the child row means:
+    1. The service layer's same-org check becomes a column comparison
+       on the row being inserted (no extra join/query needed).
+    2. organization_id must be set at insert time as a COPY of the
+       parent Post's organization_id — never independently chosen.
+    3. Org-scoped queries/exports on these child tables don't require
+       joining through posts every time.
+  This is the same "app-layer responsibility, schema makes it cheap"
+  pattern already used for PostHashtag's post/hashtag-org match and the
+  polymorphic conversation_id on GroupChatMessage.
 """
 
 from datetime import datetime
@@ -30,7 +48,6 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # Author
     # No separate index=True: covered by the (user_id, created_at) composite
-   
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -60,18 +77,18 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
     )
 
-    # ── Content ───────────────────────────────────────────────────────────
+    # Content
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # ── Denormalized counters ─────────────────────────────────────────────
+    # Denormalized counters
     # Increment on like/comment insert, decrement on unlike/delete — avoids
     # counting rows live when rendering the feed.
     like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # Relationships
     user: Mapped["User"] = relationship(
         "User",
         back_populates="posts",
@@ -140,6 +157,18 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class PostHashtag(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "post_hashtags"
 
+    # organization_id must be set by the service layer as a copy of the
+    # parent Post's organization_id at insert time — also must match the
+    # linked Hashtag's organization_id, since Hashtag is org-scoped (see
+    # hashtag.py). The DB cannot enforce either match across tables; both
+    # are app-layer responsibilities.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     # Single-column indexes — no composite covers either of these alone,
     # so index=True is kept on both.
     post_id: Mapped[str] = mapped_column(
@@ -156,7 +185,12 @@ class PostHashtag(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     post: Mapped["Post"] = relationship(
         "Post",
         back_populates="post_hashtags",
@@ -180,6 +214,15 @@ class PostLike(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "post_likes"
 
+    # Must be set by the service layer as a copy of the parent Post's
+    # organization_id at insert time — never independently chosen.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     # No separate index=True on post_id — it's the leading column of the
     # unique constraint below, which already indexes it.
     post_id: Mapped[str] = mapped_column(
@@ -197,7 +240,12 @@ class PostLike(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # Relationships 
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     post: Mapped["Post"] = relationship(
         "Post",
         back_populates="likes",
@@ -224,6 +272,15 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "post_comments"
 
+    # Must be set by the service layer as a copy of the parent Post's
+    # organization_id at insert time — never independently chosen.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     # No separate index=True on post_id — covered by the (post_id,
     # created_at) composite index below.
     post_id: Mapped[str] = mapped_column(
@@ -249,7 +306,12 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     post: Mapped["Post"] = relationship(
         "Post",
         back_populates="comments",
@@ -286,6 +348,15 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "post_shares"
 
+    # Must be set by the service layer as a copy of the parent Post's
+    # organization_id at insert time — never independently chosen.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     # Single-column indexes — neither is the leading column of a composite
     # here, so both keep index=True.
     post_id: Mapped[str] = mapped_column(
@@ -302,7 +373,12 @@ class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     post: Mapped["Post"] = relationship(
         "Post",
         back_populates="shares",
@@ -322,6 +398,15 @@ class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "post_saves"
 
+    # Must be set by the service layer as a copy of the parent Post's
+    # organization_id at insert time — never independently chosen.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     post_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("posts.id", ondelete="CASCADE"),
@@ -336,7 +421,12 @@ class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     post: Mapped["Post"] = relationship(
         "Post",
         back_populates="saves",

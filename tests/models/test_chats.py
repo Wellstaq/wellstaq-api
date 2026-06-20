@@ -40,9 +40,16 @@ def make_club(organization_id: str, **overrides) -> Club:
     return Club(**{**defaults, **overrides})
 
 
-def make_group_chat_message(conversation_type: str, conversation_id: str, user_id: str, **overrides) -> GroupChatMessage:
+def make_group_chat_message(
+    organization_id: str,
+    conversation_type: str,
+    conversation_id: str,
+    user_id: str,
+    **overrides,
+) -> GroupChatMessage:
     defaults = dict(content="Hey everyone!")
     return GroupChatMessage(
+        organization_id=organization_id,
         conversation_type=conversation_type,
         conversation_id=conversation_id,
         user_id=user_id,
@@ -100,7 +107,7 @@ async def test_group_chat_message_persists(db_session: AsyncSession):
     db_session.add(sender)
     await db_session.flush()
 
-    message = make_group_chat_message("club", club.id, sender.id)
+    message = make_group_chat_message(org.id, "club", club.id, sender.id)
     db_session.add(message)
     await db_session.flush()
 
@@ -108,6 +115,7 @@ async def test_group_chat_message_persists(db_session: AsyncSession):
         select(GroupChatMessage).where(GroupChatMessage.id == message.id)
     )
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.conversation_type == "club"
     assert fetched.conversation_id == club.id
     assert fetched.content == "Hey everyone!"
@@ -123,13 +131,36 @@ async def test_group_chat_message_id_is_uuid_format(db_session: AsyncSession):
     db_session.add(sender)
     await db_session.flush()
 
-    message = make_group_chat_message("club", club.id, sender.id)
+    message = make_group_chat_message(org.id, "club", club.id, sender.id)
     db_session.add(message)
     await db_session.flush()
 
     parts = message.id.split("-")
     assert len(parts) == 5
     assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_group_chat_message_organization_id_required(db_session: AsyncSession):
+    """organization_id is NOT NULL — every group chat message is org-scoped,
+    denormalized at write time from the owning club/event."""
+    _, org = await setup_org(db_session)
+    club = await setup_club(db_session, org.id)
+
+    sender = make_user(email="sender@example.com")
+    db_session.add(sender)
+    await db_session.flush()
+
+    message = GroupChatMessage(
+        organization_id=None,
+        conversation_type="club",
+        conversation_id=club.id,
+        user_id=sender.id,
+        content="Hey",
+    )
+    db_session.add(message)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 @pytest.mark.asyncio
@@ -143,7 +174,7 @@ async def test_group_chat_message_can_be_media_only(db_session: AsyncSession):
     await db_session.flush()
 
     message = make_group_chat_message(
-        "club", club.id, sender.id,
+        org.id, "club", club.id, sender.id,
         content=None,
         media_url="https://cdn.example.com/photo.jpg",
         media_type="image",
@@ -165,7 +196,7 @@ async def test_group_chat_message_requires_content_or_media(db_session: AsyncSes
     db_session.add(sender)
     await db_session.flush()
 
-    message = make_group_chat_message("club", club.id, sender.id, content=None)
+    message = make_group_chat_message(org.id, "club", club.id, sender.id, content=None)
     db_session.add(message)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -181,7 +212,7 @@ async def test_group_chat_message_invalid_conversation_type_raises(db_session: A
     db_session.add(sender)
     await db_session.flush()
 
-    message = make_group_chat_message("challenge", club.id, sender.id)
+    message = make_group_chat_message(org.id, "challenge", club.id, sender.id)
     db_session.add(message)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -197,13 +228,17 @@ async def test_group_chat_message_supports_event_conversation_type(db_session: A
 
     # event_id is just a UUID-shaped string here — no events table FK to
     # satisfy at the model layer, since conversation_id isn't a real FK.
+    # organization_id IS a real FK though, so it still needs a real org —
+    # per decision, a platform-wide (org-less) event can't have a group
+    # chat in the first place, so this is never a None case in practice.
     fake_event_id = "11111111-1111-1111-1111-111111111111"
-    message = make_group_chat_message("event", fake_event_id, sender.id)
+    message = make_group_chat_message(org.id, "event", fake_event_id, sender.id)
     db_session.add(message)
     await db_session.flush()
 
     assert message.conversation_type == "event"
     assert message.conversation_id == fake_event_id
+    assert message.organization_id == org.id
 
 
 # Pinning
@@ -221,7 +256,7 @@ async def test_group_chat_message_can_be_pinned(db_session: AsyncSession):
     db_session.add(sender)
     await db_session.flush()
 
-    message = make_group_chat_message("club", club.id, sender.id)
+    message = make_group_chat_message(org.id, "club", club.id, sender.id)
     db_session.add(message)
     await db_session.flush()
 
@@ -248,11 +283,17 @@ async def test_group_chat_message_only_one_pinned_per_conversation(db_session: A
     db_session.add(sender)
     await db_session.flush()
 
-    first = make_group_chat_message("club", club.id, sender.id, content="First", is_pinned=True, pinned_by=manager.id)
+    first = make_group_chat_message(
+        org.id, "club", club.id, sender.id,
+        content="First", is_pinned=True, pinned_by=manager.id,
+    )
     db_session.add(first)
     await db_session.flush()
 
-    second = make_group_chat_message("club", club.id, sender.id, content="Second", is_pinned=True, pinned_by=manager.id)
+    second = make_group_chat_message(
+        org.id, "club", club.id, sender.id,
+        content="Second", is_pinned=True, pinned_by=manager.id,
+    )
     db_session.add(second)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -275,10 +316,14 @@ async def test_group_chat_message_different_conversations_can_each_have_a_pin(db
     await db_session.flush()
 
     db_session.add(
-        make_group_chat_message("club", club_a.id, sender.id, is_pinned=True, pinned_by=manager.id)
+        make_group_chat_message(
+            org.id, "club", club_a.id, sender.id, is_pinned=True, pinned_by=manager.id
+        )
     )
     db_session.add(
-        make_group_chat_message("club", club_b.id, sender.id, is_pinned=True, pinned_by=manager.id)
+        make_group_chat_message(
+            org.id, "club", club_b.id, sender.id, is_pinned=True, pinned_by=manager.id
+        )
     )
     await db_session.flush()
 
@@ -302,7 +347,10 @@ async def test_group_chat_message_can_be_unpinned_then_repinned(db_session: Asyn
     db_session.add(sender)
     await db_session.flush()
 
-    first = make_group_chat_message("club", club.id, sender.id, content="First", is_pinned=True, pinned_by=manager.id)
+    first = make_group_chat_message(
+        org.id, "club", club.id, sender.id,
+        content="First", is_pinned=True, pinned_by=manager.id,
+    )
     db_session.add(first)
     await db_session.flush()
 
@@ -311,11 +359,55 @@ async def test_group_chat_message_can_be_unpinned_then_repinned(db_session: Asyn
     first.pinned_by = None
     await db_session.flush()
 
-    second = make_group_chat_message("club", club.id, sender.id, content="Second", is_pinned=True, pinned_by=manager.id)
+    second = make_group_chat_message(
+        org.id, "club", club.id, sender.id,
+        content="Second", is_pinned=True, pinned_by=manager.id,
+    )
     db_session.add(second)
     await db_session.flush()
 
     assert second.is_pinned is True
+
+
+@pytest.mark.asyncio
+async def test_group_chat_message_organization_relationship(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    club = await setup_club(db_session, org.id)
+
+    sender = make_user(email="sender@example.com")
+    db_session.add(sender)
+    await db_session.flush()
+
+    message = make_group_chat_message(org.id, "club", club.id, sender.id)
+    db_session.add(message)
+    await db_session.flush()
+    await db_session.refresh(message, ["organization"])
+
+    assert message.organization is not None
+    assert message.organization.id == org.id
+
+
+@pytest.mark.asyncio
+async def test_organization_delete_cascades_to_group_chat_messages(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    club = await setup_club(db_session, org.id)
+
+    sender = make_user(email="sender@example.com")
+    db_session.add(sender)
+    await db_session.flush()
+
+    message = make_group_chat_message(org.id, "club", club.id, sender.id)
+    db_session.add(message)
+    await db_session.flush()
+    message_id = message.id
+
+    await db_session.delete(org)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(GroupChatMessage).where(GroupChatMessage.id == message_id)
+    )
+    assert result.scalar_one_or_none() is None
 
 
 # ════════════════════════════════════════════════

@@ -17,4 +17,5 @@ from app.models.challenge import Challenge, ChallengeParticipant
 from app.models.category import Category, HealthCategory
 from app.models.wellbeing import WellbeingDimension, WellbeingChallenge, WellbeingScore, OrganizationWellbeingChallenge, UserWellbeingBaseline
 from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
+from app.models.story import Story
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

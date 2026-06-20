@@ -90,11 +90,14 @@ class WellbeingScore(Base, UUIDPrimaryKeyMixin):
     user: Mapped["User"] = relationship(
         "User",
         back_populates="wellbeing_scores",
+        foreign_keys=[user_id],
     )
     dimension: Mapped["WellbeingDimension"] = relationship(
         "WellbeingDimension",
         back_populates="scores",
+        foreign_keys=[dimension_id],
     )
+ 
 
     __table_args__ = (
         # Common query pattern: all of a user's dimension scores for a given period

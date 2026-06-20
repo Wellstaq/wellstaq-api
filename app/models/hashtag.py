@@ -10,33 +10,46 @@ Design principles:
   hashtag_trend_snapshots table/model, not here.
 """
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from datetime import datetime
 from decimal import Decimal
 
-
-
 class Hashtag(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "hashtags"
-
-    tag_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+ 
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+ 
+    tag_name: Mapped[str] = mapped_column(String(100), nullable=False)
     total_post_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # ── Relationships ──────────────────────────────────────────────────────
+ 
+    # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="hashtags",
+        foreign_keys=[organization_id],
+    )
     post_hashtags: Mapped[list["PostHashtag"]] = relationship(
         "PostHashtag",
         back_populates="hashtag",
     )
     trend_snapshots: Mapped[list["HashtagTrendSnapshot"]] = relationship(
-      "HashtagTrendSnapshot", back_populates="hashtag",
+        "HashtagTrendSnapshot",
+        back_populates="hashtag",
     )
-
+ 
+    __table_args__ = (
+        UniqueConstraint("organization_id", "tag_name", name="uq_hashtag_org_tag_name"),
+    )
+ 
     def __repr__(self) -> str:
-        return f"<Hashtag id={self.id} tag_name={self.tag_name}>"
-
-
+        return f"<Hashtag id={self.id} org={self.organization_id} tag_name={self.tag_name}>"
 """
 HashtagTrendSnapshot model — periodic computed trend score for a hashtag
 within an organization.

@@ -59,26 +59,59 @@ def make_post(user_id: str, organization_id: str, **overrides) -> Post:
     return Post(**{**defaults, **overrides})
 
 
-def make_hashtag(tag_name: str = "fitness", **overrides) -> Hashtag:
-    defaults = dict(tag_name=tag_name, total_post_count=0)
+def make_hashtag(organization_id: str, tag_name: str = "fitness", **overrides) -> Hashtag:
+    defaults = dict(
+        organization_id=organization_id,
+        tag_name=tag_name,
+        total_post_count=0,
+    )
     return Hashtag(**{**defaults, **overrides})
 
 
-def make_post_like(post_id: str, user_id: str, **overrides) -> PostLike:
-    return PostLike(post_id=post_id, user_id=user_id, **overrides)
+def make_post_hashtag(organization_id: str, post_id: str, hashtag_id: str, **overrides) -> PostHashtag:
+    return PostHashtag(
+        organization_id=organization_id,
+        post_id=post_id,
+        hashtag_id=hashtag_id,
+        **overrides,
+    )
 
 
-def make_post_comment(post_id: str, user_id: str, **overrides) -> PostComment:
+def make_post_like(organization_id: str, post_id: str, user_id: str, **overrides) -> PostLike:
+    return PostLike(
+        organization_id=organization_id,
+        post_id=post_id,
+        user_id=user_id,
+        **overrides,
+    )
+
+
+def make_post_comment(organization_id: str, post_id: str, user_id: str, **overrides) -> PostComment:
     defaults = dict(content="Nice work!")
-    return PostComment(post_id=post_id, user_id=user_id, **{**defaults, **overrides})
+    return PostComment(
+        organization_id=organization_id,
+        post_id=post_id,
+        user_id=user_id,
+        **{**defaults, **overrides},
+    )
 
 
-def make_post_share(post_id: str, user_id: str, **overrides) -> PostShare:
-    return PostShare(post_id=post_id, user_id=user_id, **overrides)
+def make_post_share(organization_id: str, post_id: str, user_id: str, **overrides) -> PostShare:
+    return PostShare(
+        organization_id=organization_id,
+        post_id=post_id,
+        user_id=user_id,
+        **overrides,
+    )
 
 
-def make_post_save(post_id: str, user_id: str, **overrides) -> PostSave:
-    return PostSave(post_id=post_id, user_id=user_id, **overrides)
+def make_post_save(organization_id: str, post_id: str, user_id: str, **overrides) -> PostSave:
+    return PostSave(
+        organization_id=organization_id,
+        post_id=post_id,
+        user_id=user_id,
+        **overrides,
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -159,11 +192,11 @@ async def test_post_hashtag_persists(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
 
-    hashtag = make_hashtag()
+    hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
 
-    post_hashtag = PostHashtag(post_id=post.id, hashtag_id=hashtag.id)
+    post_hashtag = make_post_hashtag(org.id, post.id, hashtag.id)
     db_session.add(post_hashtag)
     await db_session.flush()
 
@@ -171,6 +204,7 @@ async def test_post_hashtag_persists(db_session: AsyncSession):
         select(PostHashtag).where(PostHashtag.id == post_hashtag.id)
     )
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.post_id == post.id
     assert fetched.hashtag_id == hashtag.id
 
@@ -180,19 +214,36 @@ async def test_post_can_have_multiple_hashtags(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
 
-    tag_a = make_hashtag(tag_name="running")
-    tag_b = make_hashtag(tag_name="motivation")
+    tag_a = make_hashtag(org.id, tag_name="running")
+    tag_b = make_hashtag(org.id, tag_name="motivation")
     db_session.add_all([tag_a, tag_b])
     await db_session.flush()
 
-    db_session.add(PostHashtag(post_id=post.id, hashtag_id=tag_a.id))
-    db_session.add(PostHashtag(post_id=post.id, hashtag_id=tag_b.id))
+    db_session.add(make_post_hashtag(org.id, post.id, tag_a.id))
+    db_session.add(make_post_hashtag(org.id, post.id, tag_b.id))
     await db_session.flush()
 
     result = await db_session.execute(
         select(PostHashtag).where(PostHashtag.post_id == post.id)
     )
     assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_post_hashtag_organization_id_must_be_set(db_session: AsyncSession):
+    """organization_id is required — must be copied from the parent Post
+    at insert time, never independently chosen."""
+    owner, org = await setup_org(db_session)
+    post = await setup_post(db_session, owner.id, org.id)
+
+    hashtag = make_hashtag(org.id, tag_name="required-org")
+    db_session.add(hashtag)
+    await db_session.flush()
+
+    post_hashtag = PostHashtag(post_id=post.id, hashtag_id=hashtag.id)
+    db_session.add(post_hashtag)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── PostLike model ────────────────────────────────────────────────────────────
@@ -206,12 +257,13 @@ async def test_post_like_persists(db_session: AsyncSession):
     db_session.add(liker)
     await db_session.flush()
 
-    like = make_post_like(post.id, liker.id)
+    like = make_post_like(org.id, post.id, liker.id)
     db_session.add(like)
     await db_session.flush()
 
     result = await db_session.execute(select(PostLike).where(PostLike.id == like.id))
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.post_id == post.id
     assert fetched.user_id == liker.id
 
@@ -226,10 +278,10 @@ async def test_post_like_duplicate_raises(db_session: AsyncSession):
     db_session.add(liker)
     await db_session.flush()
 
-    db_session.add(make_post_like(post.id, liker.id))
+    db_session.add(make_post_like(org.id, post.id, liker.id))
     await db_session.flush()
 
-    db_session.add(make_post_like(post.id, liker.id))
+    db_session.add(make_post_like(org.id, post.id, liker.id))
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
@@ -245,14 +297,30 @@ async def test_post_like_same_user_different_posts(db_session: AsyncSession):
     db_session.add(liker)
     await db_session.flush()
 
-    db_session.add(make_post_like(post_a.id, liker.id))
-    db_session.add(make_post_like(post_b.id, liker.id))
+    db_session.add(make_post_like(org.id, post_a.id, liker.id))
+    db_session.add(make_post_like(org.id, post_b.id, liker.id))
     await db_session.flush()
 
     result = await db_session.execute(
         select(PostLike).where(PostLike.user_id == liker.id)
     )
     assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_post_like_organization_id_must_be_set(db_session: AsyncSession):
+    """organization_id is required on PostLike — not nullable."""
+    owner, org = await setup_org(db_session)
+    post = await setup_post(db_session, owner.id, org.id)
+
+    liker = make_user(email="liker_required@example.com")
+    db_session.add(liker)
+    await db_session.flush()
+
+    like = PostLike(post_id=post.id, user_id=liker.id)
+    db_session.add(like)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── PostComment model ─────────────────────────────────────────────────────────
@@ -266,7 +334,7 @@ async def test_post_comment_persists(db_session: AsyncSession):
     db_session.add(commenter)
     await db_session.flush()
 
-    comment = make_post_comment(post.id, commenter.id)
+    comment = make_post_comment(org.id, post.id, commenter.id)
     db_session.add(comment)
     await db_session.flush()
 
@@ -274,6 +342,7 @@ async def test_post_comment_persists(db_session: AsyncSession):
         select(PostComment).where(PostComment.id == comment.id)
     )
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.content == "Nice work!"
     assert fetched.parent_comment_id is None
 
@@ -287,17 +356,33 @@ async def test_post_comment_reply_links_to_parent(db_session: AsyncSession):
     db_session.add(commenter)
     await db_session.flush()
 
-    top_level = make_post_comment(post.id, commenter.id, content="First!")
+    top_level = make_post_comment(org.id, post.id, commenter.id, content="First!")
     db_session.add(top_level)
     await db_session.flush()
 
     reply = make_post_comment(
-        post.id, commenter.id, content="Totally agree", parent_comment_id=top_level.id
+        org.id, post.id, commenter.id, content="Totally agree", parent_comment_id=top_level.id
     )
     db_session.add(reply)
     await db_session.flush()
 
     assert reply.parent_comment_id == top_level.id
+
+
+@pytest.mark.asyncio
+async def test_post_comment_organization_id_must_be_set(db_session: AsyncSession):
+    """organization_id is required on PostComment — not nullable."""
+    owner, org = await setup_org(db_session)
+    post = await setup_post(db_session, owner.id, org.id)
+
+    commenter = make_user(email="commenter_required@example.com")
+    db_session.add(commenter)
+    await db_session.flush()
+
+    comment = PostComment(post_id=post.id, user_id=commenter.id, content="Missing org")
+    db_session.add(comment)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── PostShare model ───────────────────────────────────────────────────────────
@@ -311,14 +396,31 @@ async def test_post_share_persists(db_session: AsyncSession):
     db_session.add(sharer)
     await db_session.flush()
 
-    share = make_post_share(post.id, sharer.id)
+    share = make_post_share(org.id, post.id, sharer.id)
     db_session.add(share)
     await db_session.flush()
 
     result = await db_session.execute(select(PostShare).where(PostShare.id == share.id))
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.post_id == post.id
     assert fetched.user_id == sharer.id
+
+
+@pytest.mark.asyncio
+async def test_post_share_organization_id_must_be_set(db_session: AsyncSession):
+    """organization_id is required on PostShare — not nullable."""
+    owner, org = await setup_org(db_session)
+    post = await setup_post(db_session, owner.id, org.id)
+
+    sharer = make_user(email="sharer_required@example.com")
+    db_session.add(sharer)
+    await db_session.flush()
+
+    share = PostShare(post_id=post.id, user_id=sharer.id)
+    db_session.add(share)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── PostSave model ────────────────────────────────────────────────────────────
@@ -332,11 +434,28 @@ async def test_post_save_persists(db_session: AsyncSession):
     db_session.add(saver)
     await db_session.flush()
 
-    save = make_post_save(post.id, saver.id)
+    save = make_post_save(org.id, post.id, saver.id)
     db_session.add(save)
     await db_session.flush()
 
     result = await db_session.execute(select(PostSave).where(PostSave.id == save.id))
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.post_id == post.id
     assert fetched.user_id == saver.id
+
+
+@pytest.mark.asyncio
+async def test_post_save_organization_id_must_be_set(db_session: AsyncSession):
+    """organization_id is required on PostSave — not nullable."""
+    owner, org = await setup_org(db_session)
+    post = await setup_post(db_session, owner.id, org.id)
+
+    saver = make_user(email="saver_required@example.com")
+    db_session.add(saver)
+    await db_session.flush()
+
+    save = PostSave(post_id=post.id, user_id=saver.id)
+    db_session.add(save)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()

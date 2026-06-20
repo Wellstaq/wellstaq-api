@@ -29,7 +29,7 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # public | private — validated at app layer, no DB enum constraint
+    # public (anyone can join) | private (invite only) — validated at app layer, no DB enum constraint
     privacy: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
 
     category_id: Mapped[str | None] = mapped_column(
@@ -66,6 +66,7 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     category: Mapped["Category"] = relationship(
         "Category",
         back_populates="clubs",
+        foreign_keys=[category_id],
     )
 
     members: Mapped[list["ClubMember"]] = relationship(

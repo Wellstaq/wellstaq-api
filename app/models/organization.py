@@ -102,8 +102,16 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan" # Automatically wipes invites if the organization is deleted
     )
     posts: Mapped[list["Post"]] = relationship(
-    "Post",
-    back_populates="organization",
+        "Post",
+        back_populates="organization",
+    )
+    stories: Mapped[list["Story"]] = relationship(
+        "Story",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+    hashtags: Mapped[list["Hashtag"]] = relationship(
+        "Hashtag", back_populates="organization", cascade="all, delete-orphan",
     )
 
     hashtag_trend_snapshots: Mapped[list["HashtagTrendSnapshot"]] = relationship(
@@ -111,9 +119,19 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     direct_messages: Mapped[list["DirectMessage"]] = relationship("DirectMessage", back_populates="organization")
     notifications: Mapped[list["Notification"]] = relationship("Notification", back_populates="organization")
-    
-    members = relationship("User", foreign_keys="User.organization_id", back_populates="organization")
 
+    group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
+        "GroupChatMessage",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+        
+    members: Mapped[list["User"]] = relationship(
+        "User",
+        foreign_keys="User.organization_id",
+        back_populates="organization",
+    )
+ 
     
 
     def __repr__(self) -> str:

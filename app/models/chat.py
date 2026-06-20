@@ -12,6 +12,16 @@ GroupChatMessage design:
   before insert — the standard, accepted cost of a polymorphic
   association, same pattern used by Discourse/GitHub-style comment
   systems.
+- organization_id is a REAL FK, denormalized at write time from the
+  owning club's or event's organization_id. This exists specifically so
+  cross-org access can never happen by accident: without it, "does this
+  message belong to my org" requires joining out to Club or Event before
+  every query, and a service-layer route that forgets that join would
+  silently leak one org's group chat history to another org's users —
+  there is no DB-level constraint that would catch that mistake. With
+  organization_id present and indexed, every query can (and must) filter
+  on it directly, and the FK itself guarantees the value is always a
+  real organization. ondelete=CASCADE — messages don't outlive their org.
 - content is nullable (a message can be media-only), but content and
   media_url cannot both be null — a message needs some payload. Enforced
   via a CHECK constraint, not application logic, since the DB can
@@ -25,6 +35,16 @@ GroupChatMessage design:
   permission rule, not a structural constraint, so it's enforced in the
   service layer, not here. pinned_by is just an audit pointer to who
   pinned it.
+
+SERVICE-LAYER REQUIREMENT (schema cannot enforce this — read before
+writing any route that touches GroupChatMessage):
+  Every read/write must verify the target club or event's
+  organization_id matches the requesting user's organization_id BEFORE
+  trusting organization_id on the message itself. organization_id here
+  is a write-time snapshot for fast, safe querying — it is not a
+  substitute for checking membership/permission on the underlying club
+  or event at request time. Never accept a bare conversation_id from a
+  client and trust it without that upstream check.
 
 DirectMessage design:
 - Personal 1:1 messaging between two users, separate from
@@ -49,6 +69,17 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "group_chat_messages"
+
+    # Real FK, denormalized at write time from the owning club's/event's
+    # organization_id. See module docstring — this is what makes
+    # org-scoped queries safe and fast without a join, but it is NOT a
+    # substitute for checking club/event membership at the service layer.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     # Polymorphic scope — 'club' or 'event'. conversation_id points to
     # clubs.id or events.id depending on conversation_type; validated in
@@ -81,6 +112,11 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     pinned_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     # Relationships
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="group_chat_messages",
+        foreign_keys=[organization_id],
+    )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="group_chat_messages",
@@ -93,8 +129,11 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
+        # Primary safe query path: "all messages in my org for this
+        # conversation, in order" — never query without the org filter.
         Index(
-            "ix_group_chat_messages_conversation_created_at",
+            "ix_group_chat_messages_org_conversation_created_at",
+            "organization_id",
             "conversation_type",
             "conversation_id",
             "created_at",
@@ -119,7 +158,7 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return (
-            f"<GroupChatMessage id={self.id} "
+            f"<GroupChatMessage id={self.id} org={self.organization_id} "
             f"{self.conversation_type}={self.conversation_id} user={self.user_id}>"
         )
 
@@ -193,6 +232,6 @@ class DirectMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ck_direct_message_content_or_media",
         ),
     )
-    
+
     def __repr__(self) -> str:
         return f"<DirectMessage id={self.id} sender={self.sender_id} recipient={self.recipient_id}>"
