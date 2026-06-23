@@ -8,6 +8,7 @@ Or simply:
     python -m app.main
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,15 +17,23 @@ from app.core.database import engine
 from app.models.base import Base
 from app.routers import auth, general, uploads
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic: Create database tables if they don't exist
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    yield
+    
+    # Shutdown logic (if you need to clean up resources later, put it here)
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
-
-@app.on_event("startup")
-async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 app.add_middleware(
     CORSMiddleware,
