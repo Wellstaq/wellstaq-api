@@ -16,6 +16,21 @@ Design principles:
 - PostComment.parent_comment_id is a self-referential FK: null = top-level
   comment, set = reply to another comment.
 
+Toggle actions vs repeatable events:
+- PostLike and PostSave each carry a UniqueConstraint on (post_id,
+  user_id) — they represent a per-user STATE (liked/not-liked,
+  saved/not-saved), so a user can be in exactly one state per post.
+  Each is a toggle: insert the row to turn it on, delete that same row
+  to turn it off. Re-toggling "on" while already "on" must be a no-op
+  or an explicit check at the service layer, not a blind insert — a
+  blind duplicate insert will raise IntegrityError against the
+  constraint, which is the intended guard rail, not a bug to route
+  around.
+- PostShare has no such constraint. Sharing represents an activity
+  EVENT, not a state — a user can share the same post more than once
+  (again later, to a different destination, etc.), so duplicate rows
+  for the same (post_id, user_id) are expected and valid.
+
 Tenant isolation:
 - organization_id is denormalized directly onto PostHashtag, PostLike,
   PostComment, PostShare, and PostSave — not just derivable through
@@ -335,6 +350,7 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "PostComment",
         back_populates="parent_comment",
         foreign_keys=[parent_comment_id],
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -346,6 +362,13 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Each share is a distinct event, not a toggle — unlike PostLike
+    and PostSave, "share" represents an activity count (how many times
+    / how often this post has been shared), not a per-user state. A
+    user can share the same post more than once (e.g. again later, or
+    to a different destination). No uniqueness constraint on
+    (post_id, user_id)."""
+
     __tablename__ = "post_shares"
 
     # Must be set by the service layer as a copy of the parent Post's
@@ -357,8 +380,8 @@ class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # Single-column indexes — neither is the leading column of a composite
-    # here, so both keep index=True.
+    # Single-column indexes — neither is the leading column of a unique
+    # or composite index here, since shares are not deduplicated.
     post_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("posts.id", ondelete="CASCADE"),
@@ -396,6 +419,10 @@ class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One save per user per post — a toggle, same pattern as PostLike.
+    Saving inserts a row, unsaving deletes it. The unique constraint
+    on (post_id, user_id) makes duplicate saves impossible."""
+
     __tablename__ = "post_saves"
 
     # Must be set by the service layer as a copy of the parent Post's
@@ -407,13 +434,16 @@ class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
+    # No separate index=True on post_id — it's the leading column of the
+    # unique constraint below, which already indexes it.
     post_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("posts.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
 
+    # Not the leading column of the unique constraint, so it keeps its own
+    # index for "all posts saved by this user" lookups.
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -437,6 +467,10 @@ class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "User",
         back_populates="post_saves",
         foreign_keys=[user_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint("post_id", "user_id", name="uq_post_save_post_user"),
     )
 
     def __repr__(self) -> str:

@@ -1,18 +1,26 @@
 """
-Wellbeing models — dimensions, challenges, and scores.
+Wellbeing models — dimensions, challenges, scores, baselines, and health
+assessments.
+
+organization_id is present on all non-global tables (WellbeingScore,
+UserWellbeingBaseline, UserHealthAssessment). Global/shared lookup tables
+(WellbeingDimension, WellbeingChallenge) remain unscoped — every org uses
+the same taxonomy.
 
 Design principles:
-- WellbeingDimension: lookup table for measurable categories
-  (e.g. "Physical", "Mental", "Financial"). Minimal by design.
-- WellbeingChallenge: named wellbeing challenge/program. Minimal by
-  design per current schema — no org scope yet, expand later if needed.
-- WellbeingScore: one row per (user, dimension, period). period is a
-  free string — format (weekly/monthly/etc.) decided at app layer.
-  score is numeric to support decimal precision (e.g. 7.5 out of 10).
-  Composite index on (user_id, period) supports the common query:
-  "give me all of this user's dimension scores for this period."
-  ondelete=CASCADE on both FKs — scores are meaningless without the
-  user or the dimension they belong to.
+- WellbeingDimension: global lookup table for measurable categories
+  (e.g. "Physical", "Mental", "Financial"). NOT org-scoped.
+- WellbeingChallenge: global lookup table for challenge categories.
+  NOT org-scoped. Org-specific opt-in is OrganizationWellbeingChallenge.
+- WellbeingScore: one row per (user, dimension, period). organization_id
+  added for direct org-level querying and tenant isolation. Composite
+  index on (organization_id, user_id, period) covers the common query
+  patterns. ondelete=CASCADE on all FKs.
+- UserWellbeingBaseline: captured once at signup per dimension.
+  organization_id added for tenant isolation.
+- UserHealthAssessment: health risk assessment result per user.
+  organization_id added for tenant isolation.
+- OrganizationWellbeingChallenge: company-level config — unchanged.
 """
 
 from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint, DateTime
@@ -36,16 +44,12 @@ class WellbeingDimension(Base, UUIDPrimaryKeyMixin):
     def __repr__(self) -> str:
         return f"<WellbeingDimension id={self.id} name={self.name}>"
 
-"""
-WellbeingChallenge model — a category/theme that challenges can belong to.
-
-Design principles:
-- Simple lookup/category table (e.g. "Fitness", "Mental Health", "Nutrition").
-- A WellbeingChallenge can have many Challenge instances under it.
-"""
-
 
 class WellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A category/theme that Challenge instances can belong to — e.g.
+    "Fitness", "Mental Health", "Nutrition". Global lookup table, not
+    org-scoped; org-specific opt-in is OrganizationWellbeingChallenge."""
+
     __tablename__ = "wellbeing_challenges"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -54,8 +58,6 @@ class WellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     challenges: Mapped[list["Challenge"]] = relationship(
         "Challenge",
         back_populates="wellbeing_challenge",
-        # No delete cascade — Challenge.wellbeing_challenge_id is nullable
-        # with ondelete=SET NULL; challenges survive category deletion.
     )
 
     organizations: Mapped[list["OrganizationWellbeingChallenge"]] = relationship(
@@ -63,13 +65,27 @@ class WellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="wellbeing_challenge",
         cascade="all, delete-orphan",
     )
+
     def __repr__(self) -> str:
         return f"<WellbeingChallenge id={self.id} name={self.name}>"
 
+
 class WellbeingScore(Base, UUIDPrimaryKeyMixin):
+    """One row per (user, dimension, period).
+
+    organization_id is present for direct tenant isolation and org-level
+    querying without joining through User.
+    """
+
     __tablename__ = "wellbeing_scores"
 
     # ── FKs ───────────────────────────────────────────────────────────────
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -78,15 +94,20 @@ class WellbeingScore(Base, UUIDPrimaryKeyMixin):
     )
     dimension_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("wellbeing_dimensions.id", ondelete="CASCADE"),  # ← fixed
+        ForeignKey("wellbeing_dimensions.id", ondelete="CASCADE"),
         nullable=False,
     )
+
     # ── Score data ────────────────────────────────────────────────────────
     score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
-    # Free string — e.g. "2026-06", "2026-W25" — format decided at app layer
     period: Mapped[str] = mapped_column(String(20), nullable=False)
 
     # ── Relationships ──────────────────────────────────────────────────────
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="wellbeing_scores",
+        foreign_keys=[organization_id],
+    )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="wellbeing_scores",
@@ -97,37 +118,27 @@ class WellbeingScore(Base, UUIDPrimaryKeyMixin):
         back_populates="scores",
         foreign_keys=[dimension_id],
     )
- 
 
     __table_args__ = (
-        # Common query pattern: all of a user's dimension scores for a given period
-        Index("ix_wellbeing_scores_user_period", "user_id", "period"),
+        Index("ix_wellbeing_scores_org_user_period", "organization_id", "user_id", "period"),
     )
 
     def __repr__(self) -> str:
-        return f"<WellbeingScore user_id={self.user_id} dimension_id={self.dimension_id} period={self.period} score={self.score}>"
-
-"""
-OrganizationWellbeingChallenge model — links an organization to the
-wellbeing categories/themes it has opted into.
-
-Design principles:
-- Pure join table: organization_id + wellbeing_challenge_id, no extra
-  columns beyond the PK, matching the DBML schema.
-- This is distinct from Organization.challenges (org -> Challenge
-  instances) and from per-user challenge participation — this table is
-  company-level configuration: "which WellbeingChallenge categories is
-  this org opted into", not which user is doing what.
-- ondelete=CASCADE on both FKs — the link row is meaningless without
-  either parent, same pattern as WellbeingScore and OrganizationInvite.
-- Unique constraint on (organization_id, wellbeing_challenge_id) — an
-  org shouldn't be able to opt into the same category twice.
-- created_at / updated_at come from TimestampMixin.
-"""
-
+        return (
+            f"<WellbeingScore org={self.organization_id} user_id={self.user_id} "
+            f"dimension_id={self.dimension_id} period={self.period} score={self.score}>"
+        )
 
 
 class OrganizationWellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Links an organization to the wellbeing categories/themes it has
+    opted into. Company-level configuration — organization_id belongs here.
+
+    - Pure join table: organization_id + wellbeing_challenge_id.
+    - ondelete=CASCADE on both FKs.
+    - Unique constraint on (organization_id, wellbeing_challenge_id).
+    """
+
     __tablename__ = "organization_wellbeing_challenges"
 
     # ── FKs ───────────────────────────────────────────────────────────────
@@ -171,29 +182,30 @@ class OrganizationWellbeingChallenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         )
 
 
-#  UserWellbeingBaseline
-
-# Design principles:
-# - Captured once at signup (per dimension) — a snapshot of where the user
-#   started, not an ongoing log. dimension + level + reason are all free
-#   strings validated at the app layer (matches Organization.organization_type
-#   / work_model pattern already used elsewhere in this codebase).
-# - dimension: mood | stress | energy | work_life_balance
-# - level: good | bad | stressed | tired
-# - reason: work | family | health | finances | etc — free text category
-# - recorded_at is a plain DateTime, not TimestampMixin's created_at: the
-#   baseline may be recorded at a different moment than the row is inserted
-#   (e.g. backfilled from an onboarding form submitted earlier), so they're
-#   kept as distinct concepts. created_at/updated_at still come from
-#   TimestampMixin for row audit purposes.
-# - ondelete=CASCADE on user_id — a baseline snapshot is meaningless without
-#   the user it describes.
-
-
 class UserWellbeingBaseline(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Captured once at signup (per dimension) — a snapshot of where the
+    user started.
+
+    organization_id is present for tenant isolation and direct org-level
+    querying without joining through User.
+
+    - dimension: mood | stress | energy | work_life_balance
+    - level: good | bad | stressed | tired
+    - reason: free text category — work | family | health | finances | etc
+    - recorded_at is separate from TimestampMixin's created_at — the
+      baseline may be recorded at a different moment than row insertion.
+    - ondelete=CASCADE on user_id and organization_id.
+    """
+
     __tablename__ = "user_wellbeing_baselines"
 
-    # ── FK ────────────────────────────────────────────────────────────────
+    # ── FKs ───────────────────────────────────────────────────────────────
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -202,7 +214,6 @@ class UserWellbeingBaseline(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # ── Baseline data ─────────────────────────────────────────────────────
-    # Free strings — validated at app/schema layer (no DB enum constraint)
     dimension: Mapped[str] = mapped_column(String(50), nullable=False)
     level: Mapped[str] = mapped_column(String(50), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -214,13 +225,85 @@ class UserWellbeingBaseline(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # ── Relationships ─────────────────────────────────────────────────────
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="wellbeing_baselines",
+        foreign_keys=[organization_id],
+    )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="wellbeing_baselines",
+        foreign_keys=[user_id],
     )
 
     def __repr__(self) -> str:
         return (
-            f"<UserWellbeingBaseline user_id={self.user_id} "
+            f"<UserWellbeingBaseline org={self.organization_id} user_id={self.user_id} "
             f"dimension={self.dimension} level={self.level}>"
+        )
+
+
+class UserHealthAssessment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A user's health risk assessment result (e.g. diabetes risk, kidney
+    disease risk).
+
+    organization_id is present for tenant isolation and direct org-level
+    querying.
+
+    - category_id is a FK to health_categories.id.
+    - risk_score is numeric for decimal precision.
+    - status: free string — "pending" | "completed" | "reviewed" — app validated.
+    - assessed_at is separate from created_at — marks when the assessment
+      was conducted, which may differ from row creation.
+    - ondelete=CASCADE on user_id and organization_id.
+    """
+
+    __tablename__ = "user_health_assessments"
+
+    # ── FKs ───────────────────────────────────────────────────────────────
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    category_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("health_categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # ── Assessment data ───────────────────────────────────────────────────
+    risk_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    assessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ── Relationships ─────────────────────────────────────────────────────
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        back_populates="health_assessments",
+        foreign_keys=[organization_id],
+    )
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="health_assessments",
+        foreign_keys=[user_id],
+    )
+    category: Mapped["HealthCategory"] = relationship(
+        "HealthCategory",
+        back_populates="assessments",
+        foreign_keys=[category_id],
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserHealthAssessment org={self.organization_id} "
+            f"user_id={self.user_id} status={self.status}>"
         )

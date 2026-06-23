@@ -3,6 +3,15 @@ Department model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+Factory note:
+make_user() and make_org_with_owner() are imported from conftest.py.
+setup_org() is a thin wrapper preserving the (user, org) return order
+and (email, slug) signature. All additional users (members, new_owner)
+are created via make_user(organization_id=org.id, ...) since
+User.organization_id is NOT NULL — every user must belong to an org.
+Non-User factories (make_branch, make_department, make_rank_snapshot)
+are unchanged.
 """
 
 from datetime import date
@@ -12,38 +21,18 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
 from app.models import (
     Department,
-    DepartmentMember, 
+    DepartmentMember,
     DepartmentRankSnapshot,
     Organization,
     User,
-    Branch
+    Branch,
 )
+from tests.conftest import make_user, make_org_with_owner
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
-
-def make_user(email: str = "owner@example.com", **overrides) -> User:
-    defaults = dict(
-        first_name="Ada",
-        last_name="Lovelace",
-        email=email,
-        role_name="overall_manager",
-        hashed_password="$2b$12$fakehash",
-    )
-    return User(**{**defaults, **overrides})
-
-
-def make_org(owner_id: str, **overrides) -> Organization:
-    defaults = dict(
-        business_name="Acme Corp",
-        slug="acme-corp",
-        owner_id=owner_id,
-    )
-    return Organization(**{**defaults, **overrides})
-
 
 def make_branch(organization_id: str, **overrides) -> Branch:
     defaults = dict(name="Lagos Branch", organization_id=organization_id)
@@ -79,15 +68,15 @@ async def setup_org(
     db_session: AsyncSession,
     email: str = "owner@example.com",
     slug: str = "acme-corp",
-):
-    user = make_user(email=email)
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id, slug=slug)
-    db_session.add(org)
-    await db_session.flush()
-
+) -> tuple[User, Organization]:
+    """Thin wrapper around the shared make_org_with_owner() factory.
+    Preserves this file's original (user, org) return order and
+    (email, slug) signature so existing call sites didn't need to change."""
+    org, user = await make_org_with_owner(
+        db_session,
+        org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="overall_manager"),
+    )
     return user, org
 
 
@@ -168,7 +157,6 @@ async def test_department_optional_fields_nullable(db_session: AsyncSession):
     assert dept.description is None
     assert dept.avatar_initial is None
     assert dept.rank is None
-    #assert dept.category_id is None
     assert dept.branch_id is None
     assert dept.created_by is None
 
@@ -265,8 +253,8 @@ async def test_department_branch_delete_nullifies_branch_id(db_session: AsyncSes
     await db_session.flush()
     await db_session.refresh(dept)
 
-    assert dept.branch_id is None       # detached from branch
-    assert dept.organization_id == org.id  # still belongs to org
+    assert dept.branch_id is None
+    assert dept.organization_id == org.id
 
 
 @pytest.mark.asyncio
@@ -317,17 +305,19 @@ async def test_department_member_count_can_be_updated(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
-    """created_by is an audit string — no FK, preserved even if creator is deleted."""
+    """created_by is an audit string — no FK, preserved even if creator
+    is deleted. new_owner must belong to the same org (NOT NULL constraint)
+    before being assigned as the new org.owner_id."""
     owner, org = await setup_org(db_session)
 
     dept = make_department(org.id, created_by=owner.id)
     db_session.add(dept)
     await db_session.flush()
 
-    # Transfer org ownership before deleting original owner
-    new_owner = make_user(email="new_owner@example.com")
+    new_owner = make_user(organization_id=org.id, email="new_owner@example.com")
     db_session.add(new_owner)
     await db_session.flush()
+
     org.owner_id = new_owner.id
     await db_session.flush()
 
@@ -396,14 +386,14 @@ async def test_branch_departments_relationship(db_session: AsyncSession):
     assert len(branch.departments) == 2
 
 
-# DepartmentMember model
+# ── DepartmentMember model ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_department_member_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -425,7 +415,7 @@ async def test_department_member_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -443,7 +433,7 @@ async def test_department_member_joined_at_auto_set(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -460,7 +450,7 @@ async def test_department_member_duplicate_raises(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -479,7 +469,7 @@ async def test_department_member_different_departments_same_user(db_session: Asy
     dept_a = await setup_department(db_session, org.id, name="Engineering")
     dept_b = await setup_department(db_session, org.id, name="Marketing")
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -495,12 +485,11 @@ async def test_department_member_different_departments_same_user(db_session: Asy
 
 @pytest.mark.asyncio
 async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
-    """Leaving a department deletes the membership row (same pattern as
-    post_likes unlike)."""
+    """Leaving a department deletes the membership row."""
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(email="member@example.com", role_name="employee")
+    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -518,7 +507,7 @@ async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
     assert result.scalar_one_or_none() is None
 
 
-# DepartmentRankSnapshot model
+# ── DepartmentRankSnapshot model ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_department_rank_snapshot_persists(db_session: AsyncSession):

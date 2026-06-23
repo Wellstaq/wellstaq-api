@@ -3,6 +3,14 @@ Event, EventParticipant tests.
 
 All tests are async, isolated per test via rollback in conftest.
 Follows the same helper-based pattern used in the Club/User tests.
+
+Factory note:
+make_user() and make_org_with_owner() are imported from conftest.py.
+setup_org() is a thin wrapper preserving (user, org) return order.
+make_event() is unchanged — Event.organization_id is intentionally
+nullable (platform-wide events have no org). All additional users
+(members, new_owner) are created via make_user(organization_id=org.id)
+since User.organization_id is NOT NULL.
 """
 
 import pytest
@@ -10,29 +18,11 @@ from datetime import date, datetime, time as dt_time, timezone
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models  import Event, EventParticipant, Branch, Organization, User
-
-# Factories 
-
-def make_user(**overrides) -> User:
-    defaults = dict(
-        first_name="Ada",
-        last_name="Lovelace",
-        email="ada@example.com",
-        role_name="super_admin",
-        hashed_password="$2b$12$fakehash",
-    )
-    return User(**{**defaults, **overrides})
+from app.models import Event, EventParticipant, Branch, Organization, User
+from tests.conftest import make_user, make_org_with_owner
 
 
-def make_organization(owner_id: str, business_name: str = "Acme Org", **overrides) -> Organization:
-    defaults = dict(
-        business_name=business_name,
-        owner_id=owner_id,
-        slug=business_name.lower().replace(" ", "-"),
-    )
-    return Organization(**{**defaults, **overrides})
-
+# ── Factories ──────────────────────────────────────────────────────────────────
 
 def make_branch(organization_id: str, name: str = "Main Branch") -> Branch:
     return Branch(organization_id=organization_id, name=name)
@@ -52,25 +42,20 @@ def make_participant(event_id: str, user_id: str, **overrides) -> EventParticipa
     return EventParticipant(event_id=event_id, user_id=user_id, **overrides)
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
 async def setup_org(db_session: AsyncSession) -> tuple[User, Organization]:
-    owner = make_user()
-    db_session.add(owner)
-    await db_session.flush()
-
-    org = make_organization(owner.id)
-    db_session.add(org)
-    await db_session.flush()
-
-    return owner, org
+    """Thin wrapper around the shared make_org_with_owner() factory.
+    Preserves this file's original (user, org) return order."""
+    org, user = await make_org_with_owner(db_session)
+    return user, org
 
 
 async def setup_event(db_session: AsyncSession) -> tuple[User, Organization, Event]:
     owner, org = await setup_org(db_session)
-
     event = make_event(organization_id=org.id, created_by=owner.id)
     db_session.add(event)
     await db_session.flush()
-
     return owner, org, event
 
 
@@ -78,7 +63,9 @@ async def setup_event(db_session: AsyncSession) -> tuple[User, Organization, Eve
 
 @pytest.mark.asyncio
 async def test_create_platform_wide_event(db_session: AsyncSession):
-    """organization_id and branch_id both null = platform-wide event."""
+    """organization_id and branch_id both null = platform-wide event.
+    Event.organization_id is intentionally nullable — not every event
+    belongs to an org (platform-wide events are valid)."""
     event = make_event()
     db_session.add(event)
     await db_session.flush()
@@ -135,8 +122,7 @@ async def test_organization_delete_sets_event_org_id_null(db_session: AsyncSessi
 
     # Bypass identity map — force a real read from the DB. The raw DELETE
     # above happened outside the ORM's unit-of-work, so the cached `event`
-    # object (still in the session's identity map from the earlier flush)
-    # won't reflect the DB-level SET NULL unless we expire it first.
+    # object won't reflect the DB-level SET NULL unless we expire it first.
     db_session.expunge_all()
 
     result = await db_session.execute(select(Event).where(Event.id == event_id))
@@ -167,13 +153,14 @@ async def test_branch_delete_sets_event_branch_id_null(db_session: AsyncSession)
     result = await db_session.execute(select(Event).where(Event.id == event_id))
     fetched = result.scalar_one()
     assert fetched.branch_id is None
-    # organization_id should be untouched by the branch deletion
     assert fetched.organization_id == org.id
 
 
 @pytest.mark.asyncio
 async def test_created_by_set_null_on_user_delete(db_session: AsyncSession):
-    """created_by is a real FK with SET NULL — event survives, creator link cleared."""
+    """created_by is a real FK with SET NULL — event survives, creator link cleared.
+    new_owner must have organization_id set (NOT NULL) before being assigned
+    as the new org.owner_id."""
     owner, org = await setup_org(db_session)
 
     event = make_event(organization_id=org.id, created_by=owner.id)
@@ -181,10 +168,11 @@ async def test_created_by_set_null_on_user_delete(db_session: AsyncSession):
     await db_session.flush()
     event_id = event.id
 
-    # Transfer org ownership before deleting original owner
-    new_owner = make_user(email="new_owner@example.com")
+    # new_owner belongs to the same org — required by User.organization_id NOT NULL
+    new_owner = make_user(organization_id=org.id, email="new_owner@example.com")
     db_session.add(new_owner)
     await db_session.flush()
+
     org.owner_id = new_owner.id
     await db_session.flush()
 
@@ -274,7 +262,7 @@ async def test_event_creator_relationship(db_session: AsyncSession):
     assert event.creator.id == owner.id
 
 
-# ── Event: indexes (sanity check they exist; not a perf test) ──────────────────
+# ── Event: indexes ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_org_start_date_index_exists(db_session: AsyncSession):
@@ -283,14 +271,13 @@ async def test_org_start_date_index_exists(db_session: AsyncSession):
     assert "ix_events_org_start_date" in index_names
 
 
-
 # ── EventParticipant model ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_event_participant_persists(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -308,9 +295,9 @@ async def test_event_participant_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_event_participant_id_is_uuid_format(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -325,9 +312,9 @@ async def test_event_participant_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_event_participant_created_at_auto_set(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -340,9 +327,9 @@ async def test_event_participant_created_at_auto_set(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_event_participant_attended_defaults_false(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -355,9 +342,9 @@ async def test_event_participant_attended_defaults_false(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_event_participant_attended_can_be_updated(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -376,9 +363,9 @@ async def test_event_participant_attended_can_be_updated(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_event_participant_invited_at_stored(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -396,9 +383,9 @@ async def test_event_participant_invited_at_stored(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_event_participant_invited_at_nullable(db_session: AsyncSession):
     """Open-join participants need no invited_at."""
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -411,9 +398,9 @@ async def test_event_participant_invited_at_nullable(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_event_participant_status_stored(db_session: AsyncSession):
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -430,9 +417,9 @@ async def test_event_participant_status_stored(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_event_participant_status_nullable(db_session: AsyncSession):
     """Status is optional — not every flow sets it up front."""
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -446,9 +433,9 @@ async def test_event_participant_status_nullable(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_event_participant_duplicate_raises(db_session: AsyncSession):
     """A user can only be added to a given event once."""
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -470,7 +457,7 @@ async def test_event_participant_same_user_different_events(db_session: AsyncSes
     db_session.add_all([event_a, event_b])
     await db_session.flush()
 
-    member = make_user(email="member@example.com")
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
 
@@ -487,10 +474,10 @@ async def test_event_participant_same_user_different_events(db_session: AsyncSes
 @pytest.mark.asyncio
 async def test_event_participant_multiple_users_same_event(db_session: AsyncSession):
     """Multiple users can participate in the same event."""
-    _, _, event = await setup_event(db_session)
+    _, org, event = await setup_event(db_session)
 
-    member_a = make_user(email="member_a@example.com")
-    member_b = make_user(email="member_b@example.com")
+    member_a = make_user(organization_id=org.id, email="member_a@example.com")
+    member_b = make_user(organization_id=org.id, email="member_b@example.com")
     db_session.add_all([member_a, member_b])
     await db_session.flush()
 

@@ -33,10 +33,15 @@ Design principles:
   platform-wide one (organization_id null) — the type doesn't change,
   the scope does.
 - body is required — every notification must have preview text, even if
-  it's brief. image_url is optional (e.g. liker's avatar, event cover
-  photo); plenty of notifications (text-only announcements) won't have
-  one.
+  it's brief. Max 500 chars — sufficient for current types; if
+  multilingual or dynamic templates ("X and 3 others liked your post")
+  are introduced, revisit this limit. image_url is optional (e.g.
+  liker's avatar, event cover photo); plenty of notifications
+  (text-only announcements) won't have one.
 - is_read / read_at track whether the recipient has seen it.
+  A CHECK constraint enforces consistency: is_read=True requires
+  read_at to be set, and is_read=False requires read_at to be NULL.
+  This prevents silent bad state (unread count bugs, stale timestamps).
 
 Tenant isolation note: cross-org leakage isn't possible through this
 table structurally, since every notification has exactly one user_id
@@ -85,7 +90,10 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        # NOTE: no index=True here — user_id is the leading column of the
+        # composite index ix_notifications_user_is_read_created_at below,
+        # which already covers single-column lookups on user_id. A
+        # redundant standalone index would waste write overhead.
     )
 
     # Nullable — null means this is a SYSTEM/platform-wide notification,
@@ -117,7 +125,8 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     body: Mapped[str] = mapped_column(String(500), nullable=False)
     image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    # Read state
+    # Read state — is_read and read_at must be consistent (see CHECK
+    # constraint ck_notification_read_consistency in __table_args__).
     is_read: Mapped[bool] = mapped_column(nullable=False, default=False)
     read_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
@@ -139,6 +148,9 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
+        # Primary read query pattern: fetch unread notifications for a
+        # user, ordered by recency. user_id leading so Postgres/SQLite
+        # can seek directly to one user's rows without a full scan.
         Index(
             "ix_notifications_user_is_read_created_at",
             "user_id",
@@ -153,13 +165,37 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             f"reference_type IS NULL OR reference_type IN ({', '.join(repr(t) for t in REFERENCE_TYPES)})",
             name="ck_notification_reference_type",
         ),
+        # reference_id and reference_type must be set together or both
+        # null — never one without the other.
         CheckConstraint(
             "(reference_id IS NULL AND reference_type IS NULL) "
             "OR (reference_id IS NOT NULL AND reference_type IS NOT NULL)",
             name="ck_notification_reference_id_type_together",
         ),
+        # is_read=True requires read_at to be set; is_read=False requires
+        # read_at to be NULL. Prevents silent inconsistent state that
+        # would corrupt unread counts and "last read at" displays.
+        # SQLite stores booleans as 0/1 integers, so the constraint uses
+        # integer literals for cross-DB portability with aiosqlite tests.
+        CheckConstraint(
+            "(is_read = 0 AND read_at IS NULL) OR (is_read = 1 AND read_at IS NOT NULL)",
+            name="ck_notification_read_consistency",
+        ),
+        # SQLite does not enforce VARCHAR lengths — this constraint makes
+        # the 500-char business rule explicit and enforced on both SQLite
+        # (tests) and PostgreSQL (production). Other string columns use
+        # whitelist constraints (notification_type, reference_type) or
+        # have no hard business rule (image_url); body is the only one
+        # where the length limit is a real product constraint.
+        CheckConstraint(
+            "length(body) <= 500",
+            name="ck_notification_body_max_length",
+        ),
     )
 
     def __repr__(self) -> str:
         scope = self.organization_id or "system"
-        return f"<Notification id={self.id} user={self.user_id} scope={scope} type={self.notification_type}>"
+        return (
+            f"<Notification id={self.id} user={self.user_id} "
+            f"scope={scope} type={self.notification_type}>"
+        )

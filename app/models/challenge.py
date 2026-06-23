@@ -9,11 +9,37 @@ Design principles:
 - ChallengeParticipant is the join model tracking a user's participation
   in a challenge — a user may only join a given challenge once
   (unique on challenge_id + user_id).
+
+Tenant isolation (ChallengeParticipant):
+- organization_id is denormalized directly onto ChallengeParticipant —
+  not just derivable through challenge_id. Same reasoning as Post's
+  child tables (PostLike, PostComment, PostShare, PostSave, see
+  post.py): user_id and challenge_id are independent FKs, and a DB
+  constraint cannot compare values across two different tables' rows.
+  organization_id here is set as a COPY of the parent Challenge's
+  organization_id at insert time — never independently chosen.
+  
+Enterprise Multi-Tenant Hardening:
+- Rather than trusting the service layer exclusively, consistency is enforced 
+  at the database layer using a composite Foreign Key Constraint on 
+  (challenge_id, organization_id) matching Challenges(id, organization_id).
 """
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -94,10 +120,21 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "ChallengeParticipant",
         back_populates="challenge",
         cascade="all, delete-orphan",
+        primaryjoin="Challenge.id == ChallengeParticipant.challenge_id",
     )
 
     __table_args__ = (
         Index("ix_challenges_org_start_date", "organization_id", "start_date"),
+        UniqueConstraint("id", "organization_id", name="uq_challenges_id_org"),
+        CheckConstraint("length(trim(name)) > 0", name="ck_challenges_name_not_empty"),
+        CheckConstraint(
+            "end_date IS NULL OR start_date IS NULL OR end_date >= start_date",
+            name="ck_challenges_date_range",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'completed', 'cancelled', 'archived')",
+            name="ck_challenges_status_valid",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -110,7 +147,6 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Challenge / User ──────────────────────────────────────────────────
     challenge_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("challenges.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -118,6 +154,15 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Denormalized — composite constraints ensure this matches the parent 
+    # challenge's organization tracking id perfectly.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -135,6 +180,7 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     challenge: Mapped["Challenge"] = relationship(
         "Challenge",
         back_populates="participants",
+        primaryjoin="ChallengeParticipant.challenge_id == Challenge.id",
         foreign_keys=[challenge_id],
     )
 
@@ -144,10 +190,24 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[user_id],
     )
 
+    organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[organization_id],
+    )
+
     __table_args__ = (
         UniqueConstraint("challenge_id", "user_id", name="uq_challenge_participant_challenge_user"),
+        ForeignKeyConstraint(
+            ["challenge_id", "organization_id"],
+            ["challenges.id", "challenges.organization_id"],
+            ondelete="CASCADE",
+            name="fk_challenge_participants_challenge_org",
+        ),
+        CheckConstraint("rank IS NULL OR rank > 0", name="ck_challenge_participants_rank_positive"),
     )
 
     def __repr__(self) -> str:
-        return f"<ChallengeParticipant id={self.id} challenge={self.challenge_id} user={self.user_id}>"
-
+        return (
+            f"<ChallengeParticipant id={self.id} challenge={self.challenge_id} "
+            f"user={self.user_id} org={self.organization_id}>"
+        )

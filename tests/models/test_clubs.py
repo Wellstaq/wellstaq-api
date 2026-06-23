@@ -3,6 +3,16 @@ Club model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+Factory note:
+make_user() and make_org_with_owner() are imported from conftest.py —
+the single shared implementation that resolves the circular FK between
+Organization.owner_id and User.organization_id. The local setup_org()
+is a thin wrapper that preserves this file's (user, org) return order
+and (email, slug) call signature so no test body needed to change.
+Any additional users (new_owner, members) are created via
+make_user(organization_id=org.id, ...) since every User row must
+belong to an org.
 """
 
 import pytest
@@ -11,29 +21,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Club, Organization, User
+from tests.conftest import make_user, make_org_with_owner
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
-
-def make_user(email: str = "owner@example.com", **overrides) -> User:
-    defaults = dict(
-        first_name="Ada",
-        last_name="Lovelace",
-        email=email,
-        role_name="overall_manager",
-        hashed_password="$2b$12$fakehash",
-    )
-    return User(**{**defaults, **overrides})
-
-
-def make_org(owner_id: str, **overrides) -> Organization:
-    defaults = dict(
-        business_name="Acme Corp",
-        slug="acme-corp",
-        owner_id=owner_id,
-    )
-    return Organization(**{**defaults, **overrides})
-
 
 def make_club(organization_id: str, **overrides) -> Club:
     defaults = dict(
@@ -49,15 +40,15 @@ async def setup_org(
     db_session: AsyncSession,
     email: str = "owner@example.com",
     slug: str = "acme-corp",
-):
-    user = make_user(email=email)
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id, slug=slug)
-    db_session.add(org)
-    await db_session.flush()
-
+) -> tuple[User, Organization]:
+    """Thin wrapper around the shared make_org_with_owner() factory.
+    Preserves this file's original (user, org) return order and
+    (email, slug) signature so existing call sites didn't need to change."""
+    org, user = await make_org_with_owner(
+        db_session,
+        org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="overall_manager"),
+    )
     return user, org
 
 
@@ -133,7 +124,6 @@ async def test_club_optional_fields_nullable(db_session: AsyncSession):
     await db_session.flush()
 
     assert club.description is None
-   # assert club.category_id is None
     assert club.created_by is None
 
 
@@ -145,7 +135,6 @@ async def test_club_full_fields(db_session: AsyncSession):
         org.id,
         description="Weekly running group",
         privacy="private",
-        #category_id="some-category-uuid",
         created_by=owner.id,
         member_count=12,
     )
@@ -156,7 +145,6 @@ async def test_club_full_fields(db_session: AsyncSession):
     fetched = result.scalar_one()
     assert fetched.description == "Weekly running group"
     assert fetched.privacy == "private"
-    #assert fetched.category_id == "some-category-uuid"
     assert fetched.created_by == owner.id
     assert fetched.member_count == 12
 
@@ -246,20 +234,32 @@ async def test_club_member_count_can_be_updated(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
-    """created_by is an audit string — no FK, preserved even if creator is deleted."""
+    """created_by is an audit string — no FK, preserved even if creator
+    is deleted. The value survives because there's no FK constraint to
+    cascade or nullify it — intentional for audit trail purposes.
+
+    new_owner must belong to an org (User.organization_id NOT NULL), so
+    it's created in the same org before being assigned as the new
+    org.owner_id, allowing the raw deletion of the original owner to
+    succeed without hitting the Organization.owner_id FK constraint."""
     owner, org = await setup_org(db_session)
 
     club = make_club(org.id, created_by=owner.id)
     db_session.add(club)
     await db_session.flush()
 
-    # Transfer org ownership before deleting original owner
-    new_owner = make_user(email="new_owner@example.com")
+    # new_owner must have organization_id — assign it to the same org
+    new_owner = make_user(organization_id=org.id, email="new_owner@example.com")
     db_session.add(new_owner)
     await db_session.flush()
+
+    # Transfer ownership so the Organization.owner_id FK no longer
+    # blocks deletion of the original owner
     org.owner_id = new_owner.id
     await db_session.flush()
 
+    # Raw delete bypasses ORM to test that Club.created_by (a plain
+    # string, no FK) survives independently of the user row
     await db_session.execute(
         text("DELETE FROM users WHERE id = :id"),
         {"id": owner.id}

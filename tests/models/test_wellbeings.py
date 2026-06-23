@@ -1,9 +1,28 @@
 """
-WellbeingDimension, WellbeingChallenge, WellbeingScore, and
-OrganizationWellbeingChallenge model tests.
+WellbeingDimension, WellbeingChallenge, WellbeingScore,
+OrganizationWellbeingChallenge, UserWellbeingBaseline, and
+UserHealthAssessment model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+organization_id is present on WellbeingScore, UserWellbeingBaseline, and
+UserHealthAssessment for tenant isolation. Tests cover org scoping,
+cross-tenant isolation, and cascade deletes through organization_id on
+all three tables.
+
+Factory note:
+setup_org() here is a thin wrapper around the shared
+tests.conftest.make_org_with_owner(), which resolves the circular FK
+between Organization.owner_id and User.organization_id the same way
+the real signup transaction does (see conftest.py docstring). This
+file's setup_org() previously built User and Organization directly and
+broke once User.organization_id became NOT NULL — exactly the failure
+mode conftest.make_org_with_owner() exists to prevent. The wrapper
+keeps this file's existing (user, org) return order and
+(email, slug) call signature so none of the ~25 call sites below
+needed to change, while delegating the actual creation logic to the
+single shared implementation.
 """
 
 import pytest
@@ -17,23 +36,15 @@ from app.models import (
     User,
     WellbeingChallenge,
     UserWellbeingBaseline,
+    UserHealthAssessment,
+    HealthCategory,
     WellbeingDimension,
     WellbeingScore,
 )
+from tests.conftest import make_user, make_org_with_owner
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
-
-def make_user(email: str = "user@example.com", **overrides) -> User:
-    defaults = dict(
-        first_name="Ada",
-        last_name="Lovelace",
-        email=email,
-        role_name="employee",
-        hashed_password="$2b$12$fakehash",
-    )
-    return User(**{**defaults, **overrides})
-
 
 def make_dimension(name: str = "Physical", **overrides) -> WellbeingDimension:
     return WellbeingDimension(name=name, **overrides)
@@ -43,23 +54,20 @@ def make_challenge(name: str = "30-Day Step Challenge", **overrides) -> Wellbein
     return WellbeingChallenge(name=name, **overrides)
 
 
-def make_score(user_id: str, dimension_id: str, **overrides) -> WellbeingScore:
+def make_score(
+    organization_id: str,
+    user_id: str,
+    dimension_id: str,
+    **overrides,
+) -> WellbeingScore:
     defaults = dict(
+        organization_id=organization_id,
         user_id=user_id,
         dimension_id=dimension_id,
         score=7.5,
         period="2026-06",
     )
     return WellbeingScore(**{**defaults, **overrides})
-
-
-def make_org(owner_id: str, **overrides) -> Organization:
-    defaults = dict(
-        business_name="Acme Corp",
-        slug="acme-corp",
-        owner_id=owner_id,
-    )
-    return Organization(**{**defaults, **overrides})
 
 
 def make_org_wellbeing_challenge(
@@ -72,17 +80,71 @@ def make_org_wellbeing_challenge(
         wellbeing_challenge_id=wellbeing_challenge_id,
     )
     return OrganizationWellbeingChallenge(**{**defaults, **overrides})
-def make_baseline(user_id: str, **overrides) -> UserWellbeingBaseline:
+
+
+def make_baseline(
+    organization_id: str,
+    user_id: str,
+    **overrides,
+) -> UserWellbeingBaseline:
     defaults = dict(
+        organization_id=organization_id,
         user_id=user_id,
         dimension="mood",
         level="good",
         reason="work",
     )
-    return UserWellbeingBaseline(**{**defaults, **overrides})    
+    return UserWellbeingBaseline(**{**defaults, **overrides})
 
 
-# ── WellbeingDimension model ────────────────────────────────────────────────────
+def make_health_category(name: str = "Cardiovascular", **overrides) -> HealthCategory:
+    return HealthCategory(name=name, **overrides)
+
+
+def make_health_assessment(
+    organization_id: str,
+    user_id: str,
+    **overrides,
+) -> UserHealthAssessment:
+    defaults = dict(
+        organization_id=organization_id,
+        user_id=user_id,
+        status="pending",
+    )
+    return UserHealthAssessment(**{**defaults, **overrides})
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def setup_org(
+    db_session: AsyncSession,
+    email: str = "owner@example.com",
+    slug: str = "acme-corp",
+) -> tuple[User, Organization]:
+    """Thin wrapper around the shared make_org_with_owner() factory —
+    see module docstring. Preserves this file's original (user, org)
+    return order and (email, slug) signature so existing call sites
+    below didn't need to change."""
+    org, user = await make_org_with_owner(
+        db_session,
+        org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="overall_manager"),
+    )
+    return user, org
+
+
+async def make_member(db_session: AsyncSession, organization_id: str, **overrides) -> User:
+    """A non-owner member of an existing org. organization_id must
+    already exist (i.e. come from a setup_org() call)."""
+    overrides.setdefault("email", "member@example.com")
+    overrides.setdefault("role_name", "employee")
+    user = make_user(organization_id=organization_id, **overrides)
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+# ── WellbeingDimension ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_dimension_persists(db_session: AsyncSession):
@@ -120,7 +182,7 @@ async def test_multiple_dimensions_can_exist(db_session: AsyncSession):
     assert names == {"Physical", "Mental", "Financial"}
 
 
-# ── WellbeingChallenge model ────────────────────────────────────────────────────
+# ── WellbeingChallenge ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_challenge_persists(db_session: AsyncSession):
@@ -157,24 +219,25 @@ async def test_multiple_challenges_can_exist(db_session: AsyncSession):
     assert names == {"30-Day Step Challenge", "Hydration Week"}
 
 
-# ── WellbeingScore model ────────────────────────────────────────────────────────
+# ── WellbeingScore ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_score_persists(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
 
-    result = await db_session.execute(select(WellbeingScore).where(WellbeingScore.id == score.id))
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.id == score.id)
+    )
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.user_id == user.id
     assert fetched.dimension_id == dimension.id
     assert float(fetched.score) == 7.5
@@ -183,15 +246,13 @@ async def test_score_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_score_id_is_uuid_format(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
 
@@ -202,15 +263,13 @@ async def test_score_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_score_supports_decimal_precision(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id, score=8.75)
+    score = make_score(org.id, user.id, dimension.id, score=8.75)
     db_session.add(score)
     await db_session.flush()
     await db_session.refresh(score)
@@ -219,13 +278,35 @@ async def test_score_supports_decimal_precision(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_score_org_fk_must_exist(db_session: AsyncSession):
+    _, org = await setup_org(db_session, email="placeholder@example.com")
+
+    dimension = make_dimension()
+    db_session.add(dimension)
+    await db_session.flush()
+
+    member = await make_member(db_session, org.id, email="scope-test@example.com")
+
+    score = make_score(
+        organization_id="00000000-0000-0000-0000-000000000000",
+        user_id=member.id,
+        dimension_id=dimension.id,
+    )
+    db_session.add(score)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
 async def test_score_user_fk_must_exist(db_session: AsyncSession):
-    """user_id must reference a real user."""
+    user, org = await setup_org(db_session)
+
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
     score = make_score(
+        organization_id=org.id,
         user_id="00000000-0000-0000-0000-000000000000",
         dimension_id=dimension.id,
     )
@@ -236,12 +317,10 @@ async def test_score_user_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_score_dimension_fk_must_exist(db_session: AsyncSession):
-    """dimension_id must reference a real dimension."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     score = make_score(
+        organization_id=org.id,
         user_id=user.id,
         dimension_id="00000000-0000-0000-0000-000000000000",
     )
@@ -251,23 +330,62 @@ async def test_score_dimension_fk_must_exist(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_user_can_have_multiple_dimension_scores_same_period(db_session: AsyncSession):
-    """A user can have scores for different dimensions in the same period."""
-    user = make_user()
-    db_session.add(user)
+async def test_score_filterable_by_org(db_session: AsyncSession):
+    """Scores from org A are directly queryable by organization_id."""
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
+
+    dimension = make_dimension()
+    db_session.add(dimension)
     await db_session.flush()
+
+    db_session.add(make_score(org_a.id, user_a.id, dimension.id, score=7.0))
+    db_session.add(make_score(org_b.id, user_b.id, dimension.id, score=9.0))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.organization_id == org_a.id)
+    )
+    scores = result.scalars().all()
+    assert len(scores) == 1
+    assert float(scores[0].score) == 7.0
+
+
+@pytest.mark.asyncio
+async def test_score_cross_tenant_isolation(db_session: AsyncSession):
+    """Org B cannot see org A's scores when filtering by org_id."""
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
+
+    dimension = make_dimension()
+    db_session.add(dimension)
+    await db_session.flush()
+
+    db_session.add(make_score(org_a.id, user_a.id, dimension.id))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.organization_id == org_b.id)
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_user_can_have_multiple_dimension_scores_same_period(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
 
     physical = make_dimension(name="Physical")
     mental = make_dimension(name="Mental")
     db_session.add_all([physical, mental])
     await db_session.flush()
 
-    db_session.add(make_score(user.id, physical.id, period="2026-06", score=7.0))
-    db_session.add(make_score(user.id, mental.id, period="2026-06", score=8.0))
+    db_session.add(make_score(org.id, user.id, physical.id, period="2026-06", score=7.0))
+    db_session.add(make_score(org.id, user.id, mental.id, period="2026-06", score=8.0))
     await db_session.flush()
 
     result = await db_session.execute(
         select(WellbeingScore).where(
+            WellbeingScore.organization_id == org.id,
             WellbeingScore.user_id == user.id,
             WellbeingScore.period == "2026-06",
         )
@@ -277,21 +395,19 @@ async def test_user_can_have_multiple_dimension_scores_same_period(db_session: A
 
 @pytest.mark.asyncio
 async def test_user_can_have_same_dimension_across_periods(db_session: AsyncSession):
-    """A user can track the same dimension across multiple periods (history)."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    db_session.add(make_score(user.id, dimension.id, period="2026-05", score=6.0))
-    db_session.add(make_score(user.id, dimension.id, period="2026-06", score=7.5))
+    db_session.add(make_score(org.id, user.id, dimension.id, period="2026-05", score=6.0))
+    db_session.add(make_score(org.id, user.id, dimension.id, period="2026-06", score=7.5))
     await db_session.flush()
 
     result = await db_session.execute(
         select(WellbeingScore).where(
+            WellbeingScore.organization_id == org.id,
             WellbeingScore.user_id == user.id,
             WellbeingScore.dimension_id == dimension.id,
         )
@@ -301,62 +417,103 @@ async def test_user_can_have_same_dimension_across_periods(db_session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_user_delete_cascades_to_scores(db_session: AsyncSession):
-    """Deleting a user removes their wellbeing scores."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+async def test_org_delete_cascades_to_scores(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
+    score_id = score.id
 
-    await db_session.delete(user)
+    await db_session.delete(org)
     await db_session.flush()
 
-    result = await db_session.execute(select(WellbeingScore).where(WellbeingScore.id == score.id))
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.id == score_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_user_delete_cascades_to_scores(db_session: AsyncSession):
+    # Setup organization (and its protected owner user)
+    owner, org = await setup_org(db_session)
+
+    # Create a separate member user who is NOT the organization owner
+    member = await make_member(db_session, org.id, email="member@example.com")
+
+    dimension = make_dimension()
+    db_session.add(dimension)
+    await db_session.flush()
+
+    score = make_score(org.id, member.id, dimension.id)
+    db_session.add(score)
+    await db_session.flush()
+    score_id = score.id
+
+    # Delete the member, leaving the owner completely intact
+    await db_session.delete(member)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.id == score_id)
+    )
     assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
 async def test_dimension_delete_cascades_to_scores(db_session: AsyncSession):
-    """Deleting a dimension removes scores tied to it."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
 
     await db_session.delete(dimension)
     await db_session.flush()
 
-    result = await db_session.execute(select(WellbeingScore).where(WellbeingScore.id == score.id))
+    result = await db_session.execute(
+        select(WellbeingScore).where(WellbeingScore.id == score.id)
+    )
     assert result.scalar_one_or_none() is None
 
 
-# ── WellbeingScore relationships ─────────────────────────────────────────────────
+# ── WellbeingScore relationships ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_score_user_relationship(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+async def test_score_organization_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
+    db_session.add(score)
+    await db_session.flush()
+    await db_session.refresh(score, ["organization"])
+
+    assert score.organization is not None
+    assert score.organization.id == org.id
+
+
+@pytest.mark.asyncio
+async def test_score_user_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    dimension = make_dimension()
+    db_session.add(dimension)
+    await db_session.flush()
+
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
     await db_session.refresh(score, ["user"])
@@ -367,15 +524,13 @@ async def test_score_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_score_dimension_relationship(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    score = make_score(user.id, dimension.id)
+    score = make_score(org.id, user.id, dimension.id)
     db_session.add(score)
     await db_session.flush()
     await db_session.refresh(score, ["dimension"])
@@ -385,19 +540,34 @@ async def test_score_dimension_relationship(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_dimension_scores_relationship(db_session: AsyncSession):
-    """dimension.scores loads all WellbeingScore rows for that dimension."""
-    user1 = make_user(email="u1@example.com")
-    user2 = make_user(email="u2@example.com")
-    db_session.add_all([user1, user2])
+async def test_organization_wellbeing_scores_relationship(db_session: AsyncSession):
+    """org.wellbeing_scores loads all WellbeingScore rows for that org."""
+    user, org = await setup_org(db_session)
+
+    physical = make_dimension(name="Physical")
+    mental = make_dimension(name="Mental")
+    db_session.add_all([physical, mental])
     await db_session.flush()
+
+    db_session.add(make_score(org.id, user.id, physical.id))
+    db_session.add(make_score(org.id, user.id, mental.id))
+    await db_session.flush()
+    await db_session.refresh(org, ["wellbeing_scores"])
+
+    assert len(org.wellbeing_scores) == 2
+
+
+@pytest.mark.asyncio
+async def test_dimension_scores_relationship(db_session: AsyncSession):
+    user1, org1 = await setup_org(db_session, email="o1@example.com", slug="org-1")
+    user2, org2 = await setup_org(db_session, email="o2@example.com", slug="org-2")
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    db_session.add(make_score(user1.id, dimension.id))
-    db_session.add(make_score(user2.id, dimension.id))
+    db_session.add(make_score(org1.id, user1.id, dimension.id))
+    db_session.add(make_score(org2.id, user2.id, dimension.id))
     await db_session.flush()
     await db_session.refresh(dimension, ["scores"])
 
@@ -406,35 +576,26 @@ async def test_dimension_scores_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_wellbeing_scores_relationship(db_session: AsyncSession):
-    """user.wellbeing_scores loads all WellbeingScore rows for that user."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     physical = make_dimension(name="Physical")
     mental = make_dimension(name="Mental")
     db_session.add_all([physical, mental])
     await db_session.flush()
 
-    db_session.add(make_score(user.id, physical.id))
-    db_session.add(make_score(user.id, mental.id))
+    db_session.add(make_score(org.id, user.id, physical.id))
+    db_session.add(make_score(org.id, user.id, mental.id))
     await db_session.flush()
     await db_session.refresh(user, ["wellbeing_scores"])
 
     assert len(user.wellbeing_scores) == 2
 
 
-# ── OrganizationWellbeingChallenge model ────────────────────────────────────────
+# ── OrganizationWellbeingChallenge ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_organization_wellbeing_challenge_persists(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -454,13 +615,7 @@ async def test_organization_wellbeing_challenge_persists(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_org_wellbeing_challenge_id_is_uuid_format(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -477,14 +632,7 @@ async def test_org_wellbeing_challenge_id_is_uuid_format(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_organization_cannot_opt_into_same_challenge_twice(db_session: AsyncSession):
-    """Unique constraint on (organization_id, wellbeing_challenge_id)."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -500,7 +648,6 @@ async def test_organization_cannot_opt_into_same_challenge_twice(db_session: Asy
 
 @pytest.mark.asyncio
 async def test_org_wellbeing_challenge_org_fk_must_exist(db_session: AsyncSession):
-    """organization_id must reference a real organization."""
     challenge = make_challenge()
     db_session.add(challenge)
     await db_session.flush()
@@ -516,14 +663,7 @@ async def test_org_wellbeing_challenge_org_fk_must_exist(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_org_wellbeing_challenge_challenge_fk_must_exist(db_session: AsyncSession):
-    """wellbeing_challenge_id must reference a real wellbeing challenge."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     link = make_org_wellbeing_challenge(
         organization_id=org.id,
@@ -536,14 +676,7 @@ async def test_org_wellbeing_challenge_challenge_fk_must_exist(db_session: Async
 
 @pytest.mark.asyncio
 async def test_organization_delete_cascades_to_wellbeing_challenges(db_session: AsyncSession):
-    """Deleting an organization cascades to its wellbeing challenge links."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -565,14 +698,7 @@ async def test_organization_delete_cascades_to_wellbeing_challenges(db_session: 
 
 @pytest.mark.asyncio
 async def test_wellbeing_challenge_delete_cascades_to_links(db_session: AsyncSession):
-    """Deleting a wellbeing challenge cascades to its org links."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -592,17 +718,9 @@ async def test_wellbeing_challenge_delete_cascades_to_links(db_session: AsyncSes
     assert result.scalar_one_or_none() is None
 
 
-# ── OrganizationWellbeingChallenge relationships ────────────────────────────────
-
 @pytest.mark.asyncio
 async def test_org_wellbeing_challenge_organization_relationship(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -619,13 +737,7 @@ async def test_org_wellbeing_challenge_organization_relationship(db_session: Asy
 
 @pytest.mark.asyncio
 async def test_org_wellbeing_challenge_challenge_relationship(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -642,14 +754,7 @@ async def test_org_wellbeing_challenge_challenge_relationship(db_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_organization_wellbeing_challenges_relationship(db_session: AsyncSession):
-    """org.wellbeing_challenges loads all linked WellbeingChallenge categories."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id)
-    db_session.add(org)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
     fitness = make_challenge(name="Fitness")
     mental_health = make_challenge(name="Mental Health")
@@ -666,22 +771,8 @@ async def test_organization_wellbeing_challenges_relationship(db_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_wellbeing_challenge_organizations_relationship(db_session: AsyncSession):
-    """challenge.organizations loads all orgs that opted into that category."""
-    user1 = make_user(email="owner1@example.com")
-    db_session.add(user1)
-    await db_session.flush()
-
-    org_a = make_org(user1.id, slug="org-a", business_name="Org A")
-    db_session.add(org_a)
-    await db_session.flush()
-
-    user2 = make_user(email="owner2@example.com")
-    db_session.add(user2)
-    await db_session.flush()
-
-    org_b = make_org(user2.id, slug="org-b", business_name="Org B")
-    db_session.add(org_b)
-    await db_session.flush()
+    user1, org_a = await setup_org(db_session, email="owner1@example.com", slug="org-a")
+    user2, org_b = await setup_org(db_session, email="owner2@example.com", slug="org-b")
 
     challenge = make_challenge()
     db_session.add(challenge)
@@ -694,20 +785,14 @@ async def test_wellbeing_challenge_organizations_relationship(db_session: AsyncS
 
     assert len(challenge.organizations) == 2
 
-   
-   
-   
-# UserWellbeingBaseline model 
 
-
+# ── UserWellbeingBaseline ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_baseline_persists(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
-    baseline = make_baseline(user.id)
+    baseline = make_baseline(org.id, user.id)
     db_session.add(baseline)
     await db_session.flush()
 
@@ -715,6 +800,7 @@ async def test_baseline_persists(db_session: AsyncSession):
         select(UserWellbeingBaseline).where(UserWellbeingBaseline.id == baseline.id)
     )
     fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
     assert fetched.dimension == "mood"
     assert fetched.level == "good"
     assert fetched.reason == "work"
@@ -723,11 +809,9 @@ async def test_baseline_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_baseline_id_is_uuid_format(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
-    baseline = make_baseline(user.id)
+    baseline = make_baseline(org.id, user.id)
     db_session.add(baseline)
     await db_session.flush()
 
@@ -737,20 +821,56 @@ async def test_baseline_id_is_uuid_format(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_user_can_have_baselines_for_multiple_dimensions(db_session: AsyncSession):
-    """A user gets one baseline per dimension captured at signup."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+async def test_baseline_filterable_by_org(db_session: AsyncSession):
+    """Baselines from org A are directly queryable by organization_id."""
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
 
-    db_session.add(make_baseline(user.id, dimension="mood", level="good"))
-    db_session.add(make_baseline(user.id, dimension="stress", level="stressed"))
-    db_session.add(make_baseline(user.id, dimension="energy", level="tired"))
-    db_session.add(make_baseline(user.id, dimension="work_life_balance", level="bad"))
+    db_session.add(make_baseline(org_a.id, user_a.id, level="good"))
+    db_session.add(make_baseline(org_b.id, user_b.id, level="bad"))
     await db_session.flush()
 
     result = await db_session.execute(
-        select(UserWellbeingBaseline).where(UserWellbeingBaseline.user_id == user.id)
+        select(UserWellbeingBaseline).where(
+            UserWellbeingBaseline.organization_id == org_a.id
+        )
+    )
+    baselines = result.scalars().all()
+    assert len(baselines) == 1
+    assert baselines[0].level == "good"
+
+
+@pytest.mark.asyncio
+async def test_baseline_cross_tenant_isolation(db_session: AsyncSession):
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
+
+    db_session.add(make_baseline(org_a.id, user_a.id))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserWellbeingBaseline).where(
+            UserWellbeingBaseline.organization_id == org_b.id
+        )
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_user_can_have_baselines_for_multiple_dimensions(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    db_session.add(make_baseline(org.id, user.id, dimension="mood", level="good"))
+    db_session.add(make_baseline(org.id, user.id, dimension="stress", level="stressed"))
+    db_session.add(make_baseline(org.id, user.id, dimension="energy", level="tired"))
+    db_session.add(make_baseline(org.id, user.id, dimension="work_life_balance", level="bad"))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserWellbeingBaseline).where(
+            UserWellbeingBaseline.organization_id == org.id,
+            UserWellbeingBaseline.user_id == user.id,
+        )
     )
     dimensions = {b.dimension for b in result.scalars().all()}
     assert dimensions == {"mood", "stress", "energy", "work_life_balance"}
@@ -758,11 +878,9 @@ async def test_user_can_have_baselines_for_multiple_dimensions(db_session: Async
 
 @pytest.mark.asyncio
 async def test_baseline_reason_is_optional(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+    user, org = await setup_org(db_session)
 
-    baseline = make_baseline(user.id, reason=None)
+    baseline = make_baseline(org.id, user.id, reason=None)
     db_session.add(baseline)
     await db_session.flush()
 
@@ -770,25 +888,42 @@ async def test_baseline_reason_is_optional(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_baseline_user_fk_must_exist(db_session: AsyncSession):
-    baseline = make_baseline(user_id="00000000-0000-0000-0000-000000000000")
+async def test_baseline_org_fk_must_exist(db_session: AsyncSession):
+    _, org = await setup_org(db_session, email="placeholder2@example.com")
+    member = await make_member(db_session, org.id, email="baseline-fk-test@example.com")
+
+    baseline = make_baseline(
+        organization_id="00000000-0000-0000-0000-000000000000",
+        user_id=member.id,
+    )
     db_session.add(baseline)
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
 
 @pytest.mark.asyncio
-async def test_user_delete_cascades_to_baselines(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+async def test_baseline_user_fk_must_exist(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
 
-    baseline = make_baseline(user.id)
+    baseline = make_baseline(
+        organization_id=org.id,
+        user_id="00000000-0000-0000-0000-000000000000",
+    )
+    db_session.add(baseline)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_org_delete_cascades_to_baselines(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    baseline = make_baseline(org.id, user.id)
     db_session.add(baseline)
     await db_session.flush()
     baseline_id = baseline.id
 
-    await db_session.delete(user)
+    await db_session.delete(org)
     await db_session.flush()
 
     result = await db_session.execute(
@@ -798,12 +933,46 @@ async def test_user_delete_cascades_to_baselines(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_baseline_user_relationship(db_session: AsyncSession):
-    user = make_user()
-    db_session.add(user)
+async def test_user_delete_cascades_to_baselines(db_session: AsyncSession):
+    # Setup organization (and its protected owner user)
+    owner, org = await setup_org(db_session)
+
+    # Create a separate member user who is NOT the organization owner
+    member = await make_member(db_session, org.id, email="member@example.com")
+
+    baseline = make_baseline(org.id, member.id)
+    db_session.add(baseline)
+    await db_session.flush()
+    baseline_id = baseline.id
+
+    # Delete the member, leaving the owner completely intact
+    await db_session.delete(member)
     await db_session.flush()
 
-    baseline = make_baseline(user.id)
+    result = await db_session.execute(
+        select(UserWellbeingBaseline).where(UserWellbeingBaseline.id == baseline_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_baseline_organization_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    baseline = make_baseline(org.id, user.id)
+    db_session.add(baseline)
+    await db_session.flush()
+    await db_session.refresh(baseline, ["organization"])
+
+    assert baseline.organization is not None
+    assert baseline.organization.id == org.id
+
+
+@pytest.mark.asyncio
+async def test_baseline_user_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    baseline = make_baseline(org.id, user.id)
     db_session.add(baseline)
     await db_session.flush()
     await db_session.refresh(baseline, ["user"])
@@ -813,15 +982,356 @@ async def test_baseline_user_relationship(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_user_wellbeing_baselines_relationship(db_session: AsyncSession):
-    """user.wellbeing_baselines loads all baseline rows for that user."""
-    user = make_user()
-    db_session.add(user)
-    await db_session.flush()
+async def test_organization_wellbeing_baselines_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
 
-    db_session.add(make_baseline(user.id, dimension="mood"))
-    db_session.add(make_baseline(user.id, dimension="stress"))
+    db_session.add(make_baseline(org.id, user.id, dimension="mood"))
+    db_session.add(make_baseline(org.id, user.id, dimension="stress"))
+    await db_session.flush()
+    await db_session.refresh(org, ["wellbeing_baselines"])
+
+    assert len(org.wellbeing_baselines) == 2
+
+
+@pytest.mark.asyncio
+async def test_user_wellbeing_baselines_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    db_session.add(make_baseline(org.id, user.id, dimension="mood"))
+    db_session.add(make_baseline(org.id, user.id, dimension="stress"))
     await db_session.flush()
     await db_session.refresh(user, ["wellbeing_baselines"])
 
     assert len(user.wellbeing_baselines) == 2
+
+
+# ── UserHealthAssessment ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_assessment_persists(db_session: AsyncSession):
+    user, org = await setup_org(db_session, email="owner@example.com")
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.id == assessment.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
+    assert fetched.user_id == user.id
+    assert fetched.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_id_is_uuid_format(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    parts = assessment.id.split("-")
+    assert len(parts) == 5
+    assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_timestamps_auto_set(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    assert assessment.created_at is not None
+    assert assessment.updated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_default_status_is_pending(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    assert assessment.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_optional_fields_nullable(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    assert assessment.category_id is None
+    assert assessment.risk_score is None
+    assert assessment.assessed_at is None
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_full_fields(db_session: AsyncSession):
+    from datetime import datetime, timezone
+
+    user, org = await setup_org(db_session)
+
+    category = make_health_category()
+    db_session.add(category)
+    await db_session.flush()
+
+    now = datetime.now(timezone.utc)
+    assessment = make_health_assessment(
+        org.id,
+        user.id,
+        category_id=category.id,
+        risk_score=72.5,
+        status="completed",
+        assessed_at=now,
+    )
+    db_session.add(assessment)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.id == assessment.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.organization_id == org.id
+    assert fetched.category_id == category.id
+    assert float(fetched.risk_score) == 72.5
+    assert fetched.status == "completed"
+    assert fetched.assessed_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "completed", "reviewed"])
+async def test_health_assessment_accepts_any_status(db_session: AsyncSession, status: str):
+    user, org = await setup_org(db_session, email=f"owner-{status}@example.com", slug=f"org-{status}")
+
+    assessment = make_health_assessment(org.id, user.id, status=status)
+    db_session.add(assessment)
+    await db_session.flush()
+    assert assessment.status == status
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_filterable_by_org(db_session: AsyncSession):
+    """Assessments from org A are directly queryable by organization_id."""
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
+
+    db_session.add(make_health_assessment(org_a.id, user_a.id, status="completed"))
+    db_session.add(make_health_assessment(org_b.id, user_b.id, status="pending"))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.organization_id == org_a.id)
+    )
+    assessments = result.scalars().all()
+    assert len(assessments) == 1
+    assert assessments[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_cross_tenant_isolation(db_session: AsyncSession):
+    user_a, org_a = await setup_org(db_session, email="owner_a@example.com", slug="org-a")
+    user_b, org_b = await setup_org(db_session, email="owner_b@example.com", slug="org-b")
+
+    db_session.add(make_health_assessment(org_a.id, user_a.id))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.organization_id == org_b.id)
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_org_fk_must_exist(db_session: AsyncSession):
+    _, org = await setup_org(db_session, email="placeholder3@example.com")
+    member = await make_member(db_session, org.id, email="health-fk-test@example.com")
+
+    assessment = make_health_assessment(
+        organization_id="00000000-0000-0000-0000-000000000000",
+        user_id=member.id,
+    )
+    db_session.add(assessment)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_user_fk_must_exist(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(
+        organization_id=org.id,
+        user_id="00000000-0000-0000-0000-000000000000",
+    )
+    db_session.add(assessment)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_category_fk_must_exist(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(
+        org.id,
+        user.id,
+        category_id="00000000-0000-0000-0000-000000000000",
+    )
+    db_session.add(assessment)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_org_delete_cascades_to_health_assessments(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+    assessment_id = assessment.id
+
+    await db_session.delete(org)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.id == assessment_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_user_delete_cascades_to_health_assessments(db_session: AsyncSession):
+    # Setup organization (and its protected owner user)
+    owner, org = await setup_org(db_session)
+
+    # Create a separate member user who is NOT the organization owner
+    member = await make_member(db_session, org.id, email="member@example.com")
+
+    assessment = make_health_assessment(org.id, member.id)
+    db_session.add(assessment)
+    await db_session.flush()
+    assessment_id = assessment.id
+
+    # Delete the member, leaving the owner completely intact
+    await db_session.delete(member)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserHealthAssessment).where(UserHealthAssessment.id == assessment_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_health_category_delete_nullifies_category_id(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    category = make_health_category()
+    db_session.add(category)
+    await db_session.flush()
+
+    assessment = make_health_assessment(org.id, user.id, category_id=category.id)
+    db_session.add(assessment)
+    await db_session.flush()
+
+    await db_session.delete(category)
+    await db_session.flush()
+    await db_session.refresh(assessment)
+
+    assert assessment.category_id is None
+    assert assessment.id is not None
+
+
+# ── UserHealthAssessment relationships ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_assessment_organization_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+    await db_session.refresh(assessment, ["organization"])
+
+    assert assessment.organization is not None
+    assert assessment.organization.id == org.id
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_user_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    assessment = make_health_assessment(org.id, user.id)
+    db_session.add(assessment)
+    await db_session.flush()
+    await db_session.refresh(assessment, ["user"])
+
+    assert assessment.user is not None
+    assert assessment.user.id == user.id
+
+
+@pytest.mark.asyncio
+async def test_health_assessment_category_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    category = make_health_category()
+    db_session.add(category)
+    await db_session.flush()
+
+    assessment = make_health_assessment(org.id, user.id, category_id=category.id)
+    db_session.add(assessment)
+    await db_session.flush()
+    await db_session.refresh(assessment, ["category"])
+
+    assert assessment.category is not None
+    assert assessment.category.id == category.id
+
+
+@pytest.mark.asyncio
+async def test_organization_health_assessments_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    db_session.add(make_health_assessment(org.id, user.id, status="pending"))
+    db_session.add(make_health_assessment(org.id, user.id, status="completed"))
+    await db_session.flush()
+    await db_session.refresh(org, ["health_assessments"])
+
+    assert len(org.health_assessments) == 2
+
+
+@pytest.mark.asyncio
+async def test_user_health_assessments_relationship(db_session: AsyncSession):
+    user, org = await setup_org(db_session)
+
+    db_session.add(make_health_assessment(org.id, user.id, status="pending"))
+    db_session.add(make_health_assessment(org.id, user.id, status="completed"))
+    await db_session.flush()
+    await db_session.refresh(user, ["health_assessments"])
+
+    assert len(user.health_assessments) == 2
+
+
+@pytest.mark.asyncio
+async def test_health_category_assessments_relationship(db_session: AsyncSession):
+    user1, org1 = await setup_org(db_session, email="o1@example.com", slug="org-1")
+    user2, org2 = await setup_org(db_session, email="o2@example.com", slug="org-2")
+
+    category = make_health_category()
+    db_session.add(category)
+    await db_session.flush()
+
+    db_session.add(make_health_assessment(org1.id, user1.id, category_id=category.id))
+    db_session.add(make_health_assessment(org2.id, user2.id, category_id=category.id))
+    await db_session.flush()
+    await db_session.refresh(category, ["assessments"])
+
+    assert len(category.assessments) == 2

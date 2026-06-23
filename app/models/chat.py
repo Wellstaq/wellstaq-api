@@ -31,6 +31,9 @@ GroupChatMessage design:
   (conversation_type, conversation_id) WHERE is_pinned = true — the DB
   rejects a second pin attempt outright, no "check then set" race
   condition possible.
+- Pin consistency: when is_pinned is true, pinned_by and pinned_at must
+  both be non-null (no ghost audit trail, no broken state). Enforced via
+  a CHECK constraint.
 - Pinning/unpinning is restricted to admins/managers — that's a
   permission rule, not a structural constraint, so it's enforced in the
   service layer, not here. pinned_by is just an audit pointer to who
@@ -50,6 +53,8 @@ DirectMessage design:
 - Personal 1:1 messaging between two users, separate from
   GroupChatMessage. Sender and recipient must belong to the same
   organization (enforced in the service layer).
+- sender_id and recipient_id must differ — self-messaging is not a
+  supported feature and is rejected at the DB level.
 - content is nullable, same content-or-media CHECK constraint as above.
 - No pinning here — pinning only applies to group chats, per product
   decision.
@@ -103,6 +108,8 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Pinning — only one pinned message per conversation, enforced by the
     # partial unique index in __table_args__. Who is allowed to pin is an
     # app-layer permission check (admin/manager only), not a DB rule.
+    # When is_pinned is true, pinned_by and pinned_at must both be set —
+    # enforced by ck_group_chat_message_pin_consistency.
     is_pinned: Mapped[bool] = mapped_column(nullable=False, default=False)
     pinned_by: Mapped[str | None] = mapped_column(
         String(36),
@@ -153,6 +160,16 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "conversation_type IN ('club', 'event')",
             name="ck_group_chat_message_conversation_type",
+        ),
+        # Pin consistency — two rules:
+        # 1. is_pinned=true requires both audit fields (no broken audit trail).
+        # 2. is_pinned=false requires both audit fields to be null (no ghost state).
+        # Together they guarantee the three fields are always in sync.
+        CheckConstraint(
+            "(is_pinned = 0 AND pinned_by IS NULL AND pinned_at IS NULL)"
+            " OR "
+            "(is_pinned = 1 AND pinned_by IS NOT NULL AND pinned_at IS NOT NULL)",
+            name="ck_group_chat_message_pin_consistency",
         ),
     )
 
@@ -230,6 +247,11 @@ class DirectMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "content IS NOT NULL OR media_url IS NOT NULL",
             name="ck_direct_message_content_or_media",
+        ),
+        # Self-messaging is not a supported feature.
+        CheckConstraint(
+            "sender_id <> recipient_id",
+            name="ck_direct_message_no_self_message",
         ),
     )
 

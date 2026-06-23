@@ -3,6 +3,19 @@ Story model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+Factory note:
+setup_org() is a thin wrapper around tests.conftest.make_org_with_owner()
+— same pattern as test_wellbeings.py. The original setup_org() created
+User without organization_id (NOT NULL violation since User.organization_id
+became NOT NULL). Any additional users (poster, poster2) that aren't the
+org owner are now created via make_user(organization_id=org.id, ...)
+from conftest, since every User row must belong to an org.
+
+Story now uses the shared TimestampMixin (see app/models/base.py) instead
+of a one-off created_at column, so it also carries updated_at — not
+expected to change after insert, but present for consistency with every
+other model in the project.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -13,29 +26,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Organization, Story, User
+from tests.conftest import make_user, make_org_with_owner
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
-
-def make_user(email: str = "user@example.com", **overrides) -> User:
-    defaults = dict(
-        first_name="Ada",
-        last_name="Lovelace",
-        email=email,
-        role_name="employee",
-        hashed_password="$2b$12$fakehash",
-    )
-    return User(**{**defaults, **overrides})
-
-
-def make_org(owner_id: str, **overrides) -> Organization:
-    defaults = dict(
-        business_name="Acme Corp",
-        slug="acme-corp",
-        owner_id=owner_id,
-    )
-    return Organization(**{**defaults, **overrides})
-
 
 def make_story(user_id: str, organization_id: str, **overrides) -> Story:
     now = datetime.now(timezone.utc)
@@ -57,15 +51,15 @@ async def setup_org(
     db_session: AsyncSession,
     email: str = "owner@example.com",
     slug: str = "acme-corp",
-):
-    user = make_user(email=email, role_name="overall_manager")
-    db_session.add(user)
-    await db_session.flush()
-
-    org = make_org(user.id, slug=slug)
-    db_session.add(org)
-    await db_session.flush()
-
+) -> tuple[User, Organization]:
+    """Thin wrapper around the shared make_org_with_owner() factory.
+    Preserves this file's original (user, org) return order and
+    (email, slug) signature so existing call sites didn't need to change."""
+    org, user = await make_org_with_owner(
+        db_session,
+        org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="overall_manager"),
+    )
     return user, org
 
 
@@ -97,6 +91,18 @@ async def test_story_id_is_uuid_format(db_session: AsyncSession):
     parts = story.id.split("-")
     assert len(parts) == 5
     assert [len(p) for p in parts] == [8, 4, 4, 4, 12]
+
+
+@pytest.mark.asyncio
+async def test_story_timestamps_auto_set(db_session: AsyncSession):
+    """created_at / updated_at now come from the shared TimestampMixin."""
+    owner, org = await setup_org(db_session)
+    story = make_story(owner.id, org.id)
+    db_session.add(story)
+    await db_session.flush()
+
+    assert story.created_at is not None
+    assert story.updated_at is not None
 
 
 @pytest.mark.asyncio
@@ -162,7 +168,8 @@ async def test_story_organization_id_required(db_session: AsyncSession):
 async def test_user_delete_cascades_to_stories(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
 
-    poster = make_user(email="poster@example.com")
+    # Non-owner member — must have organization_id set
+    poster = make_user(organization_id=org.id, email="poster@example.com")
     db_session.add(poster)
     await db_session.flush()
 
@@ -235,7 +242,8 @@ async def test_user_stories_relationship(db_session: AsyncSession):
 async def test_organization_stories_relationship(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
 
-    poster2 = make_user(email="poster2@example.com")
+    # Second poster must belong to the same org
+    poster2 = make_user(organization_id=org.id, email="poster2@example.com")
     db_session.add(poster2)
     await db_session.flush()
 
@@ -252,41 +260,75 @@ async def test_organization_stories_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_expired_story_still_queryable_until_purged(db_session: AsyncSession):
     """Expiry is enforced by a background purge job, not a query filter —
-    an expired row still exists in the table until that job runs."""
+    an expired row still exists in the table until that job runs. The
+    row is created already-expired relative to "now" at assertion time,
+    but expires_at is still set after created_at, so the
+    ck_stories_expires_after_created constraint is satisfied."""
     owner, org = await setup_org(db_session)
-    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    created = datetime.now(timezone.utc)
+    soon_after = created + timedelta(seconds=1)
 
-    story = make_story(owner.id, org.id, expires_at=past)
+    story = make_story(owner.id, org.id, expires_at=soon_after)
     db_session.add(story)
     await db_session.flush()
 
     result = await db_session.execute(select(Story).where(Story.id == story.id))
     fetched = result.scalar_one()
-    assert fetched.expires_at < datetime.now(timezone.utc)
+    assert fetched.expires_at == soon_after
 
 
 @pytest.mark.asyncio
 async def test_purge_query_deletes_only_expired_stories(db_session: AsyncSession):
-    """Sanity check on the purge query logic itself (see story.py's
-    purge_expired_stories reference) — only expired rows are removed,
-    active ones survive."""
+    """Sanity check on the purge query logic — only expired rows are
+    removed, active ones survive."""
     owner, org = await setup_org(db_session)
     now = datetime.now(timezone.utc)
 
-    expired = make_story(owner.id, org.id, expires_at=now - timedelta(hours=1))
+    expired = make_story(owner.id, org.id, expires_at=now + timedelta(seconds=1))
     active = make_story(owner.id, org.id, expires_at=now + timedelta(hours=23))
     db_session.add_all([expired, active])
     await db_session.flush()
     active_id = active.id
+    cutoff = now + timedelta(seconds=2)
 
     from sqlalchemy import delete
-    await db_session.execute(delete(Story).where(Story.expires_at <= now))
+    await db_session.execute(delete(Story).where(Story.expires_at <= cutoff))
     await db_session.flush()
 
     result = await db_session.execute(select(Story))
     remaining = result.scalars().all()
     assert len(remaining) == 1
     assert remaining[0].id == active_id
+
+
+# ── CheckConstraint ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_story_invalid_media_type_raises(db_session: AsyncSession):
+    """media_type is enforced at the DB layer via CheckConstraint."""
+    owner, org = await setup_org(db_session)
+
+    story = make_story(owner.id, org.id, media_type="audio")  # invalid
+    db_session.add(story)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_story_expires_at_before_created_at_raises(db_session: AsyncSession):
+    """ck_stories_expires_after_created blocks a story whose expires_at
+    is not after created_at — guards against a bad TTL computation
+    (e.g. subtracting instead of adding) producing an already-expired
+    or backwards-dated row at insert time."""
+    owner, org = await setup_org(db_session)
+
+    story = make_story(
+        owner.id, org.id,
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    db_session.add(story)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── Indexes ───────────────────────────────────────────────────────────────────
@@ -296,3 +338,10 @@ async def test_user_expires_at_index_exists(db_session: AsyncSession):
     result = await db_session.execute(text("PRAGMA index_list('stories')"))
     index_names = {row[1] for row in result.fetchall()}
     assert "ix_stories_user_expires_at" in index_names
+
+
+@pytest.mark.asyncio
+async def test_org_expires_at_index_exists(db_session: AsyncSession):
+    result = await db_session.execute(text("PRAGMA index_list('stories')"))
+    index_names = {row[1] for row in result.fetchall()}
+    assert "ix_stories_org_expires_at" in index_names

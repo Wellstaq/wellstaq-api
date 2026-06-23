@@ -10,13 +10,21 @@ UserPriority design principles:
   app layer is responsible for keeping ranks sane (1..N, no gaps/dupes)
   since enforcing that at the DB level would block normal reordering
   operations (swap two ranks = transient duplicate mid-update).
+  A CheckConstraint(rank > 0) is still enforced at the DB level —
+  it doesn't interfere with reordering (which swaps existing positive
+  values), it only rejects nonsensical values like 0 or negatives
+  reaching the DB if app-layer validation is ever bypassed or buggy.
 - ondelete=CASCADE on user_id — priorities are meaningless without the
   user they belong to.
 
 DailyCheckin design principles:
 - mood / energy_level / stress_level are free strings sharing the same
-  vocabulary (good | bad | stressed | tired) per the schema notes —
-  validated at the app layer, not a DB enum.
+  vocabulary (good | bad | stressed | tired) per the schema notes.
+  This vocabulary is small and fixed, so it's enforced with a DB-level
+  CheckConstraint (IN (...)) rather than a Postgres enum type or a
+  reference table — cheaper than an enum migration, and it directly
+  prevents dirty-data variants ("Good", "GOOD", "gud") from ever
+  reaching the table, regardless of what the app layer does.
 - checked_in_at is the precise timestamp of the check-in.
 - checkin_date is a separate plain Date column, NOT in the original
   DBML, added specifically to enforce "one check-in per user per day"
@@ -27,6 +35,13 @@ DailyCheckin design principles:
   and "did this user check in today" queries are both simple equality
   lookups on an indexed Date column instead of a date-range scan over
   a timestamp column.
+  NOTE: checkin_date is currently derived from UTC
+  (datetime.now(timezone.utc).date()), which means it reflects the
+  server's calendar day, not the user's local calendar day. This is a
+  known simplification while the schema is still being designed and
+  the project runs on SQLite — revisit once user-level timezone
+  storage is in place, since a user checking in late at night or early
+  morning local time could otherwise be recorded against the wrong day.
 - ondelete=CASCADE on user_id — a check-in is meaningless without the
   user who submitted it.
 
@@ -38,6 +53,10 @@ UserActivityFeed design principles:
   enforced at the app layer, not the DB — same tradeoff already made
   for Branch.created_by / Event-style audit fields, just applied to a
   polymorphic reference instead of a single user reference.
+  A CheckConstraint enforces that reference_type and reference_id are
+  either both NULL or both set — that pairing invariant is cheap to
+  guarantee at the DB level and doesn't depend on every write path
+  remembering to validate it.
 - activity_type is a free string (app-layer validated).
 - organization_id is required (NOT NULL), ondelete=CASCADE — per
   decision, every activity always happens within an org context.
@@ -61,10 +80,25 @@ UserActivityFeed design principles:
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+# Shared vocabulary for DailyCheckin.mood / energy_level / stress_level.
+# Kept as a module-level tuple so the CheckConstraint and any app-layer
+# validation can both reference the same source of truth.
+CHECKIN_VOCABULARY = ("good", "bad", "stressed", "tired")
 
 
 class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -81,7 +115,8 @@ class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Priority data ─────────────────────────────────────────────────────
     # Free string — e.g. reduce_stress | improve_balance | build_energy
     priority: Mapped[str] = mapped_column(String(100), nullable=False)
-    # 1 = highest priority. Ordering/uniqueness enforced at the app layer.
+    # 1 = highest priority. Ordering/uniqueness enforced at the app layer;
+    # rank > 0 enforced at the DB layer (see CheckConstraint below).
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # ── Relationships ─────────────────────────────────────────────────────
@@ -89,6 +124,10 @@ class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "User",
         back_populates="priorities",
         foreign_keys=[user_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint("rank > 0", name="ck_user_priorities_rank_positive"),
     )
 
     def __repr__(self) -> str:
@@ -107,7 +146,8 @@ class DailyCheckin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # ── Check-in data ─────────────────────────────────────────────────────
-    # Free strings sharing the good | bad | stressed | tired vocabulary
+    # Free strings sharing the good | bad | stressed | tired vocabulary,
+    # enforced at the DB layer via CheckConstraint (see __table_args__).
     mood: Mapped[str] = mapped_column(String(50), nullable=False)
     energy_level: Mapped[str] = mapped_column(String(50), nullable=False)
     stress_level: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -120,7 +160,8 @@ class DailyCheckin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     # Plain Date, derived from checked_in_at at write time — backs the
     # one-check-in-per-day constraint and fast "checked in today" /
-    # streak queries. See module docstring for the full reasoning.
+    # streak queries. See module docstring for the full reasoning,
+    # including the known UTC-vs-local-day simplification.
     checkin_date: Mapped[date] = mapped_column(
         Date,
         nullable=False,
@@ -141,6 +182,18 @@ class DailyCheckin(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "user_id",
             "checkin_date",
             unique=True,
+        ),
+        CheckConstraint(
+            "mood IN ('good', 'bad', 'stressed', 'tired')",
+            name="ck_daily_checkins_mood_vocab",
+        ),
+        CheckConstraint(
+            "energy_level IN ('good', 'bad', 'stressed', 'tired')",
+            name="ck_daily_checkins_energy_level_vocab",
+        ),
+        CheckConstraint(
+            "stress_level IN ('good', 'bad', 'stressed', 'tired')",
+            name="ck_daily_checkins_stress_level_vocab",
         ),
     )
 
@@ -171,7 +224,10 @@ class UserActivityFeed(Base, UUIDPrimaryKeyMixin):
     activity_type: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # Polymorphic reference — no real FK possible since reference_type can
-    # point at any one of several tables. Integrity enforced at app layer.
+    # point at any one of several tables. Integrity enforced at app layer,
+    # except for the null-pairing invariant, which is cheap to enforce at
+    # the DB layer (see CheckConstraint below): either both columns are
+    # set, or neither is.
     reference_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # e.g. department | club | event | challenge | post | activity_log
     reference_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -207,6 +263,11 @@ class UserActivityFeed(Base, UUIDPrimaryKeyMixin):
         Index("ix_user_activity_feed_user_created_at", "user_id", "created_at"),
         Index("ix_user_activity_feed_org_created_at", "organization_id", "created_at"),
         Index("ix_user_activity_feed_activity_type", "activity_type"),
+        CheckConstraint(
+            "(reference_type IS NULL AND reference_id IS NULL) OR "
+            "(reference_type IS NOT NULL AND reference_id IS NOT NULL)",
+            name="ck_user_activity_feed_reference_pairing",
+        ),
     )
 
     def __repr__(self) -> str:
