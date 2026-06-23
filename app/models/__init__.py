@@ -28,4 +28,5 @@ from app.models.story import Story
 from app.models.permission import Permission, Role, RolePermission, UserRole
 from app.models.engagement import ActivityLog, EngagementLog
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
+from app.models.payment import SubscriptionPlan, PaymentTransaction, OrganizationSubscription
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

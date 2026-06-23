@@ -347,6 +347,18 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         passive_deletes=True,
     )
 
+    # ── Payment ────────────────────────────────────────────────────────────────
+    subscription: Mapped[Optional["OrganizationSubscription"]] = relationship(
+        "OrganizationSubscription",
+        back_populates="organization",
+        uselist=False,  # one-to-one — an org is on exactly one plan at a time
+    )
+    transactions: Mapped[list["PaymentTransaction"]] = relationship(
+        "PaymentTransaction",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug} owner_id={self.owner_id} active={self.is_active}>"
 
