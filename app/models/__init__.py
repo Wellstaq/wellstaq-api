@@ -26,4 +26,6 @@ from app.models.wellbeing import(
 from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
 from app.models.story import Story
 from app.models.permission import Permission, Role, RolePermission, UserRole
+from app.models.engagement import ActivityLog, EngagementLog
+from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

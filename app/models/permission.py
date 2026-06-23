@@ -335,6 +335,8 @@ class UserRole(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     assigner: Mapped[Optional["User"]] = relationship(
         "User",
         foreign_keys=[assigned_by],
+        back_populates= "assigned_roles",
+        overlaps="assigned_roles",
     )
 
     __table_args__ = (

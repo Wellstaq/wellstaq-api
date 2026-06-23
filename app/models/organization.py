@@ -177,6 +177,29 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    activity_logs: Mapped[list["ActivityLog"]] = relationship(
+        "ActivityLog", back_populates="organization", cascade="all, delete-orphan"
+    )
+    engagement_logs: Mapped[list["EngagementLog"]] = relationship(
+        "EngagementLog", back_populates="organization", cascade="all, delete-orphan"
+    )
+    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(  
+        "LeaderboardSnapshot",  
+        back_populates="organization",  
+        cascade="all, delete-orphan",  
+    )  
+    
+    targets: Mapped[list["Target"]] = relationship(  
+        "Target",  
+        back_populates="organization",  
+        cascade="all, delete-orphan",  
+    )  
+    
+    kpi_snapshots: Mapped[list["KPISnapshot"]] = relationship(  
+        "KPISnapshot",  
+        back_populates="organization",  
+        cascade="all, delete-orphan",  
+    )  
 
     custom_roles: Mapped[list["Role"]] = relationship(
         "Role",

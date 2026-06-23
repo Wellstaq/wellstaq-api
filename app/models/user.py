@@ -257,7 +257,17 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     wellbeing_scores: Mapped[list["WellbeingScore"]] = relationship(
         "WellbeingScore", back_populates="user", cascade="all, delete-orphan",
     )
-
+    activity_logs: Mapped[list["ActivityLog"]] = relationship(
+        "ActivityLog", back_populates="user", cascade="all, delete-orphan"
+    )
+    engagement_logs: Mapped[list["EngagementLog"]] = relationship(
+        "EngagementLog", back_populates="user", cascade="all, delete-orphan"
+    )
+    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(  
+        "LeaderboardSnapshot",  
+        back_populates="user",  
+        cascade="all, delete-orphan",  
+    )  
     user_roles: Mapped[list["UserRole"]] = relationship(
         "UserRole",
         back_populates="user",
@@ -267,7 +277,9 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     assigned_roles: Mapped[list["UserRole"]] = relationship(
         "UserRole",
-        foreign_keys="UserRole.assigned_by",
+        foreign_keys="[UserRole.assigned_by]",
+        back_populates="assigner",
+        overlaps="assigner",
     )
 
     __table_args__ = (
