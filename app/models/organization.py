@@ -17,34 +17,13 @@ Account creation (circular FK):
   atomically, in one transaction. There is never a committed User row
   without an organization_id, and never a committed Organization row
   without an owner_id.
-- To resolve the chicken-and-egg FK (org needs owner_id, user needs
-  organization_id), the signup transaction does:
-    1. INSERT organization (owner_id temporarily NULL at the Python
-       object level — never committed in this state) -> flush() to
-       obtain org.id without committing.
-    2. INSERT user with organization_id = org.id (now satisfiable).
-    3. UPDATE organization.owner_id = user.id.
-    4. COMMIT. Both rows become visible to every other connection
-       fully linked, at the same instant. No other transaction can
-       ever observe an org without an owner or a user without an org.
-  owner_id is therefore nullable at the schema level purely to make
-  step 1 possible — this is a transactional implementation detail,
-  not a valid permanent state. No service-layer code should ever read
-  or rely on owner_id being NULL outside of this single transaction.
+  
+- RESOLVED VIA POST_UPDATE: Because `post_update=True` is configured on 
+  Organization.owner, you do not need to manually manage string IDs and sequential 
+  flush() commands in the service layer. You can cleanly link the Python 
+  objects together in memory, and SQLAlchemy will automatically handle the 
+  "INSERT Org (NULL owner) -> INSERT User -> UPDATE Org (set owner)" sequence.
 
-  KNOWN SCHEMA LIMITATION: owner_id is nullable=True at the DB level,
-  which means the database itself cannot enforce "every committed org
-  has an owner" as a hard constraint. The NOT NULL guarantee is
-  upheld entirely by the application's signup transaction and
-  service-layer discipline — no raw INSERT with owner_id=NULL will
-  be rejected by the DB after the transaction commits. A deferred
-  NOT NULL constraint (PostgreSQL-only via DEFERRABLE INITIALLY
-  DEFERRED) would enforce this at the schema level without breaking
-  the circular-FK bootstrap, and should be considered if this
-  invariant ever needs DB-level enforcement. For now, this is an
-  acknowledged gap: the docstring documents the intent, and
-  test_committed_org_owner_id_cannot_be_null in the test suite
-  documents the current (unenforceable) expectation.
 
 Deactivation vs deletion:
 - is_active / deactivated_at represent suspension — the day-to-day
@@ -110,15 +89,6 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # Ownership
     # User who registered this org — holds Super Admin.
-    # nullable=True is a transactional artifact of circular-FK creation
-    # (see module docstring) — never a valid committed state outside
-    # that single transaction.
-    #
-    # SCHEMA LIMITATION: the DB cannot enforce "committed org must have
-    # owner" because nullable=True is required for the bootstrap
-    # transaction. This is an acknowledged gap — see module docstring
-    # for the full explanation and the path toward a deferred constraint.
-    #
     # ondelete="CASCADE": when an org is deleted by the app owner, the
     # owner's User row is deleted as part of the same cascade chain
     # that deletes all members via User.organization_id. RESTRICT was
@@ -161,13 +131,17 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # deleted. This requires the real database to enforce FKs (Postgres
     # does natively; the test suite's SQLite enables PRAGMA
     # foreign_keys=ON in conftest.py for the same reason).
+    # Identity & other columns remain exactly the same...
+
+    
     owner: Mapped[Optional["User"]] = relationship(
         "User",
         foreign_keys=[owner_id],
         back_populates="owned_organizations",
         passive_deletes=True,
+        post_update=True,  #  Breaks the ORM topological graph cycle and automates circular insertion
     )
-
+ 
     branches: Mapped[list["Branch"]] = relationship(
         "Branch",
         back_populates="organization",
@@ -202,6 +176,20 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "UserActivityFeed",
         back_populates="organization",
         cascade="all, delete-orphan",
+    )
+
+    custom_roles: Mapped[list["Role"]] = relationship(
+        "Role",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+    user_roles: Mapped[list["UserRole"]] = relationship(
+        "UserRole",
+        back_populates="organization",
+        foreign_keys="UserRole.organization_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     # ── Wellbeing ──────────────────────────────────────────────────────────────

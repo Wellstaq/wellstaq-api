@@ -258,6 +258,18 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "WellbeingScore", back_populates="user", cascade="all, delete-orphan",
     )
 
+    user_roles: Mapped[list["UserRole"]] = relationship(
+        "UserRole",
+        back_populates="user",
+        foreign_keys="UserRole.user_id",
+        cascade="all, delete-orphan",
+    )
+
+    assigned_roles: Mapped[list["UserRole"]] = relationship(
+        "UserRole",
+        foreign_keys="UserRole.assigned_by",
+    )
+
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_name"),
         # Constrain status to known values — same pattern as

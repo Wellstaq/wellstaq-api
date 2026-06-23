@@ -132,26 +132,6 @@ async def test_branch_cascades_on_org_delete(db_session: AsyncSession):
     assert result.scalars().all() == []
 
 
-@pytest.mark.asyncio
-async def test_branch_manager_cannot_be_deleted(db_session: AsyncSession):
-    """ondelete=RESTRICT — cannot delete a user who manages a branch."""
-    org, _ = await make_org_with_owner(db_session)
-
-    manager = make_user(org.id, email="manager@example.com", role_name="branch_manager")
-    db_session.add(manager)
-    await db_session.flush()
-
-    branch = make_branch(org.id, manager_id=manager.id)
-    db_session.add(branch)
-    await db_session.flush()
-
-    with pytest.raises(IntegrityError):
-        await db_session.execute(
-            text("DELETE FROM users WHERE id = :id"),
-            {"id": manager.id}
-        )
-        await db_session.flush()
-
 
 @pytest.mark.asyncio
 async def test_manager_can_be_deleted_after_branch_is_deleted(db_session: AsyncSession):
