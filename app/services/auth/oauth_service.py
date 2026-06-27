@@ -30,7 +30,7 @@ from app.core.constants import (
     UserStatus,
 )
 from app.models import User, UserAuthProvider
-from app.services.token_service import issue_tokens
+from .token_service import issue_tokens
 from ._helpers import AuthError, _log_audit
 
 logger = logging.getLogger(__name__)

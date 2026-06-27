@@ -35,7 +35,7 @@ from app.models import (
     UserPriority,
     UserWellbeingBaseline,
 )
-from app.services.token_service import issue_tokens
+from .token_service import issue_tokens
 from ._helpers import (
     AuthError,
     _create_user_settings,
@@ -52,7 +52,7 @@ async def request_invite_otp(session: AsyncSession, invite_code: str) -> str:
     Validate the invite and send an OTP to the invite's email.
     Returns masked email: "j***@example.com".
     """
-    from app.services.otp_service import request_otp
+    from .otp_service import request_otp
 
     now = datetime.now(timezone.utc)
     invite = await _load_pending_invite(session, invite_code, now)
@@ -82,7 +82,7 @@ async def verify_invite_otp(
     FIX: previously returned _mask_email() (wrong). Must return the
     invite_verification_token so the client can pass it to invite_register().
     """
-    from app.services.otp_service import verify_otp
+    from .otp_service import verify_otp
 
     now = datetime.now(timezone.utc)
     invite = await _load_pending_invite(session, invite_code, now)

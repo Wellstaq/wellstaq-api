@@ -20,8 +20,8 @@ from app.core.constants import (
     UserStatus,
 )
 from app.models import User
-from app.services.token_service import issue_tokens
-from app.services.two_factor_service import issue_two_fa_challenge
+from .token_service import issue_tokens
+from .two_factor_service import issue_two_fa_challenge
 from ._helpers import (
     AuthError,
     _log_audit,

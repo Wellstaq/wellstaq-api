@@ -30,7 +30,7 @@ from sqlalchemy.orm import selectinload
 from app.auth import TokenError, decode_token, verify_password
 from app.core.constants import TwoFaMethod, TokenType
 from app.models import User, UserSettings
-from app.services.token_service import issue_tokens, two_fa_challenge_response
+from .token_service import issue_tokens, two_fa_challenge_response
 
 logger = logging.getLogger(__name__)
 

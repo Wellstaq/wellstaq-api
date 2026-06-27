@@ -24,7 +24,7 @@ from app.core.constants import (
     UserStatus,
 )
 from app.models import Organization, User, UserAuthProvider
-from app.services.organization_service import (
+from .organization_service import (
     assign_role,
     check_business_name_available,
     check_phone_available,
@@ -32,7 +32,7 @@ from app.services.organization_service import (
     seed_default_permissions,
     unique_slug,
 )
-from app.services.token_service import issue_tokens
+from .token_service import issue_tokens
 from ._helpers import (
     AuthError,
     _create_user_settings,

@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.auth import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.models import User, UserDevice
-from app.services.token_service import hash_refresh_token, revoke_device, rotate_refresh_token
+from .token_service import hash_refresh_token, revoke_device, rotate_refresh_token
 from ._helpers import AuthError
 
 
