@@ -3,6 +3,24 @@ Branch model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+Schema change this file reflects:
+- User.role_name (a free string) has been replaced by User.role_id, a
+  FK to roles.id (see Permission/Role model). Every place this file
+  used to call make_user(org.id, ..., role_name="...") now calls
+  await make_user_with_role(org.id, ..., role_name="...") instead —
+  make_user() itself no longer accepts role_name and has no role
+  default of its own; role resolution requires a DB round-trip (to
+  find-or-create the system Role), which is why make_user_with_role()
+  is async where make_user() is not.
+- Added coverage for Branch.role, the branch-scoped Role relationship
+  (see Role model: branch-scoped custom roles, is_system=False,
+  organization_id SET, branch_id SET). This relationship existed in
+  the model but had no test coverage before. It also exercises the
+  passive_deletes=True fix on Branch.role: cascade="all,
+  delete-orphan" on the ORM side together with ondelete="CASCADE" on
+  Role.branch_id at the DB level were racing over the same row
+  without passive_deletes=True — see the model's updated comment.
 """
 
 import pytest
@@ -10,8 +28,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch, Organization, User
-from tests.conftest import make_user, make_org_with_owner
+from app.models import Branch, Organization, Role, User
+from tests.conftest import make_org_with_owner, make_user, make_user_with_role
 
 # ── Local Factories ────────────────────────────────────────────────────────────
 
@@ -21,6 +39,18 @@ def make_branch(organization_id: str, **overrides) -> Branch:
         organization_id=organization_id,
     )
     return Branch(**{**defaults, **overrides})
+
+
+def make_branch_role(organization_id: str, branch_id: str, **overrides) -> Role:
+    """A branch-scoped custom Role (is_system=False, organization_id SET,
+    branch_id SET) — see Role model docstring, scope tier 3."""
+    defaults = dict(
+        name="branch_coordinator",
+        organization_id=organization_id,
+        branch_id=branch_id,
+        is_system=False,
+    )
+    return Role(**{**defaults, **overrides})
 
 
 # ── Branch Model Tests ─────────────────────────────────────────────────────────
@@ -80,7 +110,9 @@ async def test_branch_optional_fields_nullable(db_session: AsyncSession):
 async def test_branch_with_manager(db_session: AsyncSession):
     org, owner = await make_org_with_owner(db_session)
 
-    manager = make_user(org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(
+        db_session, org.id, email="manager@example.com", role_name="branch_manager"
+    )
     db_session.add(manager)
     await db_session.flush()
 
@@ -138,7 +170,9 @@ async def test_manager_can_be_deleted_after_branch_is_deleted(db_session: AsyncS
     """Once the branch is gone, the manager user can be deleted freely."""
     org, _ = await make_org_with_owner(db_session)
 
-    manager = make_user(org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(
+        db_session, org.id, email="manager@example.com", role_name="branch_manager"
+    )
     db_session.add(manager)
     await db_session.flush()
 
@@ -183,7 +217,7 @@ async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
     db_session.add(branch)
     await db_session.flush()
 
-    new_owner = make_user(org.id, email="new_owner@example.com")
+    new_owner = await make_user_with_role(db_session, org.id, email="new_owner@example.com")
     db_session.add(new_owner)
     await db_session.flush()
     org.owner_id = new_owner.id
@@ -244,7 +278,9 @@ async def test_user_can_be_assigned_to_branch(db_session: AsyncSession):
     db_session.add(branch)
     await db_session.flush()
 
-    member = make_user(org.id, email="member@example.com", role_name="employee", branch_id=branch.id)
+    member = await make_user_with_role(
+        db_session, org.id, email="member@example.com", role_name="employee", branch_id=branch.id
+    )
     db_session.add(member)
     await db_session.flush()
 
@@ -261,9 +297,9 @@ async def test_branch_can_have_multiple_members(db_session: AsyncSession):
     db_session.add(branch)
     await db_session.flush()
 
-    db_session.add(make_user(org.id, email="m1@example.com", role_name="employee", branch_id=branch.id))
-    db_session.add(make_user(org.id, email="m2@example.com", role_name="employee", branch_id=branch.id))
-    db_session.add(make_user(org.id, email="m3@example.com", role_name="employee", branch_id=branch.id))
+    db_session.add(await make_user_with_role(db_session, org.id, email="m1@example.com", role_name="employee", branch_id=branch.id))
+    db_session.add(await make_user_with_role(db_session, org.id, email="m2@example.com", role_name="employee", branch_id=branch.id))
+    db_session.add(await make_user_with_role(db_session, org.id, email="m3@example.com", role_name="employee", branch_id=branch.id))
     await db_session.flush()
 
     result = await db_session.execute(
@@ -281,7 +317,9 @@ async def test_branch_delete_nullifies_member_branch_id(db_session: AsyncSession
     db_session.add(branch)
     await db_session.flush()
 
-    member = make_user(org.id, email="member@example.com", role_name="employee", branch_id=branch.id)
+    member = await make_user_with_role(
+        db_session, org.id, email="member@example.com", role_name="employee", branch_id=branch.id
+    )
     db_session.add(member)
     await db_session.flush()
 
@@ -298,7 +336,8 @@ async def test_user_branch_id_fk_must_exist(db_session: AsyncSession):
     """branch_id on user must reference a real branch."""
     org, _ = await make_org_with_owner(db_session)
 
-    member = make_user(
+    member = await make_user_with_role(
+        db_session,
         org.id,
         email="member@example.com",
         role_name="employee",
@@ -314,7 +353,7 @@ async def test_user_can_have_no_branch(db_session: AsyncSession):
     """branch_id is nullable — user can exist without a branch assignment."""
     org, _ = await make_org_with_owner(db_session)
 
-    user = make_user(org.id, email="nobranch@example.com", role_name="employee")
+    user = await make_user_with_role(db_session, org.id, email="nobranch@example.com", role_name="employee")
     db_session.add(user)
     await db_session.flush()
 
@@ -340,7 +379,9 @@ async def test_branch_organization_relationship(db_session: AsyncSession):
 async def test_branch_manager_relationship(db_session: AsyncSession):
     org, _ = await make_org_with_owner(db_session)
 
-    manager = make_user(org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(
+        db_session, org.id, email="manager@example.com", role_name="branch_manager"
+    )
     db_session.add(manager)
     await db_session.flush()
 
@@ -361,8 +402,8 @@ async def test_branch_members_relationship(db_session: AsyncSession):
     db_session.add(branch)
     await db_session.flush()
 
-    db_session.add(make_user(org.id, email="m1@example.com", role_name="employee", branch_id=branch.id))
-    db_session.add(make_user(org.id, email="m2@example.com", role_name="employee", branch_id=branch.id))
+    db_session.add(await make_user_with_role(db_session, org.id, email="m1@example.com", role_name="employee", branch_id=branch.id))
+    db_session.add(await make_user_with_role(db_session, org.id, email="m2@example.com", role_name="employee", branch_id=branch.id))
     await db_session.flush()
     await db_session.refresh(branch, ["members"])
 
@@ -379,7 +420,9 @@ async def test_user_branch_relationship(db_session: AsyncSession):
     db_session.add(branch)
     await db_session.flush()
 
-    member = make_user(org.id, email="member@example.com", role_name="employee", branch_id=branch.id)
+    member = await make_user_with_role(
+        db_session, org.id, email="member@example.com", role_name="employee", branch_id=branch.id
+    )
     db_session.add(member)
     await db_session.flush()
     await db_session.refresh(member, ["branch"])
@@ -404,7 +447,9 @@ async def test_organization_branches_relationship(db_session: AsyncSession):
 async def test_user_managed_branches_relationship(db_session: AsyncSession):
     org, _ = await make_org_with_owner(db_session)
 
-    manager = make_user(org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(
+        db_session, org.id, email="manager@example.com", role_name="branch_manager"
+    )
     db_session.add(manager)
     await db_session.flush()
 
@@ -414,3 +459,111 @@ async def test_user_managed_branches_relationship(db_session: AsyncSession):
     await db_session.refresh(manager, ["managed_branches"])
 
     assert len(manager.managed_branches) == 2
+
+
+# ── Branch-scoped Role (RBAC) ───────────────────────────────────────────────────
+#
+# Branch.role is a one-to-one relationship to a branch-scoped Role row
+# (Role scope tier 3: is_system=False, organization_id SET, branch_id
+# SET — see Role model docstring). This had no coverage prior to this
+# update. It also exercises passive_deletes=True on Branch.role, added
+# to defer branch-deletion cascade entirely to the DB's
+# ondelete="CASCADE" on Role.branch_id instead of racing the ORM's own
+# cascade="all, delete-orphan" over the same row.
+
+@pytest.mark.asyncio
+async def test_branch_can_have_scoped_role(db_session: AsyncSession):
+    org, _ = await make_org_with_owner(db_session)
+
+    branch = make_branch(org.id)
+    db_session.add(branch)
+    await db_session.flush()
+
+    role = make_branch_role(org.id, branch.id)
+    db_session.add(role)
+    await db_session.flush()
+
+    result = await db_session.execute(select(Role).where(Role.id == role.id))
+    fetched = result.scalar_one()
+    assert fetched.branch_id == branch.id
+    assert fetched.organization_id == org.id
+    assert fetched.is_system is False
+
+
+@pytest.mark.asyncio
+async def test_branch_role_relationship(db_session: AsyncSession):
+    org, _ = await make_org_with_owner(db_session)
+
+    branch = make_branch(org.id)
+    db_session.add(branch)
+    await db_session.flush()
+
+    role = make_branch_role(org.id, branch.id)
+    db_session.add(role)
+    await db_session.flush()
+    await db_session.refresh(branch, ["role"])
+
+    assert branch.role is not None
+    assert branch.role.id == role.id
+
+
+@pytest.mark.asyncio
+async def test_branch_without_role_is_none(db_session: AsyncSession):
+    """A branch can exist without ever having a scoped Role assigned."""
+    org, _ = await make_org_with_owner(db_session)
+
+    branch = make_branch(org.id)
+    db_session.add(branch)
+    await db_session.flush()
+    await db_session.refresh(branch, ["role"])
+
+    assert branch.role is None
+
+
+@pytest.mark.asyncio
+async def test_branch_deletion_cascades_to_scoped_role(db_session: AsyncSession):
+    """Deleting a branch deletes its branch-scoped Role too — via the
+    DB's ondelete="CASCADE" on Role.branch_id, deferred to by
+    passive_deletes=True on Branch.role. Without that flag, the ORM's
+    own cascade="all, delete-orphan" would try to compute/issue its own
+    DELETE for the same Role row at the same time, which is the
+    collision this test guards against regressing to."""
+    org, _ = await make_org_with_owner(db_session)
+
+    branch = make_branch(org.id)
+    db_session.add(branch)
+    await db_session.flush()
+
+    role = make_branch_role(org.id, branch.id)
+    db_session.add(role)
+    await db_session.flush()
+    role_id = role.id
+
+    await db_session.delete(branch)
+    await db_session.flush()
+
+    result = await db_session.execute(select(Role).where(Role.id == role_id))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_org_deletion_cascades_to_branch_scoped_roles(db_session: AsyncSession):
+    """Deleting the org cascades through its branches (Organization ->
+    Branch via organization_id ondelete=CASCADE), which in turn must
+    still take their scoped Roles with them, two FK hops down."""
+    org, _ = await make_org_with_owner(db_session)
+
+    branch = make_branch(org.id)
+    db_session.add(branch)
+    await db_session.flush()
+
+    role = make_branch_role(org.id, branch.id)
+    db_session.add(role)
+    await db_session.flush()
+    role_id = role.id
+
+    await db_session.delete(org)
+    await db_session.flush()
+
+    result = await db_session.execute(select(Role).where(Role.id == role_id))
+    assert result.scalar_one_or_none() is None

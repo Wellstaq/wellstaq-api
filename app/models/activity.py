@@ -126,7 +126,7 @@ class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[user_id],
     )
 
-    __table_args__ = (
+    __table_args__  = (
         CheckConstraint("rank > 0", name="ck_user_priorities_rank_positive"),
     )
 

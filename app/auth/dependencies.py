@@ -1,38 +1,85 @@
 """
+app/auth/dependencies.py
+
 FastAPI dependencies for protecting routes.
 
-Add `current_user_id: str = Depends(get_current_user_id)` (or the
-fuller `get_current_user`, once the User model exists) to any route
-that should be blocked for unauthenticated requests.
+get_current_user is the single reusable dependency every protected
+route uses. It:
+  1. Decodes the JWT access token
+  2. Loads the User row fresh from DB, eager-loading the role relationship
+  3. Loads the user's directly-granted permissions from token_service
+     (single shared implementation — no more duplicated query)
+  4. Returns a CurrentUser dataclass
 
-Until the User model is wired in (see app/models/users.py), this
-file only resolves the user id out of the token — it does not yet
-load the full user from the database. That hookup happens once the
-first model lands.
+Loading fresh from DB on every request means role / org / permission
+changes take effect immediately without waiting for token expiry.
+
+Role vs Permission (independent in this model):
+  role        — single label per user (role_id FK → Role.name).
+                Used only for hierarchy checks via require_role /
+                ROLE_HIERARCHY. Does NOT carry permissions.
+  permissions — granted directly via UserPermission rows, scoped to
+                organization_id. Loaded here via token_service.
 """
+
+from dataclasses import dataclass, field
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.auth.jwt import TokenError, decode_token
+from app.auth import TokenError, decode_token
+from app.core.constants import TokenType, UserStatus
+from app.core.database import get_db
+from app.models import User
+from app.services.auth import load_user_permissions  
 
-# Tells FastAPI/OpenAPI where clients should POST to get a token.
-# This route will be implemented in app/routers/auth.py.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
+# Numeric hierarchy for require_role().
+# Higher number = more privileged.
+# NOTE: these are lowercase internal identifiers, not RoleName constants
+# (which are title-cased DB display names like "Super Admin").
+ROLE_HIERARCHY: dict[str, int] = {
+    "employee": 0,
+    "team_leader": 1,
+    "branch_manager": 2,
+    "super_admin": 3,
+}
 
-async def get_current_user_id(token: str = Depends(oauth2_scheme)) -> str:
+
+@dataclass(frozen=True)
+class CurrentUser:
+    """Resolved identity + scope for the requesting user."""
+    user_id: str
+    role: str | None           # single role name, or None if unassigned
+    organization_id: str
+    branch_id: str | None
+    permissions: list[str] = field(default_factory=list)
+
+    def has_permission(self, permission: str) -> bool:
+        return permission in self.permissions
+
+    def has_role(self, role_name: str) -> bool:
+        return self.role == role_name
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> CurrentUser:
     """
-    Decode the bearer token and return the user id (subject).
+    Decode the access token, load the user fresh from DB, resolve permissions.
 
-    Raises 401 if the token is missing, malformed, expired, or not
-    an access token. FastAPI runs this automatically for any route
-    that depends on it, before the route body ever executes — so an
-    unauthenticated request never reaches protected business logic.
+    Raises:
+      401 — token invalid / expired / wrong type
+      403 — account not active, or no organization_id
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Could not validate credentials.",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -41,11 +88,143 @@ async def get_current_user_id(token: str = Depends(oauth2_scheme)) -> str:
     except TokenError as exc:
         raise credentials_exception from exc
 
-    if payload.get("type") != "access":
+    # Reject non-access tokens (refresh, 2fa_challenge, invite_verification, etc.)
+    if payload.get("type") != TokenType.ACCESS:
         raise credentials_exception
 
-    user_id = payload.get("sub")
-    if user_id is None:
+    user_id: str | None = payload.get("sub")
+    if not user_id:
         raise credentials_exception
 
-    return user_id
+    # Load user fresh from DB. Eager-load role so we can read role.name
+    # without a second query.
+    # NOTE: User has no deleted_at column — hard-delete only.
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.role))
+        .where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise credentials_exception
+
+    if user.status != UserStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is not active.",
+        )
+
+    if not user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not associated with an organization.",
+        )
+
+    # Load permissions fresh from DB via the shared token_service implementation.
+    # This replaces the previously inlined duplicate query.
+    # Replace with a Redis cache hit once Redis is available.
+    permissions = await load_user_permissions(db, user.id, user.organization_id)
+
+    return CurrentUser(
+        user_id=user.id,
+        role=user.role.name if user.role else None,
+        organization_id=user.organization_id,
+        branch_id=user.branch_id,
+        permissions=permissions,
+    )
+
+
+# ── Guard dependencies ─────────────────────────────────────────────────────────
+
+def require_role(minimum_role: str):
+    """
+    Dependency factory enforcing a minimum role in the hierarchy.
+
+    minimum_role must be a key in ROLE_HIERARCHY (lowercase).
+
+    Usage:
+        @router.post("/admin/action",
+            dependencies=[Depends(require_role("branch_manager"))])
+        async def admin_action(...): ...
+    """
+    if minimum_role not in ROLE_HIERARCHY:
+        raise ValueError(
+            f"Unknown role '{minimum_role}' — must be one of {list(ROLE_HIERARCHY)}"
+        )
+
+    async def dependency(
+        current_user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
+        if ROLE_HIERARCHY.get(current_user.role, -1) < ROLE_HIERARCHY[minimum_role]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"This action requires at least '{minimum_role}' role.",
+            )
+        return current_user
+
+    return dependency
+
+
+def require_permission(permission: str):
+    """
+    Dependency factory enforcing a specific permission.
+
+    Permissions are checked against directly-granted UserPermission rows,
+    NOT derived from role. A user can hold any permission regardless of
+    their role if it was explicitly granted.
+
+    Usage:
+      eg:
+        @router.delete("/posts/{post_id}",
+            dependencies=[Depends(require_permission("post.delete"))])
+        async def delete_post(...): ...
+    """
+    async def dependency(
+        current_user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
+        if not current_user.has_permission(permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: '{permission}'.",
+            )
+        return current_user
+
+    return dependency
+
+
+def require_same_organization(
+    target_organization_id: str,
+    current_user: CurrentUser,
+) -> None:
+    """
+    Call inside a route after loading a resource to enforce tenant isolation.
+    Raises 403 if the user's org doesn't match the resource's org.
+    """
+    if current_user.organization_id != target_organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this organization's data.",
+        )
+
+
+def require_same_branch_or_org_level(
+    target_branch_id: str | None,
+    current_user: CurrentUser,
+) -> None:
+    """
+    Branch-scoped access guard. super_admin bypasses the check.
+    All other roles are confined to their own branch_id.
+    target_branch_id=None means an org-level resource — super_admin only.
+
+    This is a ROLE + branch_id check, entirely separate from the
+    permissions system.
+    """
+    if current_user.role == "super_admin":
+        return
+
+    if target_branch_id is None or current_user.branch_id != target_branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this branch's data.",
+        )

@@ -58,7 +58,7 @@ Deactivation vs deletion:
   the DB level.
 """
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String,text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from typing import Optional
@@ -204,16 +204,16 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     custom_roles: Mapped[list["Role"]] = relationship(
         "Role",
         back_populates="organization",
+        foreign_keys="Role.organization_id",
         cascade="all, delete-orphan",
     )
-
-    user_roles: Mapped[list["UserRole"]] = relationship(
-        "UserRole",
+    user_permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission",
         back_populates="organization",
-        foreign_keys="UserRole.organization_id",
+        foreign_keys="UserPermission.organization_id",
         cascade="all, delete-orphan",
-        passive_deletes=True,
     )
+   
 
     # ── Wellbeing ──────────────────────────────────────────────────────────────
     wellbeing_challenges: Mapped[list["OrganizationWellbeingChallenge"]] = relationship(
@@ -362,6 +362,7 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug} owner_id={self.owner_id} active={self.is_active}>"
 
+# ── OrganizationInvite model ───────────────────────────────────────────────────
 
 """
 Organization Invite model.
@@ -369,6 +370,14 @@ Organization Invite model.
 Design principles:
 - An invite strictly belongs to an organization.
 - branch_id is optional; if set, accepting the invite auto-assigns the user to that branch.
+- invited_department_id is NOT NULL — a department must exist before an invite can be sent.
+  Enforced at both DB level (NOT NULL FK) and service layer (validated before insert).
+- invited_role_id is NOT NULL — the inviter pre-assigns exactly one role when creating
+  the invite. The role can be changed post-join by an authority.
+- Permissions are optional at invite time. When present they are stored in the
+  OrganizationInvitePermission join table (one row per permission) and materialized
+  into real UserPermission rows the moment the invite is accepted. They can be
+  added/revoked post-join independently.
 - invite_code must be unique as it forms the URL.
 - invited_by links back to the user (manager) who generated the invite.
 - accepted_at and expires_at manage the lifecycle of the invite.
@@ -378,11 +387,104 @@ Design principles:
   invite itself is the only record of intent until then.
 """
 
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+
+class OrganizationInvitePermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """
+    Intent record: "when this invite is accepted, grant this permission."
+
+    Exists only to carry the inviter's permission pre-assignments across
+    the gap between invite creation and user registration. At registration
+    time each row here is read, a UserPermission is created, and these
+    rows are no longer needed (but kept for audit — they cascade-delete
+    with the invite if the invite is revoked before acceptance).
+
+    Scoped the same way UserPermission is scoped:
+      branch_id NULL  → org-wide grant
+      branch_id SET   → branch-scoped grant (must belong to organization_id,
+                        enforced at service layer)
+
+    No granted_by here — the granter is always invite.invited_by,
+    resolved at materialization time.
+    """
+
+    __tablename__ = "organization_invite_permissions"
+
+    invite_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organization_invites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    permission_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("permissions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Mirrors the scope fields from UserPermission so materialization
+    # is a direct copy — no inference needed.
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    branch_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    invite: Mapped["OrganizationInvite"] = relationship(
+        "OrganizationInvite",
+        back_populates="invite_permissions",
+    )
+    permission: Mapped["Permission"] = relationship(
+        "Permission",
+        foreign_keys=[permission_id],
+    )
+
+    __table_args__ = (
+        # Same partial-index uniqueness pattern as UserPermission —
+        # NULLs are not equal in unique indexes.
+        Index(
+            "uq_invite_permission_no_branch",
+            "invite_id", "permission_id", "organization_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NULL"),
+            postgresql_where=text("branch_id IS NULL"),
+        ),
+        Index(
+            "uq_invite_permission_branch",
+            "invite_id", "permission_id", "organization_id", "branch_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NOT NULL"),
+            postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        scope = f"branch={self.branch_id}" if self.branch_id else "org-wide"
+        return (
+            f"<OrganizationInvitePermission invite={self.invite_id} "
+            f"permission={self.permission_id} scope={scope}>"
+        )
+
 
 class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "organization_invites"
 
-    # Foreign Keys
+    # ── Foreign Keys ───────────────────────────────────────────────────────
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -395,43 +497,76 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
     )
 
+    # NOT NULL — a department must exist before sending an invite.
+    # Service layer must also validate department.organization_id == organization_id
+    # (DB cannot cross-row enforce this).
+    invited_department_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("departments.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # NOT NULL — inviter pre-assigns exactly one role.
+    # Can be a system role or a custom org/branch role.
+    # Service layer must validate:
+    #   - role.organization_id == organization_id (or role.is_system)
+    #   - if role.branch_id is SET, it must match branch_id on this invite
+    # ondelete=RESTRICT: prevents deleting a role that has pending invites.
+    invited_role_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("roles.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
     invited_by: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
 
-    # Invite Data
+    # ── Invite Data ────────────────────────────────────────────────────────
     invite_code: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     invited_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
     # status: pending | accepted | expired | revoked
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
 
-    # Timestamps
-    # created_at is handled by TimestampMixin automatically
+    # ── Timestamps ─────────────────────────────────────────────────────────
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     accepted_by_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("users.id", ondelete="SET NULL"),  # If a user deletes their account, the invite row survives
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
 
-    # Relationships
-
+    # ── Relationships ──────────────────────────────────────────────────────
     organization: Mapped["Organization"] = relationship(
         "Organization",
         back_populates="invites",
         foreign_keys=[organization_id],
     )
 
-    branch: Mapped["Branch"] = relationship(
+    branch: Mapped[Optional["Branch"]] = relationship(
         "Branch",
         back_populates="invites",
         foreign_keys=[branch_id],
+    )
+
+    invited_department: Mapped["Department"] = relationship(
+        "Department",
+        back_populates="invites",
+        foreign_keys=[invited_department_id],
+    )
+
+    invited_role: Mapped["Role"] = relationship(
+        "Role",
+        back_populates="invites",
+        foreign_keys=[invited_role_id],
     )
 
     inviter: Mapped["User"] = relationship(
@@ -446,10 +581,21 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[accepted_by_id],
     )
 
-    # Indexes
+    # Optional permission pre-assignments — materialized into UserPermission
+    # rows when the invite is accepted.
+    invite_permissions: Mapped[list["OrganizationInvitePermission"]] = relationship(
+        "OrganizationInvitePermission",
+        back_populates="invite",
+        cascade="all, delete-orphan",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
     __table_args__ = (
         Index("ix_organization_invites_org_status", "organization_id", "status"),
     )
 
     def __repr__(self) -> str:
-        return f"<OrganizationInvite id={self.id} code={self.invite_code} status={self.status}>"
+        return (
+            f"<OrganizationInvite id={self.id} "
+            f"code={self.invite_code} status={self.status}>"
+        )

@@ -86,7 +86,6 @@ async def test_user_organization_id_required(db_session: AsyncSession):
         first_name="No",
         last_name="Org",
         email="noorg@example.com",
-        role_name="employee",
         hashed_password="$2b$12$fakehash",
         organization_id=None,
     )
@@ -102,7 +101,6 @@ async def test_user_organization_fk_must_exist(db_session: AsyncSession):
         first_name="Ghost",
         last_name="User",
         email="ghost@example.com",
-        role_name="employee",
         hashed_password="$2b$12$fakehash",
         organization_id="00000000-0000-0000-0000-000000000000",
     )
@@ -140,20 +138,38 @@ async def test_user_optional_fields_nullable(db_session: AsyncSession):
     assert user.country is None
     assert user.state is None
     assert user.branch_id is None
+    assert user.role_id is None
+
+
+# ── role_id FK ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_user_role_id_nullable(db_session: AsyncSession):
+    """role_id is nullable — a user can exist with no role assigned yet."""
+    org, _ = await make_org_with_owner(
+        db_session, user_kwargs=dict(email="owner-norole@example.com")
+    )
+    user = make_user(organization_id=org.id, email="norole@example.com")
+    db_session.add(user)
+    await db_session.flush()
+
+    assert user.role_id is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "role", ["super_admin", "branch_manager", "team_lead", "employee", "custom_role"]
-)
-async def test_user_accepts_any_role_name(db_session: AsyncSession, role: str):
-    """role_name is a free string — no enum constraint."""
-    _, user = await make_org_with_owner(
-        db_session,
-        org_kwargs=dict(slug=f"org-{role}"),
-        user_kwargs=dict(email=f"{role}@example.com", role_name=role),
+async def test_user_invalid_role_id_raises(db_session: AsyncSession):
+    """role_id FK must reference a real Role row — phantom UUID raises IntegrityError."""
+    org, _ = await make_org_with_owner(
+        db_session, user_kwargs=dict(email="owner-badrole@example.com")
     )
-    assert user.role_name == role
+    user = make_user(
+        organization_id=org.id,
+        email="badrole@example.com",
+        role_id="00000000-0000-0000-0000-000000000000",
+    )
+    db_session.add(user)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 # ── status constraint ─────────────────────────────────────────────────────────
@@ -190,9 +206,7 @@ async def test_organization_deletion_cascades_to_member_users(db_session: AsyncS
     org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner@example.com")
     )
-    member = make_user(
-        organization_id=org.id, email="member@example.com", role_name="employee"
-    )
+    member = make_user(organization_id=org.id, email="member@example.com")
     db_session.add(member)
     await db_session.flush()
     owner_id, member_id = owner.id, member.id
@@ -341,7 +355,7 @@ async def test_settings_2fa_enabled_without_method_raises(db_session: AsyncSessi
     settings = make_settings(
         user.id, org.id,
         two_fa_enabled=True,
-        two_fa_method=None,  # missing — should raise
+        two_fa_method=None,
     )
     db_session.add(settings)
     with pytest.raises(IntegrityError):
@@ -357,7 +371,7 @@ async def test_settings_2fa_method_set_but_disabled_raises(db_session: AsyncSess
     settings = make_settings(
         user.id, org.id,
         two_fa_enabled=False,
-        two_fa_method="totp",  # should raise — enabled is False
+        two_fa_method="totp",
     )
     db_session.add(settings)
     with pytest.raises(IntegrityError):
@@ -374,7 +388,7 @@ async def test_settings_2fa_totp_without_secret_raises(db_session: AsyncSession)
         user.id, org.id,
         two_fa_enabled=True,
         two_fa_method="totp",
-        two_fa_secret=None,  # missing — should raise
+        two_fa_secret=None,
     )
     db_session.add(settings)
     with pytest.raises(IntegrityError):
@@ -391,7 +405,7 @@ async def test_settings_2fa_sms_with_secret_raises(db_session: AsyncSession):
         user.id, org.id,
         two_fa_enabled=True,
         two_fa_method="sms",
-        two_fa_secret="SHOULD_NOT_BE_HERE",  # should raise
+        two_fa_secret="SHOULD_NOT_BE_HERE",
     )
     db_session.add(settings)
     with pytest.raises(IntegrityError):
@@ -407,7 +421,7 @@ async def test_settings_2fa_invalid_method_raises(db_session: AsyncSession):
     settings = make_settings(
         user.id, org.id,
         two_fa_enabled=True,
-        two_fa_method="carrier_pigeon",  # not a valid method
+        two_fa_method="carrier_pigeon",
     )
     db_session.add(settings)
     with pytest.raises(IntegrityError):
@@ -436,7 +450,6 @@ async def test_settings_org_mismatch_allowed_at_db_level(db_session: AsyncSessio
     db_session.add(user)
     await db_session.flush()
 
-    # UserSettings.organization_id = org_b but user belongs to org_a
     settings = make_settings(user.id, org_b.id)
     db_session.add(settings)
     await db_session.flush()  # must NOT raise — service layer owns this check
@@ -455,7 +468,6 @@ async def test_settings_org_scoped_query(db_session: AsyncSession):
     member = make_user(
         organization_id=org.id,
         email="settings-scope-member@example.com",
-        role_name="employee",
     )
     db_session.add(member)
     await db_session.flush()
@@ -568,7 +580,7 @@ async def test_auth_provider_oauth_without_provider_user_id_raises(db_session: A
     provider = make_auth_provider(
         user.id, org.id,
         provider="google",
-        provider_user_id=None,  # missing — should raise
+        provider_user_id=None,
     )
     db_session.add(provider)
     with pytest.raises(IntegrityError):
@@ -584,7 +596,7 @@ async def test_auth_provider_password_with_provider_user_id_raises(db_session: A
     provider = make_auth_provider(
         user.id, org.id,
         provider="password",
-        provider_user_id="should-not-exist",  # should raise
+        provider_user_id="should-not-exist",
     )
     db_session.add(provider)
     with pytest.raises(IntegrityError):
@@ -600,7 +612,7 @@ async def test_auth_provider_password_with_access_token_raises(db_session: Async
     provider = make_auth_provider(
         user.id, org.id,
         provider="password",
-        access_token="SHOULD_NOT_BE_HERE",  # should raise
+        access_token="SHOULD_NOT_BE_HERE",
     )
     db_session.add(provider)
     with pytest.raises(IntegrityError):
@@ -644,7 +656,6 @@ async def test_auth_providers_org_scoped_query(db_session: AsyncSession):
     member = make_user(
         organization_id=org.id,
         email="org-scope-member@example.com",
-        role_name="employee",
     )
     db_session.add(member)
     await db_session.flush()
@@ -778,7 +789,6 @@ async def test_devices_org_scoped_query(db_session: AsyncSession):
     member = make_user(
         organization_id=org.id,
         email="org-scope-device-member@example.com",
-        role_name="employee",
     )
     db_session.add(member)
     await db_session.flush()
@@ -820,7 +830,6 @@ async def test_organization_all_user_settings_relationship(db_session: AsyncSess
     member = make_user(
         organization_id=org.id,
         email="rel-org-settings-member@example.com",
-        role_name="employee",
     )
     db_session.add(member)
     await db_session.flush()
@@ -869,9 +878,7 @@ async def test_user_delete_cascades_to_children(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-for-cascade@example.com")
     )
-    user = make_user(
-        organization_id=org.id, email="cascade@example.com", role_name="employee"
-    )
+    user = make_user(organization_id=org.id, email="cascade@example.com")
     db_session.add(user)
     await db_session.flush()
 

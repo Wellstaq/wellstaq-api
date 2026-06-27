@@ -15,6 +15,13 @@ Design principles:
 - manager_id is nullable: a branch can exist without an assigned manager.
 - organization_id is CASCADE on delete — when the org is deleted (app
   owner only action), all its branches are deleted with it.
+
+Scope / RBAC notes:
+- role: one-to-one with the branch-scoped Role row (if any). When the
+  branch is deleted, its scoped Role is cascade-deleted.
+- user_permissions: all UserPermission rows whose branch_id points here.
+  When the branch is deleted, those branch-scoped grants are cascade-
+  deleted automatically (FK ondelete="CASCADE" on UserPermission.branch_id).
 """
 
 from sqlalchemy import ForeignKey, Index, String, UniqueConstraint, CheckConstraint
@@ -26,7 +33,7 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "branches"
-
+    __mapper_args__ = {"confirm_deleted_rows": False}
     __table_args__ = (
         # Ensures branch names are unique *within* the same organization
         UniqueConstraint("organization_id", "name", name="uq_branch_org_name"),
@@ -53,7 +60,7 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # independently — that rule is enforced at the service layer, not here.
     manager_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey("users.id", ondelete="SET NULL", use_alter=True, name="fk_branch_manager_id"),
         nullable=True,
         index=True,
     )
@@ -105,13 +112,25 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="branch",
     )
 
-    # RBAC — role assignments scoped to this branch. When a branch is
-    # deleted, all branch-scoped UserRole rows for it are deleted too.
-    user_roles: Mapped[list["UserRole"]] = relationship(
-        "UserRole",
+    # ── RBAC ──────────────────────────────────────────────────────────────
+    # Branch-scoped Role row (one per branch at most). When the branch is
+    # deleted, its scoped Role is cascade-deleted via Role.branch_id FK.
+    role: Mapped[Optional["Role"]] = relationship(
+        "Role",
         back_populates="branch",
-        foreign_keys="UserRole.branch_id",
+        foreign_keys="Role.branch_id",
         cascade="all, delete-orphan",
+    )
+
+    # All UserPermission grants scoped to this branch. When the branch is
+    # deleted, these rows are cascade-deleted via UserPermission.branch_id FK,
+    # so no user retains a dangling branch-scoped permission grant.
+    user_permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission",
+        back_populates="branch",
+        foreign_keys="UserPermission.branch_id",
+        # No cascade here — the DB FK (ondelete="CASCADE") handles deletion.
+        # Letting SQLAlchemy also cascade would cause a double-delete race.
     )
 
     def __repr__(self) -> str:

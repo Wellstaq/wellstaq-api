@@ -25,8 +25,11 @@ from app.models.wellbeing import(
 )
 from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
 from app.models.story import Story
-from app.models.permission import Permission, Role, RolePermission, UserRole
+from app.models.permission import Permission, Role, UserPermission
 from app.models.engagement import ActivityLog, EngagementLog
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
 from app.models.payment import SubscriptionPlan, PaymentTransaction, OrganizationSubscription
+
+# this table should be erased and dropped after development
+from app.models.otp_code import OtpCode
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

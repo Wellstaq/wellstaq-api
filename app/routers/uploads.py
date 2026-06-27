@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.auth.scoping import CurrentUser, get_current_user
+from app.auth import CurrentUser, get_current_user
 from app.core.storage import generate_presigned_upload_url
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])

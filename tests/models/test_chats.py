@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DirectMessage, GroupChatMessage, Club
-from tests.conftest import make_user, make_org_with_owner
+from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
 
 # ── Chat-specific factories ───────────────────────────────────────────────────
@@ -207,7 +207,7 @@ async def test_group_chat_message_can_be_pinned(db_session: AsyncSession):
     org, _ = await make_org_with_owner(db_session)
     club = await setup_club(db_session, org.id)
 
-    manager = make_user(organization_id=org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
     sender = make_user(organization_id=org.id, email="sender@example.com")
     db_session.add_all([manager, sender])
     await db_session.flush()
@@ -233,7 +233,7 @@ async def test_group_chat_message_only_one_pinned_per_conversation(db_session: A
     org, _ = await make_org_with_owner(db_session)
     club = await setup_club(db_session, org.id)
 
-    manager = make_user(organization_id=org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
     sender = make_user(organization_id=org.id, email="sender@example.com")
     db_session.add_all([manager, sender])
     await db_session.flush()
@@ -264,7 +264,7 @@ async def test_group_chat_message_different_conversations_can_each_have_a_pin(db
     club_a = await setup_club(db_session, org.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, name="Book Club")
 
-    manager = make_user(organization_id=org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
     sender = make_user(organization_id=org.id, email="sender@example.com")
     db_session.add_all([manager, sender])
     await db_session.flush()
@@ -297,7 +297,7 @@ async def test_group_chat_message_can_be_unpinned_then_repinned(db_session: Asyn
     org, _ = await make_org_with_owner(db_session)
     club = await setup_club(db_session, org.id)
 
-    manager = make_user(organization_id=org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
     sender = make_user(organization_id=org.id, email="sender@example.com")
     db_session.add_all([manager, sender])
     await db_session.flush()
@@ -355,7 +355,7 @@ async def test_group_chat_message_ghost_pin_fields_without_is_pinned_raises(db_s
     org, _ = await make_org_with_owner(db_session)
     club = await setup_club(db_session, org.id)
 
-    manager = make_user(organization_id=org.id, email="manager@example.com", role_name="branch_manager")
+    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
     sender = make_user(organization_id=org.id, email="sender@example.com")
     db_session.add_all([manager, sender])
     await db_session.flush()

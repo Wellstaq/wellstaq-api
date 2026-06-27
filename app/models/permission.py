@@ -1,67 +1,58 @@
 """
-RBAC permission model — four tables, four layers.
+Permission model — role and permission are SEPARATE and UNRELATED.
 
-Design decisions (all explicitly confirmed):
-  - Platform-wide default roles + org-created custom roles
-  - One user can hold multiple roles simultaneously
-  - Branch-level scoping lives on the role ASSIGNMENT (user_roles),
-    not on the permission itself
-  - Platform default roles are read-only (is_system=True); orgs can
-    only create new roles, never modify system ones
-  - Same role can be assigned to a user at both org-wide scope AND a
-    specific branch scope simultaneously (both rows are valid and
-    distinct — the unique constraint includes branch_id so NULL and
-    a real branch_id are treated as different scopes)
+Design decisions:
+  - Role is just a label/grouping (system or custom). It does NOT
+    carry permissions. Assigning a role to a user does not grant them
+    anything by itself.
+  - Permission is the atomic "can do X" capability, platform-seeded
+    only. Orgs never create, rename, or delete permissions.
+  - A user has exactly ONE role (role_id directly on users table).
+  - A user can have MANY permissions, assigned directly and
+    independently of their role, via UserPermission.
+  - There is no RolePermission join table. Role and Permission do not
+    reference each other at all. Granting/revoking a permission to a
+    user is a separate action from assigning/changing their role.
 
-The four layers:
+Scope model (applies to BOTH Role and UserPermission):
+  - Every assignment is scoped to either the whole organization OR a
+    specific branch within that organization.
+  - organization_id is always required — it anchors the tenant boundary
+    and prevents cross-org leakage.
+  - branch_id is optional:
+      NULL  → org-wide  — the assignment applies across the whole org.
+      SET   → branch-scoped — the assignment applies only within that
+              branch. branch_id must belong to organization_id; the DB
+              cannot enforce this cross-table, so the SERVICE LAYER MUST
+              validate it on every insert/update.
 
-  1. Permission — the atomic "can do X" capability. Platform-seeded,
-     never org-created. Organized by category for UI grouping
-     (e.g. "posts", "events", "wellbeing"). Name follows
-     "resource.action" convention: "post.delete", "event.create",
-     "wellbeing.view_team".
-
-  2. Role — a named bundle of permissions. is_system=True rows are
-     platform defaults (Super Admin, Branch Manager, Employee, etc.)
-     and are read-only. organization_id IS NOT NULL rows are
-     org-custom roles, owned by that org, cascaded away when the
-     org is deleted.
-
-  3. RolePermission — the join between Role and Permission. Unique
-     on (role_id, permission_id). Orgs can't create new permissions,
-     but their custom roles can reference any platform permission.
-
-  4. UserRole — the assignment of a role to a user at a specific
-     scope:
-       - organization_id always set (a role assignment always belongs
-         to an org context — even platform roles are assigned within
-         the org a user belongs to)
-       - branch_id NULL  = role applies org-wide
-       - branch_id SET   = role applies only within that branch
-     Unique on (user_id, role_id, organization_id, branch_id) so:
-       - the same role can be assigned org-wide AND at a branch
-         simultaneously (NULL != a real branch_id, so both rows
-         co-exist cleanly)
-       - but the exact same (user, role, org, branch) triple is
-         blocked from being inserted twice
+  Examples:
+      "Can invite users across the whole org"
+          → UserPermission(org_id=X, branch_id=NULL, permission="user.invite")
+      "Can invite users only within Branch Lagos"
+          → UserPermission(org_id=X, branch_id=B, permission="user.invite")
+      "Holds 'Branch Manager' role in Branch Lagos only"
+          → Role(org_id=X, branch_id=B, name="branch_manager")
+          → User.role_id = that role's id
 
 Permission check pattern (service layer):
-    SELECT p.name
-    FROM user_roles ur
-    JOIN role_permissions rp ON rp.role_id = ur.role_id
-    JOIN permissions p ON p.id = rp.permission_id
-    WHERE ur.user_id = :user_id
-      AND ur.organization_id = :org_id
-      AND (ur.branch_id = :branch_id OR ur.branch_id IS NULL)
+    -- Org-wide check:
+    SELECT 1 FROM user_permissions up
+    JOIN permissions p ON p.id = up.permission_id
+    WHERE up.user_id = :user_id
+      AND up.organization_id = :org_id
+      AND up.branch_id IS NULL          -- org-wide grant
       AND p.name = :permission_name
-    LIMIT 1
+    LIMIT 1;
 
-role_name on User:
-    Kept as a display/UI label only. Access-control decisions MUST use
-    user_roles + role_permissions, never role_name. role_name can be
-    populated from the user's primary role name for display purposes
-    but is not authoritative. This avoids a breaking migration while
-    the RBAC tables are being wired up in the service layer.
+    -- Branch-scoped check (also inherits org-wide grants):
+    SELECT 1 FROM user_permissions up
+    JOIN permissions p ON p.id = up.permission_id
+    WHERE up.user_id = :user_id
+      AND up.organization_id = :org_id
+      AND (up.branch_id = :branch_id OR up.branch_id IS NULL)
+      AND p.name = :permission_name
+    LIMIT 1;
 """
 
 from typing import Optional
@@ -73,8 +64,8 @@ from sqlalchemy import (
     Index,
     String,
     Text,
-    Computed,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -86,35 +77,29 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     Atomic capability the platform knows about.
 
     Seeded by the platform via a migration or seed script. Orgs cannot
-    create, rename, or delete permissions — they only assign them to
-    custom roles. name follows "resource.action" convention and must be
-    unique platform-wide. category groups related permissions for UI
-    display (e.g. all "post.*" permissions under a "Posts" section).
+    create, rename, or delete permissions. name follows
+    "resource.action" convention and is unique platform-wide. category
+    groups related permissions for UI display.
 
     Examples:
-        post.create, post.delete, post.moderate
+        post.delete, post.moderate
+        user.suspend, user.elevate
+        user.invite
         event.create, event.cancel
         wellbeing.view_team, wellbeing.export
-        branch.manage, department.manage
-        user.invite, user.suspend
-        challenge.create, challenge.complete
+
+    Granted to users directly via UserPermission — has NO relationship
+    to Role.
     """
 
     __tablename__ = "permissions"
 
-    # "resource.action" — unique, immutable after creation
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
-
-    # Human-readable label for UI display
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    # Groups related permissions in the UI (e.g. "posts", "events",
-    # "wellbeing", "admin"). Not enforced by DB — app-layer grouping only.
     category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
 
-    # Relationships
-    role_permissions: Mapped[list["RolePermission"]] = relationship(
-        "RolePermission",
+    user_permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission",
         back_populates="permission",
         cascade="all, delete-orphan",
     )
@@ -125,33 +110,30 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
-    Named bundle of permissions.
+    A label assigned to a user — system, org-wide custom, or
+    branch-scoped custom. Purely descriptive. Carries NO permissions
+    of its own and has no relationship to Permission or UserPermission.
 
-    Two kinds of roles:
-      - System roles (is_system=True, organization_id=NULL): platform
-        defaults seeded at deploy time. Read-only — no org may modify,
-        rename, or delete them. The service layer must enforce this;
-        the DB enforces it via a CHECK constraint that prevents any row
-        with is_system=True from having a non-NULL organization_id.
-        Examples: "Super Admin", "Branch Manager", "Employee".
+    Scope tiers:
+      1. System roles   (is_system=True,  organization_id=NULL, branch_id=NULL)
+            Platform defaults, read-only, shared across all orgs.
+            e.g. "super_admin", "member"
 
-      - Org-custom roles (is_system=False, organization_id SET): created
-        by the org to model their own hierarchy. Cascade-deleted when
-        the org is deleted. Example: "Acme Wellness Lead".
+      2. Org-wide roles (is_system=False, organization_id=SET,  branch_id=NULL)
+            Created by an org admin, apply across the whole org.
+            Cascade-deleted when the org is deleted.
+            e.g. "hr_manager", "auditor"
 
-    Orgs can't modify system roles. They can create new roles that
-    reference any platform permission in RolePermission.
+      3. Branch-scoped roles (is_system=False, organization_id=SET, branch_id=SET)
+            Created by an org admin or branch manager; apply only within
+            a specific branch. Cascade-deleted when the branch is deleted.
+            branch_id MUST belong to organization_id — enforced at the
+            service layer (DB cannot cross-row check).
+            e.g. "branch_manager", "branch_coordinator"
 
-    name uniqueness: unique within the org (or platform-wide for system
-    roles). Enforced via unique index on (name, organization_id) — since
-    organization_id IS NULL for system roles, SQLite and Postgres both
-    treat NULL as distinct from any value, meaning two NULL rows with
-    the same name would NOT be blocked by a standard unique index. To
-    prevent duplicate system role names, the service layer must check
-    for existing system role names before inserting. A partial unique
-    index (WHERE organization_id IS NULL) would enforce this at the DB
-    level in Postgres but is not supported by SQLite. Documented here
-    as a known limitation of the SQLite test environment.
+    Assigning this role to a user does not grant or imply any
+    permissions. Permissions are granted separately and directly to
+    the user via UserPermission.
     """
 
     __tablename__ = "roles"
@@ -159,7 +141,8 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # NULL = system/platform role; SET = org-custom role
+    # NULL  = system/platform role
+    # SET   = org-wide or branch-scoped custom role
     organization_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -167,64 +150,136 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # True = platform default, read-only. False = org-created, mutable.
-    # CHECK constraint enforces is_system=True => organization_id IS NULL
-    # (a system role is never owned by a specific org) and
-    # is_system=False => organization_id IS NOT NULL
-    # (a custom role must belong to an org).
-    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # NULL  = org-wide (or system if org is also NULL)
+    # SET   = branch-scoped; must belong to organization_id (service layer enforced)
+    branch_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
-    # Relationships
+    # True = platform default, read-only. False = org/branch-created, mutable.
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    
+    # Realationships
+
     organization: Mapped[Optional["Organization"]] = relationship(
         "Organization",
         back_populates="custom_roles",
         foreign_keys=[organization_id],
     )
-    role_permissions: Mapped[list["RolePermission"]] = relationship(
-        "RolePermission",
-        back_populates="role",
-        cascade="all, delete-orphan",
+    invites: Mapped[list["OrganizationInvite"]] = relationship(
+        "OrganizationInvite",
+        back_populates="invited_role"
     )
-    user_roles: Mapped[list["UserRole"]] = relationship(
-        "UserRole",
+    branch: Mapped[Optional["Branch"]] = relationship(
+        "Branch",
         back_populates="role",
-        cascade="all, delete-orphan",
+        foreign_keys=[branch_id],
+    )
+
+    # Users currently holding this role (a user has exactly one role,
+    # but a role can be held by many users)
+    users: Mapped[list["User"]] = relationship(
+        "User",
+        back_populates="role",
+        foreign_keys="User.role_id",
     )
 
     __table_args__ = (
-        # Unique name within an org (NULL org_id = system roles).
-        # See docstring for the NULL-uniqueness caveat on SQLite.
-        UniqueConstraint("name", "organization_id", name="uq_role_name_org"),
-        # System roles must not belong to an org; custom roles must.
+        # Role name uniqueness, split by scope tier.
+        #
+        # A single UniqueConstraint("name", "organization_id", "branch_id")
+        # looks right but does NOT work for org-wide or branch-scoped
+        # custom roles, because SQLite (and Postgres) treat two NULLs as
+        # distinct values inside a unique index — so two org-wide roles
+        # (branch_id=NULL) with the same name in the same org would NOT
+        # be caught. Splitting into partial unique indexes, one per
+        # "branch_id is/isn't NULL" case, closes that gap:
+        #
+        #   - org-wide roles  (organization_id SET, branch_id NULL):
+        #       unique by (name, organization_id)
+        #   - branch-scoped roles (branch_id SET):
+        #       unique by (name, organization_id, branch_id)
+        #
+        # System roles (organization_id IS NULL) are deliberately NOT
+        # covered by either index — there's no organization_id to scope
+        # uniqueness by, so duplicate system-role names are a
+        # service-layer responsibility, not a DB-level one.
+        Index(
+            "uq_role_name_org_no_branch",
+            "name", "organization_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NULL AND organization_id IS NOT NULL"),
+            postgresql_where=text("branch_id IS NULL AND organization_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_role_name_org_branch",
+            "name", "organization_id", "branch_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NOT NULL"),
+            postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+
+        # Invariant 1: system flag and org/branch columns must be consistent.
+        #   system  → org NULL,  branch NULL
+        #   custom  → org SET,   branch NULL or SET
         CheckConstraint(
-            "(is_system = 1 AND organization_id IS NULL) "
+            "(is_system = 1 AND organization_id IS NULL AND branch_id IS NULL) "
             "OR (is_system = 0 AND organization_id IS NOT NULL)",
             name="ck_role_system_org_consistent",
         ),
-    )
 
+        # Invariant 2: branch_id may only be set when organization_id is also set.
+        CheckConstraint(
+            "branch_id IS NULL OR organization_id IS NOT NULL",
+            name="ck_role_branch_requires_org",
+        ),
+    )
     def __repr__(self) -> str:
-        scope = "system" if self.is_system else f"org={self.organization_id}"
+        if self.is_system:
+            scope = "system"
+        elif self.branch_id:
+            scope = f"branch={self.branch_id}"
+        else:
+            scope = f"org={self.organization_id}"
         return f"<Role id={self.id} name={self.name} scope={scope}>"
 
 
-class RolePermission(Base, UUIDPrimaryKeyMixin):
+class UserPermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
-    Many-to-many join between Role and Permission.
+    Direct grant of a permission to a user, completely independent
+    of whatever role that user holds.
 
-    Which permissions a given role grants. Unique on (role_id,
-    permission_id) — a permission can only be granted once per role.
-    No TimestampMixin needed — these rows are structural config, not
-    audit records. No organization_id — the role already carries the
-    org context; this table is just the edge between role and
-    permission.
+    Scope:
+      organization_id is ALWAYS required — anchors the tenant boundary.
+      branch_id is OPTIONAL:
+        NULL → org-wide grant  — permission applies everywhere in the org.
+        SET  → branch-scoped   — permission applies only within that branch.
+
+      The service layer MUST:
+        1. Validate that the granting user is acting within organization_id.
+        2. Validate that branch_id (when set) belongs to organization_id.
+        3. When checking a permission for a branch-scoped action, match
+           rows where branch_id = :branch_id OR branch_id IS NULL, so
+           org-wide grants are automatically inherited at the branch level.
+
+    Unique on (user_id, permission_id, organization_id, branch_id).
+    branch_id IS NULL is treated as a distinct value in the unique key,
+    so a user can hold the same permission both org-wide and branch-scoped
+    without conflict (though the org-wide grant makes the branch grant
+    redundant — the service layer may warn about this).
+
+    granted_by tracks who made the grant (audit trail); nullable for
+    system-seeded grants.
     """
 
-    __tablename__ = "role_permissions"
+    __tablename__ = "user_permissions"
 
-    role_id: Mapped[str] = mapped_column(
+    user_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("roles.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -235,118 +290,97 @@ class RolePermission(Base, UUIDPrimaryKeyMixin):
         index=True,
     )
 
-    # Relationships
-    role: Mapped["Role"] = relationship("Role", back_populates="role_permissions")
-    permission: Mapped["Permission"] = relationship(
-        "Permission", back_populates="role_permissions"
-    )
-
-    __table_args__ = (
-        UniqueConstraint("role_id", "permission_id", name="uq_role_permission"),
-    )
-
-    def __repr__(self) -> str:
-        return f"<RolePermission role={self.role_id} permission={self.permission_id}>"
-
-
-class UserRole(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """
-    Assignment of a role to a user at a specific scope.
-
-    Scope is determined by organization_id + branch_id:
-      - branch_id IS NULL  = role applies org-wide
-      - branch_id IS NOT NULL = role applies only within that branch
-
-    The same role can be assigned at both org-wide and branch scope
-    simultaneously — these are treated as distinct assignments because
-    the unique constraint includes branch_id (NULL != a real UUID in
-    the unique index, so both rows co-exist cleanly).
-
-    organization_id is always set — every role assignment belongs to
-    an org context, even when the role itself is a system role. This
-    is what ties the assignment to the tenant and makes it cascadeable
-    when the org is deleted.
-
-    assigned_by tracks who granted this role (audit trail). Nullable:
-    system-seeded assignments (e.g. the org owner's initial Super Admin
-    role) may have no assigning user. SET NULL on delete so the audit
-    trail row survives even if the assigner later leaves.
-    """
-
-    __tablename__ = "user_roles"
-
-    user_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    role_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("roles.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    # Always set — every assignment belongs to an org context
+    # Tenant boundary — always required.
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    # NULL = org-wide scope; SET = branch-scoped assignment
+
+    # Scope discriminator.
+    # NULL  → org-wide:      permission applies across the whole org.
+    # SET   → branch-scoped: permission applies only within this branch.
+    #         Must belong to organization_id — service layer enforced.
+    #         CASCADE on branch delete — when a branch is removed, all
+    #         branch-scoped permission grants for it are removed too.
     branch_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("branches.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
-    branch_scope_key: Mapped[str] = mapped_column(
-        String(36),
-        Computed("COALESCE(branch_id, '00000000-0000-0000-0000-000000000000')"),
-        nullable=False,
-    )
 
-
-    # Audit trail — who assigned this role
-    assigned_by: Mapped[str | None] = mapped_column(
+    granted_by: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
 
-    # Relationships
+    # ── Relationships ──────────────────────────────────────────────────────
     user: Mapped["User"] = relationship(
         "User",
-        back_populates="user_roles",
+        back_populates="user_permissions",
         foreign_keys=[user_id],
     )
-    role: Mapped["Role"] = relationship("Role", back_populates="user_roles")
+    permission: Mapped["Permission"] = relationship(
+        "Permission",
+        back_populates="user_permissions",
+    )
     organization: Mapped["Organization"] = relationship(
         "Organization",
-        back_populates="user_roles",
+        back_populates="user_permissions",
         foreign_keys=[organization_id],
     )
     branch: Mapped[Optional["Branch"]] = relationship(
         "Branch",
-        back_populates="user_roles",
+        back_populates="user_permissions",
         foreign_keys=[branch_id],
     )
-    assigner: Mapped[Optional["User"]] = relationship(
+    granter: Mapped[Optional["User"]] = relationship(
         "User",
-        foreign_keys=[assigned_by],
-        back_populates= "assigned_roles",
-        overlaps="assigned_roles",
+        foreign_keys=[granted_by],
     )
-
     __table_args__ = (
-        UniqueConstraint(
-            "user_id", "role_id", "organization_id", "branch_scope_key",
-            name="uq_user_role_org_branch",
+        # Uniqueness on (user, permission, org, branch-scope), split into
+        # two partial indexes for the same NULL-comparison reason as Role
+        # above. organization_id is always required here, so only the
+        # branch_id split is needed:
+        #
+        #   - org-wide grants     (branch_id IS NULL):
+        #       unique by (user_id, permission_id, organization_id)
+        #   - branch-scoped grants (branch_id IS NOT NULL):
+        #       unique by (user_id, permission_id, organization_id, branch_id)
+        #
+        # This still allows a user to hold the same permission both
+        # org-wide AND branch-scoped at once — they land in different
+        # indexes, so no conflict (see class docstring: the org-wide
+        # grant makes the branch one redundant but not invalid).
+        Index(
+            "uq_user_permission_org_no_branch",
+            "user_id", "permission_id", "organization_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NULL"),
+            postgresql_where=text("branch_id IS NULL"),
         ),
-        Index("ix_user_roles_user_org_branch", "user_id", "organization_id", "branch_id"),
+        Index(
+            "uq_user_permission_org_branch",
+            "user_id", "permission_id", "organization_id", "branch_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NOT NULL"),
+            postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+
+        # branch_id may only be set when organization_id is set.
+        CheckConstraint(
+            "branch_id IS NULL OR organization_id IS NOT NULL",
+            name="ck_user_permission_branch_requires_org",
+        ),
     )
 
     def __repr__(self) -> str:
         scope = f"branch={self.branch_id}" if self.branch_id else "org-wide"
-        return f"<UserRole user={self.user_id} role={self.role_id} {scope}>"
+        return (
+            f"<UserPermission user={self.user_id} "
+            f"permission={self.permission_id} scope={scope}>"
+        )

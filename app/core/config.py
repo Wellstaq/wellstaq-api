@@ -52,6 +52,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # OAuth — Google/Apple verify against these
+    GOOGLE_CLIENT_ID: str = ""
+    APPLE_CLIENT_ID: str = ""  # your app's bundle id / services id
+
+    # Permission cache TTL — belt-and-suspenders; explicit invalidation
+    # on every role change makes this mostly irrelevant, but caps
+    # staleness if an invalidation call is ever missed.
+    PERMISSION_CACHE_TTL_SECONDS: int = 300
+
 
 # Single shared settings instance — import this, never instantiate Settings() elsewhere
 settings = Settings()

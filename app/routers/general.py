@@ -18,7 +18,7 @@ Two flavors of protection are available:
 
 from fastapi import APIRouter, Depends
 
-from app.auth.scoping import CurrentUser, get_current_user, require_role
+from app.auth import CurrentUser, get_current_user, require_role
 
 router = APIRouter(tags=["general"])
 

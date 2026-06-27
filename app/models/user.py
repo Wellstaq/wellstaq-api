@@ -28,8 +28,9 @@ Design principles:
   corrupt RLS tenant isolation silently — treat this as a critical
   invariant in all service-layer code.
 
-- role_name is a plain string label — permission logic lives in a
-  separate permissions table (built later).
+- role_id is a nullable FK to the roles table (ondelete="SET NULL").
+  Permission logic lives in Role rows. NULL = no role assigned yet.
+  Deleting a Role never cascades to User — it clears role_id instead.
 - hashed_password is nullable: OAuth-only users have no password.
   App layer enforces that at least one auth provider exists.
 - email is globally unique — every human maps to exactly one account
@@ -93,6 +94,7 @@ USER_STATUSES = ("pending", "active", "inactive", "suspended")
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     # Identity
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -101,8 +103,12 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     phone_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # Role (dynamic label: permissions resolved separately)
-    role_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    role_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("roles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Status — constrained to known values; see ck_user_status below.
     # pending | active | inactive | suspended
@@ -263,27 +269,25 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     engagement_logs: Mapped[list["EngagementLog"]] = relationship(
         "EngagementLog", back_populates="user", cascade="all, delete-orphan"
     )
-    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(  
-        "LeaderboardSnapshot",  
-        back_populates="user",  
-        cascade="all, delete-orphan",  
-    )  
-    user_roles: Mapped[list["UserRole"]] = relationship(
-        "UserRole",
+    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(
+        "LeaderboardSnapshot",
         back_populates="user",
-        foreign_keys="UserRole.user_id",
+        cascade="all, delete-orphan",
+    )
+    role: Mapped[Optional["Role"]] = relationship(
+        "Role",
+        back_populates="users",
+        foreign_keys=[role_id],
+    )
+    user_permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission",
+        back_populates="user",
+        foreign_keys="UserPermission.user_id",
         cascade="all, delete-orphan",
     )
 
-    assigned_roles: Mapped[list["UserRole"]] = relationship(
-        "UserRole",
-        foreign_keys="[UserRole.assigned_by]",
-        back_populates="assigner",
-        overlaps="assigner",
-    )
-
     __table_args__ = (
-        Index("ix_users_org_role", "organization_id", "role_name"),
+        Index("ix_users_org_role", "organization_id", "role_id"),
         # Constrain status to known values — same pattern as
         # notification_type, reference_type, etc. Prevents free-text
         # status values slipping in via a bug or direct DB write.
@@ -294,7 +298,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<User id={self.id} email={self.email} role={self.role_name}>"
+        return f"<User id={self.id} email={self.email} role={self.role_id}>"
 
 
 """
@@ -475,6 +479,7 @@ class UserDevice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    refresh_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="devices")

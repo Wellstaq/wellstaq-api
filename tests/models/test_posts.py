@@ -29,7 +29,7 @@ from app.models import (
     PostSave,
     PostShare,
 )
-from tests.conftest import make_user, make_org_with_owner
+from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 #
@@ -129,15 +129,17 @@ async def setup_post(db_session: AsyncSession, user_id: str, org_id: str, **over
 
 
 async def setup_user(db_session: AsyncSession, organization_id: str, **overrides):
-    """A non-owner user (e.g. someone liking/sharing/saving/commenting
-    on a post) attached to an existing org."""
     overrides.setdefault("email", "member@example.com")
-    overrides.setdefault("role_name", "employee")
-    user = make_user(organization_id=organization_id, **overrides)
+    role_name = overrides.pop("role_name", "employee")  # extract before passing to make_user
+    user = await make_user_with_role(
+        db_session,
+        organization_id=organization_id,
+        role_name=role_name,
+        **overrides,
+    )
     db_session.add(user)
     await db_session.flush()
     return user
-
 
 # ── Post model ────────────────────────────────────────────────────────────────
 

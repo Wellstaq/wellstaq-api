@@ -8,12 +8,12 @@ the real app.db file. Each test session starts with a clean slate.
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.main import app
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import Organization, User
+from app.models import Organization, Role, User
 
 # ── In-memory SQLite for tests — never touches app.db ────
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -101,19 +101,86 @@ async def client(db_session: AsyncSession) -> AsyncClient:
 # make_org_with_owner) because tests frequently need additional,
 # non-owner members of an already-created org.
 
+# ── Role resolution ────────────────────────────────────────────────────────
+#
+# User.role_name (a free string) has been replaced by User.role_id, a FK
+# to roles.id (see Permission/Role model docstring). Role is no longer a
+# string on the user — it's a real row, and system roles in particular
+# are platform-seeded, read-only, and shared across all orgs
+# (is_system=True, organization_id=NULL, branch_id=NULL).
+#
+# The test DB has no seed data loaded, so get_or_create_system_role()
+# fetches a system Role by name if it already exists in this test's
+# session, or creates it on first use. This keeps test call-sites able to
+# say role_name="employee" (as before) while actually resolving a real
+# role_id underneath — tests don't need to know or care whether the role
+# row already existed.
+#
+# This only ever creates/reuses SYSTEM roles (org_id=NULL, branch_id=NULL).
+# Tests that specifically need an org-wide or branch-scoped custom Role
+# (the other two scope tiers) should construct that Role explicitly
+# rather than going through this helper.
+
+async def get_or_create_system_role(db_session: AsyncSession, name: str) -> Role:
+    """Fetch a system Role by name, creating it if this test session
+    hasn't needed it yet. System roles are org-agnostic
+    (organization_id=NULL, branch_id=NULL, is_system=True) and are
+    meant to be shared/reused, never duplicated per-test."""
+    result = await db_session.execute(
+        select(Role).where(
+            Role.name == name,
+            Role.organization_id.is_(None),
+            Role.branch_id.is_(None),
+        )
+    )
+    role = result.scalar_one_or_none()
+    if role is None:
+        role = Role(name=name, organization_id=None, branch_id=None, is_system=True)
+        db_session.add(role)
+        await db_session.flush()
+    return role
+
+
 def make_user(organization_id: str, **overrides) -> User:
     """Build a User instance (not yet persisted) belonging to the given
     organization. Use for any user other than an org's first/owner user
     — for the owner, use make_org_with_owner() instead, since the owner
-    and the org must be created together to resolve the circular FK."""
+    and the org must be created together to resolve the circular FK.
+
+    NOTE: this is a thin sync constructor — it does NOT resolve a role.
+    Callers that need a default role should use make_user_with_role()
+    below, which awaits get_or_create_system_role() first. make_user()
+    is kept available for callers that already have a role_id in hand
+    (e.g. via overrides) and don't need the lookup/creation step."""
     defaults = dict(
         first_name="Ada",
         last_name="Lovelace",
         email="ada@example.com",
-        role_name="employee",
         hashed_password="$2b$12$fakehash",
     )
     return User(organization_id=organization_id, **{**defaults, **overrides})
+
+
+async def make_user_with_role(
+    db_session: AsyncSession,
+    organization_id: str,
+    *,
+    role_name: str = "employee",
+    **overrides,
+) -> User:
+    """Like make_user(), but resolves role_name -> a real system Role's
+    id via get_or_create_system_role(), then sets role_id accordingly.
+
+    This is async (unlike make_user()) because resolving/creating the
+    Role row requires a DB round-trip. If overrides already includes an
+    explicit role_id, that takes precedence and role_name is ignored —
+    this lets tests pass a specific (e.g. org-scoped custom) Role
+    directly when the default system-role lookup isn't what they want.
+    """
+    if "role_id" not in overrides:
+        role = await get_or_create_system_role(db_session, role_name)
+        overrides["role_id"] = role.id
+    return make_user(organization_id=organization_id, **overrides)
 
 
 async def make_org_with_owner(
@@ -128,6 +195,9 @@ async def make_org_with_owner(
 
     org_kwargs: overrides for Organization (business_name, slug, etc.)
     user_kwargs: overrides for the owner User (email, role_name, etc.)
+        role_name here is resolved to a system Role's id via
+        make_user_with_role() — pass role_id directly instead if the
+        owner needs a non-system (org/branch-scoped) Role.
     """
     org_kwargs = dict(org_kwargs or {})
     user_kwargs = dict(user_kwargs or {})
@@ -138,7 +208,14 @@ async def make_org_with_owner(
     await db_session.flush()  # org.id now exists; owner_id still None
 
     owner_defaults = dict(role_name="overall_manager", email="owner@example.com")
-    owner = make_user(organization_id=org.id, **{**owner_defaults, **user_kwargs})
+    owner_kwargs = {**owner_defaults, **user_kwargs}
+    role_name = owner_kwargs.pop("role_name", "overall_manager")
+    owner = await make_user_with_role(
+        db_session,
+        organization_id=org.id,
+        role_name=role_name,
+        **owner_kwargs,
+    )
     db_session.add(owner)
     await db_session.flush()
 

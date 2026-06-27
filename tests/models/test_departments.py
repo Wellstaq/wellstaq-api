@@ -29,7 +29,7 @@ from app.models import (
     User,
     Branch,
 )
-from tests.conftest import make_user, make_org_with_owner
+from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
@@ -387,13 +387,12 @@ async def test_branch_departments_relationship(db_session: AsyncSession):
 
 
 # ── DepartmentMember model ─────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
 async def test_department_member_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -415,7 +414,7 @@ async def test_department_member_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -433,7 +432,7 @@ async def test_department_member_joined_at_auto_set(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -450,7 +449,7 @@ async def test_department_member_duplicate_raises(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -469,7 +468,7 @@ async def test_department_member_different_departments_same_user(db_session: Asy
     dept_a = await setup_department(db_session, org.id, name="Engineering")
     dept_b = await setup_department(db_session, org.id, name="Marketing")
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -489,7 +488,7 @@ async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = make_user(organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
     db_session.add(member)
     await db_session.flush()
 
@@ -505,9 +504,8 @@ async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
         select(DepartmentMember).where(DepartmentMember.id == membership_id)
     )
     assert result.scalar_one_or_none() is None
-
-
-# ── DepartmentRankSnapshot model ───────────────────────────────────────────────
+    
+    # ── DepartmentRankSnapshot model ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_department_rank_snapshot_persists(db_session: AsyncSession):

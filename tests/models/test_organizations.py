@@ -16,6 +16,15 @@ Schema change this file reflects:
   patch org.owner_id -> flush. No test should construct a User without
   an organization_id, and no test should construct an Organization
   with a permanently-null owner_id outside of that sequence.
+- User.role_name (a free string) has been replaced by User.role_id, a
+  FK to roles.id (see Permission/Role model). Role is no longer a
+  string on the user — it's a real row. Tests that need a user to
+  have a role now go through make_user_with_role() (async — it
+  resolves/creates a system Role row via get_or_create_system_role()
+  and sets role_id), not a bare role_name= kwarg on User(...) directly.
+  make_org_with_owner() already does this internally for the owner;
+  only call-sites that build non-owner Users need to call it
+  themselves.
 
 Known schema limitation acknowledged in tests:
 - test_committed_org_owner_id_cannot_be_null documents that the DB
@@ -33,24 +42,35 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, timezone
-from app.models import Organization, OrganizationInvite, User
-from tests.conftest import make_user, make_org_with_owner
+from app.models import Organization, OrganizationInvite, Role, User
+from tests.conftest import (
+    get_or_create_system_role,
+    make_org_with_owner,
+    make_user,
+    make_user_with_role,
+)
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 #
-# make_user() and make_org_with_owner() now live in conftest.py — shared
-# across every test file that needs a User/Organization, so the
-# circular-FK resolution (see conftest.py docstring) is fixed in exactly
-# one place instead of being copy-pasted per file. Only factories
-# specific to this file's domain (org membership, invites) stay local.
+# make_user(), make_user_with_role(), get_or_create_system_role(), and
+# make_org_with_owner() now live in conftest.py — shared across every
+# test file that needs a User/Organization/Role, so the circular-FK
+# resolution and role_id resolution (see conftest.py docstring) are each
+# fixed in exactly one place instead of being copy-pasted per file. Only
+# factories specific to this file's domain (org membership, invites)
+# stay local.
 
 async def make_member(db_session: AsyncSession, organization_id: str, **overrides) -> User:
     """A non-owner member of an existing org — analogous to a user who
-    joined via accepted invite. organization_id must already exist."""
+    joined via accepted invite. organization_id must already exist.
+
+    role_name (if not overridden) defaults to "employee" and is
+    resolved to a real system Role's id via make_user_with_role() —
+    role_name is no longer a column on User itself."""
     overrides.setdefault("email", "member@example.com")
     overrides.setdefault("role_name", "employee")
-    user = make_user(organization_id=organization_id, **overrides)
+    user = await make_user_with_role(db_session, organization_id=organization_id, **overrides)
     db_session.add(user)
     await db_session.flush()
     return user
@@ -322,12 +342,18 @@ async def test_user_organization_id_required(db_session: AsyncSession):
     """organization_id is NOT NULL — a User cannot be created without
     a resolved organization (see User model docstring: every User row
     is created either via accepted invite or the atomic org+owner
-    signup transaction, never standalone)."""
+    signup transaction, never standalone).
+
+    role_id (not role_name) is resolved via get_or_create_system_role()
+    first, since role is now a real FK rather than a free string —
+    this test is about organization_id, not role, so the role lookup
+    just needs to succeed, not be exercised."""
+    role = await get_or_create_system_role(db_session, "employee")
     user = User(
         first_name="No",
         last_name="Org",
         email="noorg@example.com",
-        role_name="employee",
+        role_id=role.id,
         hashed_password="$2b$12$fakehash",
         organization_id=None,
     )
