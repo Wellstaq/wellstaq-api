@@ -50,7 +50,7 @@ from .session_service import (
 )
 
 # 2FA — delegated to two_factor_service, re-exported for router convenience
-from services.two_factor_service import (
+from .two_factor_service import (
     disable_two_fa,
     initiate_two_fa_setup,
     verify_two_fa_challenge,
