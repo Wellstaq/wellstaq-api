@@ -82,6 +82,13 @@ class ReferenceType(StrEnum):
     USER = "user"
 
 
+class UserStatus(StrEnum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    SUSPENDED = "suspended"
+    PENDING = "pending"   # ← add this
+
+
 # ── OTP ───────────────────────────────────────────────────────────────────────
 # Plain integers — not StrEnum because these are numeric config values,
 # not string identifiers stored in the DB or compared against token claims.

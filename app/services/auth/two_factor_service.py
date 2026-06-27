@@ -3,26 +3,11 @@ app/services/two_factor_service.py
 
 All 2FA business logic:
   - TOTP secret generation and verification (stdlib only, no pyotp)
-  - initiate_two_fa_setup  — store pending secret, send OTP for SMS/email
-  - confirm_two_fa_setup   — verify first code, activate 2FA  ← NEW (was missing)
-  - issue_two_fa_challenge — short-lived challenge token after password login
+  - initiate_two_fa_setup   — store pending secret, send OTP for SMS/email
+  - confirm_two_fa_setup    — verify first code, activate 2FA
+  - issue_two_fa_challenge  — short-lived challenge token after password login
   - verify_two_fa_challenge — verify code, issue full JWT pair
-  - disable_two_fa         — requires current password
-
-Alignment with jwt.py
-──────────────────────
-The 2FA challenge token is a *custom* short-lived token created via
-jwt.py's _create_token() internal — but that's private. Instead we
-create it via the standard create_access_token() with a special
-"type" override injected via extra_claims.
-
-Wait — jwt.py's create_access_token() signature is:
-  create_access_token(user_id, organization_id, branch_id, role, permissions)
-It does NOT accept extra_claims or expires_delta.
-
-The challenge token therefore needs a *separate* helper that calls
-_create_token() directly. Since _create_token is private to jwt.py,
-we expose a new public function there: create_custom_token().
+  - disable_two_fa          — requires current password
 
 Services never commit — the router owns the transaction boundary.
 """
@@ -31,9 +16,10 @@ from __future__ import annotations
 
 import base64
 import hmac
+import logging
 import struct
 import time
-from datetime import timedelta, timezone, datetime
+from datetime import timedelta
 from typing import Literal
 
 from fastapi import status
@@ -44,22 +30,23 @@ from sqlalchemy.orm import selectinload
 from app.auth import TokenError, decode_token, verify_password
 from app.core.constants import TwoFaMethod, TokenType
 from app.models import User, UserSettings
-from .token_service import issue_tokens, two_fa_challenge_response
+from app.services.token_service import issue_tokens, two_fa_challenge_response
+
+logger = logging.getLogger(__name__)
 
 
-# ── AuthError imported lazily to avoid circular dependency ─────────────────────
-# two_factor_service → auth_service (for AuthError class definition only).
-# auth_service → two_factor_service (for issue_two_fa_challenge).
-# Python resolves this fine at runtime via lazy function-level import,
-# but to keep it explicit we define a local alias at module level via TYPE_CHECKING.
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from app.services.auth_service import AuthError as _AuthError
-
+# ── AuthError — lazy import to avoid circular dependency ───────────────────────
+# two_factor_service → app.services.auth.errors (AuthError)
+# app.services.auth  → two_factor_service (issue_two_fa_challenge, etc.)
+# Lazy import at call time breaks the cycle cleanly.
 
 def _auth_error(message: str, status_code: int = status.HTTP_400_BAD_REQUEST) -> Exception:
-    """Lazy factory — avoids importing AuthError at module load time."""
-    from app.services.auth_service import AuthError
+    """
+    Lazy factory for AuthError.
+    Imports from the new package path (app.services.auth.errors),
+    not the old monolith (app.services.auth_service).
+    """
+    from app.services.auth.errors import AuthError
     return AuthError(message, status_code)
 
 
@@ -73,23 +60,22 @@ def _create_challenge_token(
     ip_address: str | None,
 ) -> str:
     """
-    Create a 5-minute short-lived token that encodes the 2FA challenge context.
+    Create a 5-minute short-lived token encoding the 2FA challenge context.
 
-    jwt.py's public create_access_token() doesn't accept custom claims or
-    expiry overrides. We access _create_token() directly here.
+    Uses jwt.py's private _create_token() because create_access_token()
+    doesn't accept custom expiry or extra claims.
 
-    ALTERNATIVE (cleaner): add to jwt.py:
+    TODO: add create_custom_token() to jwt.py as a clean public surface:
         def create_custom_token(subject, extra_claims, expires_delta) -> str:
             return _create_token(subject, expires_delta, "access", extra_claims)
-    Then call that instead of the private _create_token below.
     """
     from app.auth import jwt as _jwt_module
     return _jwt_module._create_token(
         subject=user_id,
         expires_delta=timedelta(minutes=5),
-        token_type="access",   # type="access" so decode_token() accepts it
+        token_type="access",
         extra_claims={
-            "type": TokenType.TWO_FA_CHALLENGE,   # overrides the "access" above
+            "type": TokenType.TWO_FA_CHALLENGE,
             "two_fa_method": method,
             "device_name": device_name,
             "device_fingerprint": device_fingerprint,
@@ -98,7 +84,7 @@ def _create_challenge_token(
     )
 
 
-# ── TOTP primitives (stdlib only) ──────────────────────────────────────────────
+# ── TOTP primitives (stdlib only — no pyotp dependency) ───────────────────────
 
 def generate_totp_secret() -> str:
     """Generate a 20-byte cryptographically random TOTP secret, base32-encoded."""
@@ -106,7 +92,7 @@ def generate_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode()
 
 
-def totp_uri(secret: str, email: str, issuer: str = "YourApp") -> str:
+def totp_uri(secret: str, email: str, issuer: str = "Wellstaq") -> str:
     from urllib.parse import quote
     return (
         f"otpauth://totp/{quote(issuer)}:{quote(email)}"
@@ -116,8 +102,8 @@ def totp_uri(secret: str, email: str, issuer: str = "YourApp") -> str:
 
 def verify_totp(secret: str, code: str, window: int = 1) -> bool:
     """
-    Verify a 6-digit TOTP code. `secret` must be a clean base32 string
-    (no "pending:" prefix). Checks ±window steps (30 s each) for clock skew.
+    Verify a 6-digit TOTP code against a clean base32 secret.
+    Checks ±window 30-second steps to accommodate clock skew.
     """
     try:
         key = base64.b32decode(secret.upper())
@@ -171,7 +157,7 @@ async def _load_user_with_settings(
     return user, settings_row
 
 
-# ── 1. Issue 2FA challenge (called from password_login) ────────────────────────
+# ── 1. Issue 2FA challenge ─────────────────────────────────────────────────────
 
 async def issue_two_fa_challenge(
     user: User,
@@ -181,9 +167,8 @@ async def issue_two_fa_challenge(
     ip_address: str | None,
 ) -> dict:
     """
-    Create a short-lived challenge token after password login succeeds
-    but before the JWT pair is issued. Client exchanges it at
-    /auth/2fa/verify via verify_two_fa_challenge().
+    Create a short-lived challenge token after password login.
+    Client exchanges it at /auth/2fa/verify.
     """
     challenge_token = _create_challenge_token(
         user_id=user.id,
@@ -206,11 +191,6 @@ async def initiate_two_fa_setup(
     """
     Begin 2FA enrollment. Stores a pending secret; does NOT enable 2FA yet.
     Client must call confirm_two_fa_setup() with a valid first code to activate.
-
-    Returns:
-      totp  → {"method": "totp", "totp_secret": "...", "totp_uri": "..."}
-      sms   → {"method": "sms",  "totp_secret": None, "totp_uri": None}
-      email → {"method": "email","totp_secret": None, "totp_uri": None}
     """
     user, settings_row = await _load_user_with_settings(session, user_id)
 
@@ -224,7 +204,6 @@ async def initiate_two_fa_setup(
         secret = generate_totp_secret()
         uri = totp_uri(secret, user.email)
         settings_row.two_fa_secret = _make_pending(secret)
-        # two_fa_method stays NULL — satisfies CHECK(enabled=False => method IS NULL)
         await session.flush()
         return {"method": TwoFaMethod.TOTP, "totp_secret": secret, "totp_uri": uri}
 
@@ -258,7 +237,7 @@ async def initiate_two_fa_setup(
         raise _auth_error(f"Unknown 2FA method '{method}'.", status.HTTP_400_BAD_REQUEST)
 
 
-# ── 3. Confirm 2FA setup  ← THIS WAS THE MISSING STEP ────────────────────────
+# ── 3. Confirm 2FA setup ───────────────────────────────────────────────────────
 
 async def confirm_two_fa_setup(
     session: AsyncSession,
@@ -268,13 +247,12 @@ async def confirm_two_fa_setup(
     """
     Verify the user's first live code and fully activate 2FA.
 
-    Without this step TOTP would never activate because
-    verify_two_fa_challenge() would call verify_totp() against
-    "pending:BASE32SECRET" — invalid base32, always fails.
+    Without this step TOTP would never activate — verify_totp() would
+    receive "pending:BASE32SECRET" which is invalid base32 and always fails.
 
     After this call:
-      two_fa_secret  → clean value (pending prefix stripped)
-      two_fa_method  → set  (satisfies CHECK: enabled=True => method IS NOT NULL)
+      two_fa_secret  → clean (pending prefix stripped)
+      two_fa_method  → set
       two_fa_enabled → True
     """
     user, settings_row = await _load_user_with_settings(session, user_id)
@@ -318,7 +296,7 @@ async def confirm_two_fa_setup(
     await session.flush()
 
 
-# ── 4. Verify 2FA challenge (completes login) ──────────────────────────────────
+# ── 4. Verify 2FA challenge ────────────────────────────────────────────────────
 
 async def verify_two_fa_challenge(
     session: AsyncSession,
@@ -331,9 +309,8 @@ async def verify_two_fa_challenge(
     """
     Complete a 2FA challenge and issue a full JWT pair.
 
-    Device metadata embedded in the challenge token takes precedence over
-    args — prevents a client from swapping device context between challenge
-    and verify calls.
+    Device metadata embedded in the challenge token takes precedence —
+    prevents a client from swapping device context between challenge and verify.
     """
     try:
         payload = decode_token(challenge_token)
@@ -348,7 +325,6 @@ async def verify_two_fa_challenge(
 
     user_id = payload.get("sub")
     method = payload.get("two_fa_method")
-    # Token-embedded device context takes precedence (prevents device-swap attacks)
     resolved_device_name = payload.get("device_name") or device_name
     resolved_fp = payload.get("device_fingerprint") or device_fingerprint
     resolved_ip = payload.get("ip_address") or ip_address
@@ -364,8 +340,6 @@ async def verify_two_fa_challenge(
             status.HTTP_400_BAD_REQUEST,
         )
 
-    # two_fa_secret is always clean (no prefix) at this point —
-    # confirm_two_fa_setup() strips it before enabling.
     if method == TwoFaMethod.TOTP:
         if not settings_row.two_fa_secret:
             raise _auth_error("TOTP is not configured.", status.HTTP_400_BAD_REQUEST)
@@ -393,10 +367,8 @@ async def disable_two_fa(
     password: str,
 ) -> None:
     """
-    Disable 2FA. Requires current password to prevent silent security downgrade
-    by a session hijacker.
-
-    Clears all three 2FA fields — satisfies all DB CHECK constraints.
+    Disable 2FA. Requires current password to prevent silent security
+    downgrade by a session hijacker.
     """
     user, settings_row = await _load_user_with_settings(session, user_id)
 

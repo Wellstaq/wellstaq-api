@@ -18,7 +18,6 @@ from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.jwt import create_access_token
 from app.core.constants import (
     OTP_LENGTH,
     OTP_MAX_ATTEMPTS,
@@ -54,9 +53,32 @@ def _make_code() -> str:
     """
     Cryptographically random numeric OTP.
     secrets.randbelow(10 ** N) is uniform over [0, 10^N) — no modulo bias.
-    zfill ensures leading zeros are preserved (e.g. "042891").
+    zfill preserves leading zeros (e.g. "042891").
     """
     return str(secrets.randbelow(10 ** OTP_LENGTH)).zfill(OTP_LENGTH)
+
+
+def _make_email_verification_token(email: str) -> str:
+    """
+    Issue a short-lived email_verification_token after OTP success.
+
+    Uses jwt.py's _create_token() directly because jwt.py's public
+    create_access_token() only accepts (user_id, organization_id, branch_id,
+    role, permissions) — it has no token_type, expires_delta, or extra_claims
+    parameters. _create_token() is the correct internal surface for custom tokens.
+
+    If jwt.py gains a public create_custom_token() helper, use that instead.
+    """
+    from app.auth import jwt as _jwt
+    return _jwt._create_token(
+        subject=email,
+        expires_delta=timedelta(minutes=OTP_TTL_MINUTES),
+        token_type="access",        # decode_token() accepts "access" type
+        extra_claims={
+            "type": TokenType.EMAIL_VERIFICATION,   # overrides type for service-layer checks
+            "email": email,
+        },
+    )
 
 
 # ── Email delivery ─────────────────────────────────────────────────────────────
@@ -69,8 +91,7 @@ async def _send_email_otp(email: str, code: str, purpose: str) -> None:
     OtpCode row — an undelivered code should leave no DB trace.
 
     The original exception is logged with exc_info=True before re-raising
-    so the full traceback is visible in log aggregators. The raw exception
-    is never forwarded to the client.
+    so the full traceback is visible in log aggregators.
     """
     try:
         from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
@@ -124,9 +145,6 @@ async def _send_email_otp(email: str, code: str, purpose: str) -> None:
         await FastMail(conf).send_message(message)
 
     except Exception:
-        # Log the real cause with full traceback before replacing it with a
-        # safe user-facing message. Without this, email delivery outages are
-        # completely invisible in production logs.
         logger.error(
             "Failed to send OTP email",
             exc_info=True,
@@ -146,15 +164,12 @@ async def request_otp(
     purpose: Literal["verification", "2fa_email", "2fa_sms"] = "verification",
 ) -> None:
     """
-    Generate a new OTP, burn any prior unused codes, store the hash, and deliver.
-
-    Returns nothing — the code is sent directly to the user's device.
-    Raises OtpError if delivery fails (caller should rollback so the
-    undelivered OtpCode row does not survive).
+    Generate a new OTP, burn prior unused codes, store hash, deliver.
+    Returns nothing — code is sent directly to the user.
+    Raises OtpError on delivery failure (caller should rollback).
     """
     email = email.lower().strip()
 
-    # Burn existing unused codes for this email — one live code at a time.
     existing = await session.execute(
         select(OtpCode).where(OtpCode.email == email, OtpCode.used == False)  # noqa: E712
     )
@@ -189,20 +204,14 @@ async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
     ─────────────────
     Every wrong guess increments attempt_count and flushes immediately.
     Once attempt_count reaches OTP_MAX_ATTEMPTS the record is locked
-    (used=True) before raising — forcing the user to request a fresh code.
-    This flush MUST reach the DB even when OtpError is raised, so the
-    router must call db.commit() (not rollback) on OtpError.
-    See app/routers/auth.py and app/core/guards.py for the commit logic.
+    (used=True) — forcing the user to request a fresh code.
+    The router must commit() (not rollback) on OtpError so these
+    increments survive. See app/core/guards.py for the commit logic.
 
     Returns
     ────────
-    A short-lived email_verification JWT on success.
-    The token type is TokenType.EMAIL_VERIFICATION so auth_service can
-    distinguish it from a regular access token.
-
-    Raises
-    ───────
-    OtpError — wrong code, too many attempts, expired, or not found.
+    A short-lived email_verification JWT on success, built via
+    jwt._create_token() which matches jwt.py's actual internal API.
     """
     email = email.lower().strip()
 
@@ -223,11 +232,7 @@ async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
             "Verification code has expired or was not requested. Please request a new one."
         )
 
-    # Check lockout before hash comparison — avoids leaking timing info
-    # about whether a locked record exists.
     if record.attempt_count >= OTP_MAX_ATTEMPTS:
-        # Already locked — should not normally be reached because we set
-        # used=True when locking, but guard here as defence in depth.
         raise OtpError(
             "Too many incorrect attempts. Please request a new code.",
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -237,7 +242,6 @@ async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
         record.attempt_count += 1
 
         if record.attempt_count >= OTP_MAX_ATTEMPTS:
-            # Lock the record so it cannot be retried even if not yet expired.
             record.used = True
             await session.flush()
             raise OtpError(
@@ -248,20 +252,11 @@ async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
         await session.flush()
         remaining = OTP_MAX_ATTEMPTS - record.attempt_count
         raise OtpError(
-            f"Incorrect verification code. {remaining} attempt{'s' if remaining != 1 else ''} remaining.",
+            f"Incorrect verification code. "
+            f"{remaining} attempt{'s' if remaining != 1 else ''} remaining.",
         )
 
-    # Correct code — mark used and issue verification token.
     record.used = True
     await session.flush()
 
-    return create_access_token(
-        user_id=email,                          # sub claim carries the email here
-        organization_id=None,
-        branch_id=None,
-        role=None,
-        permissions=[],
-        token_type=TokenType.EMAIL_VERIFICATION,
-        expires_delta=timedelta(minutes=OTP_TTL_MINUTES),
-        extra_claims={"email": email},
-    )
+    return _make_email_verification_token(email)
