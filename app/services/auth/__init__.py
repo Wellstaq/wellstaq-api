@@ -17,7 +17,6 @@ import statements don't change after the split:
     )
 """
 
-from app.services.errors import AuthError
 
 # Signup
 from .signup_service import org_owner_signup
@@ -57,7 +56,7 @@ from .two_factor_service import (
 )
 
 # OTP — re-exported so the router can import OtpError from one place
-from .services.otp_service import (
+from .otp_service import (
     OtpError,
     request_otp,
     verify_otp,

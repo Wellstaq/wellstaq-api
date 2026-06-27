@@ -72,7 +72,6 @@ from app.schemas.auth import (
     UserMeResponse,
 )
 from app.services.auth import (
-    AuthError,
     OtpError,
     check_business_name_available,
     check_phone_available,
@@ -91,7 +90,7 @@ from app.services.auth import (
     verify_otp,
     verify_two_fa_challenge,
 )
-
+from app.services.errors import AuthError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])

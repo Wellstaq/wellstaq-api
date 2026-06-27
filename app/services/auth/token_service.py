@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import (
+from app.auth.jwt import (
     create_access_token,
     create_refresh_token,
     hash_refresh_token,   # re-use jwt.py's implementation — no local duplicate

@@ -34,7 +34,7 @@ from app.auth.jwt import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.core.database import get_db
 from app.models import User
-from app.services.auth import load_user_permissions  
+from app.services.auth.token_service import load_user_permissions  
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 

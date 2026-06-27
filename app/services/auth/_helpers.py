@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth import TokenError, decode_token
+from app.auth.jwt import TokenError, decode_token
 from app.core.constants import (
     ActivityType,
     InviteStatus,
@@ -39,7 +39,7 @@ from app.models import (
     UserActivityFeed,
     UserSettings,
 )
-from .errors import AuthError
+from app.services.errors import AuthError
 
 
 def _mask_email(email: str) -> str:
