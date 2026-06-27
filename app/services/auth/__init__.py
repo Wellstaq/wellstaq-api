@@ -17,14 +17,14 @@ import statements don't change after the split:
     )
 """
 
-from .errors import AuthError
+from app.services.errors import AuthError
 
 # Signup
 from .signup_service import org_owner_signup
 
 # Availability checks — re-exported directly from organization_service,
 # no thin wrapper needed (the router just calls them, not service logic)
-from app.services.organization_service import (
+from .organization_service import (
     check_business_name_available,
     check_phone_available,
 )
@@ -50,14 +50,14 @@ from .session_service import (
 )
 
 # 2FA — delegated to two_factor_service, re-exported for router convenience
-from app.services.two_factor_service import (
+from services.two_factor_service import (
     disable_two_fa,
     initiate_two_fa_setup,
     verify_two_fa_challenge,
 )
 
 # OTP — re-exported so the router can import OtpError from one place
-from app.services.otp_service import (
+from .services.otp_service import (
     OtpError,
     request_otp,
     verify_otp,
