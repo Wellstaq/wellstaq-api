@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth import TokenError, decode_token
+from app.auth.jwt import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.core.database import get_db
 from app.models import User
