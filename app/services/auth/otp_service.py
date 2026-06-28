@@ -1,5 +1,5 @@
 """
-app/services/otp_service.py
+app/services/auth/otp_service.py
 
 Centralised OTP management.
 Handles generation, hashing, storage, and delivery (email/SMS) of One-Time Passwords.
@@ -66,16 +66,14 @@ def _make_email_verification_token(email: str) -> str:
     create_access_token() only accepts (user_id, organization_id, branch_id,
     role, permissions) — it has no token_type, expires_delta, or extra_claims
     parameters. _create_token() is the correct internal surface for custom tokens.
-
-    If jwt.py gains a public create_custom_token() helper, use that instead.
     """
     from app.auth import jwt as _jwt
     return _jwt._create_token(
         subject=email,
         expires_delta=timedelta(minutes=OTP_TTL_MINUTES),
-        token_type="access",        # decode_token() accepts "access" type
+        token_type="access",
         extra_claims={
-            "type": TokenType.EMAIL_VERIFICATION,   # overrides type for service-layer checks
+            "type": TokenType.EMAIL_VERIFICATION,
             "email": email,
         },
     )
@@ -85,65 +83,41 @@ def _make_email_verification_token(email: str) -> str:
 
 async def _send_email_otp(email: str, code: str, purpose: str) -> None:
     """
-    Send the OTP to the user's email address.
+    Send the OTP via SendGrid.
 
     Raises OtpError on delivery failure so the caller can roll back the
     OtpCode row — an undelivered code should leave no DB trace.
-
-    The original exception is logged with exc_info=True before re-raising
-    so the full traceback is visible in log aggregators.
     """
+    subject = (
+        "Your verification code"
+        if purpose == "verification"
+        else "Your security code"
+    )
+
+    html_body = f"""
+    <html>
+      <body style="font-family:sans-serif;color:#333;max-width:480px;margin:auto;">
+        <h2 style="margin-bottom:4px;">{subject}</h2>
+        <p style="color:#555;">
+          Enter this code to verify your identity.
+          It expires in <strong>{OTP_TTL_MINUTES} minutes</strong>.
+        </p>
+        <div style="
+          display:inline-block;padding:14px 28px;
+          background:#f4f4f4;border-radius:8px;
+          font-size:36px;font-weight:bold;letter-spacing:10px;
+          margin:20px 0;
+        ">{code}</div>
+        <p style="color:#999;font-size:12px;">
+          If you didn't request this, you can safely ignore this email.
+        </p>
+      </body>
+    </html>
+    """
+
     try:
-        from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
-        from app.core.config import settings as app_settings
-
-        conf = ConnectionConfig(
-            MAIL_USERNAME=app_settings.MAIL_USERNAME,
-            MAIL_PASSWORD=app_settings.MAIL_PASSWORD,
-            MAIL_FROM=app_settings.MAIL_FROM,
-            MAIL_PORT=app_settings.MAIL_PORT,
-            MAIL_SERVER=app_settings.MAIL_SERVER,
-            MAIL_STARTTLS=app_settings.MAIL_STARTTLS,
-            MAIL_SSL_TLS=app_settings.MAIL_SSL_TLS,
-            USE_CREDENTIALS=True,
-            VALIDATE_CERTS=True,
-        )
-
-        subject = (
-            "Your verification code"
-            if purpose == "verification"
-            else "Your security code"
-        )
-
-        html_body = f"""
-        <html>
-          <body style="font-family:sans-serif;color:#333;max-width:480px;margin:auto;">
-            <h2 style="margin-bottom:4px;">{subject}</h2>
-            <p style="color:#555;">
-              Enter this code to verify your identity.
-              It expires in <strong>{OTP_TTL_MINUTES} minutes</strong>.
-            </p>
-            <div style="
-              display:inline-block;padding:14px 28px;
-              background:#f4f4f4;border-radius:8px;
-              font-size:36px;font-weight:bold;letter-spacing:10px;
-              margin:20px 0;
-            ">{code}</div>
-            <p style="color:#999;font-size:12px;">
-              If you didn't request this, you can safely ignore this email.
-            </p>
-          </body>
-        </html>
-        """
-
-        message = MessageSchema(
-            subject=subject,
-            recipients=[email],
-            body=html_body,
-            subtype=MessageType.html,
-        )
-        await FastMail(conf).send_message(message)
-
+        from app.core.email import send_email
+        await send_email(to=email, subject=subject, html=html_body)
     except Exception:
         logger.error(
             "Failed to send OTP email",
@@ -210,8 +184,7 @@ async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
 
     Returns
     ────────
-    A short-lived email_verification JWT on success, built via
-    jwt._create_token() which matches jwt.py's actual internal API.
+    A short-lived email_verification JWT on success.
     """
     email = email.lower().strip()
 

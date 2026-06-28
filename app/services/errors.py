@@ -1,10 +1,10 @@
-"""
-app/services/auth/errors.py
-
-AuthError — the single exception type raised by all auth service functions.
-Routers catch it and map to HTTP status codes via request_guard().
-"""
+class AppError(Exception):
+    """Base for all service-layer exceptions."""
 
 
-class AuthError(Exception):
-    pass
+class AuthError(AppError):
+    """Raised by auth services for expected, user-facing failures."""
+
+
+class OtpError(AppError):
+    """Raised by OTP service for invalid/expired codes."""

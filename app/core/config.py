@@ -52,6 +52,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    SENDGRID_API_KEY: str ="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"
+    MAIL_FROM: str ="iyanue15@gmail.com"
+    MAIL_FROM_NAME: str ="Wellstaq"
+
+
     # OAuth — Google/Apple verify against these
     GOOGLE_CLIENT_ID: str = ""
     APPLE_CLIENT_ID: str = ""  # your app's bundle id / services id

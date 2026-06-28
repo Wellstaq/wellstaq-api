@@ -97,7 +97,6 @@ async def org_owner_signup(
     org = Organization(
         business_name=business_name.strip(),
         slug=slug,
-        phone_number=phone_number.strip(),
         employee_count=employee_count,
         organization_type=organization_type,
         work_model=work_model,
@@ -110,6 +109,7 @@ async def org_owner_signup(
     user = User(
         first_name=first_name,
         last_name=last_name,
+        phone_number=phone_number.strip(),
         email=email,
         hashed_password=hash_password(password),
         organization_id=org.id,

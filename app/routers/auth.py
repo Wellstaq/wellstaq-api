@@ -218,6 +218,7 @@ async def signup_otp_request(payload: OtpRequestSchema, db: AsyncSession = Depen
     Rate-limited at the reverse-proxy / middleware layer.
     TODO: wire slowapi if middleware rate limiting is not in place.
     """
+    
     async with request_guard(db, "/auth/signup/otp/request", email=payload.email):
         await request_otp(db, payload.email, purpose="verification")
         await db.commit()

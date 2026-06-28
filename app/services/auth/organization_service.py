@@ -81,8 +81,8 @@ async def check_phone_available(session: AsyncSession, phone_number: str) -> boo
     Redis slot: same pattern as check_business_name_available.
     """
     hit = await session.execute(
-        select(Organization.id).where(
-            Organization.phone_number == phone_number.strip()
+        select(User.id).where(
+            User.phone_number == phone_number.strip()
         )
     )
     return hit.scalar_one_or_none() is None

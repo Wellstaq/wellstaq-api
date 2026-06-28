@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 def _get_error_classes():
     """Return (AppError, OtpError) without creating a circular import."""
     from app.services.errors import AppError         # base class for all domain errors
-    from app.services.otp_service import OtpError
+    from app.services.auth.otp_service import OtpError
     return AppError, OtpError
 
 
