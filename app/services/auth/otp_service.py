@@ -141,8 +141,23 @@ async def request_otp(
     Generate a new OTP, burn prior unused codes, store hash, deliver.
     Returns nothing — code is sent directly to the user.
     Raises OtpError on delivery failure (caller should rollback).
+
+    For purpose="verification" (initial registration), rejects emails that
+    already belong to an existing account — no code is generated or sent.
+    For purpose="2fa_email", the user must already exist, so this guard
+    is intentionally skipped.
     """
     email = email.lower().strip()
+
+    # ── Guard: block re-registration attempts ──────────────────────────────────
+    if purpose == "verification":
+        from app.models import User
+        existing_user = await session.execute(select(User).where(User.email == email))
+        if existing_user.scalar_one_or_none():
+            raise OtpError(
+                "An account with this email already exists.",
+                status.HTTP_409_CONFLICT,
+            )
 
     existing = await session.execute(
         select(OtpCode).where(OtpCode.email == email, OtpCode.used == False)  # noqa: E712

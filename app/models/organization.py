@@ -58,10 +58,12 @@ Deactivation vs deletion:
   the DB level.
 """
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String,text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from typing import Optional
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
@@ -131,17 +133,15 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # deleted. This requires the real database to enforce FKs (Postgres
     # does natively; the test suite's SQLite enables PRAGMA
     # foreign_keys=ON in conftest.py for the same reason).
-    # Identity & other columns remain exactly the same...
 
-    
     owner: Mapped[Optional["User"]] = relationship(
         "User",
         foreign_keys=[owner_id],
         back_populates="owned_organizations",
         passive_deletes=True,
-        post_update=True,  #  Breaks the ORM topological graph cycle and automates circular insertion
+        post_update=True,  # Breaks the ORM topological graph cycle and automates circular insertion
     )
- 
+
     branches: Mapped[list["Branch"]] = relationship(
         "Branch",
         back_populates="organization",
@@ -183,23 +183,23 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     engagement_logs: Mapped[list["EngagementLog"]] = relationship(
         "EngagementLog", back_populates="organization", cascade="all, delete-orphan"
     )
-    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(  
-        "LeaderboardSnapshot",  
-        back_populates="organization",  
-        cascade="all, delete-orphan",  
-    )  
-    
-    targets: Mapped[list["Target"]] = relationship(  
-        "Target",  
-        back_populates="organization",  
-        cascade="all, delete-orphan",  
-    )  
-    
-    kpi_snapshots: Mapped[list["KPISnapshot"]] = relationship(  
-        "KPISnapshot",  
-        back_populates="organization",  
-        cascade="all, delete-orphan",  
-    )  
+    leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(
+        "LeaderboardSnapshot",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+    targets: Mapped[list["Target"]] = relationship(
+        "Target",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+    kpi_snapshots: Mapped[list["KPISnapshot"]] = relationship(
+        "KPISnapshot",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
 
     custom_roles: Mapped[list["Role"]] = relationship(
         "Role",
@@ -213,7 +213,6 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="UserPermission.organization_id",
         cascade="all, delete-orphan",
     )
-   
 
     # ── Wellbeing ──────────────────────────────────────────────────────────────
     wellbeing_challenges: Mapped[list["OrganizationWellbeingChallenge"]] = relationship(
@@ -241,7 +240,7 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
         back_populates="organization",
-        cascade="all, delete-orphan"  # Automatically wipes invites if the organization is deleted
+        cascade="all, delete-orphan",  # Automatically wipes invites if the organization is deleted
     )
 
     posts: Mapped[list["Post"]] = relationship(
@@ -362,6 +361,7 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug} owner_id={self.owner_id} active={self.is_active}>"
 
+
 # ── OrganizationInvite model ───────────────────────────────────────────────────
 
 """
@@ -374,10 +374,6 @@ Design principles:
   Enforced at both DB level (NOT NULL FK) and service layer (validated before insert).
 - invited_role_id is NOT NULL — the inviter pre-assigns exactly one role when creating
   the invite. The role can be changed post-join by an authority.
-- Permissions are optional at invite time. When present they are stored in the
-  OrganizationInvitePermission join table (one row per permission) and materialized
-  into real UserPermission rows the moment the invite is accepted. They can be
-  added/revoked post-join independently.
 - invite_code must be unique as it forms the URL.
 - invited_by links back to the user (manager) who generated the invite.
 - accepted_at and expires_at manage the lifecycle of the invite.
@@ -386,99 +382,6 @@ Design principles:
   docstring). There is no "pending user" row prior to acceptance; the
   invite itself is the only record of intent until then.
 """
-
-from datetime import datetime
-from typing import Optional
-
-from sqlalchemy import DateTime, ForeignKey, Index, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-
-
-class OrganizationInvitePermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """
-    Intent record: "when this invite is accepted, grant this permission."
-
-    Exists only to carry the inviter's permission pre-assignments across
-    the gap between invite creation and user registration. At registration
-    time each row here is read, a UserPermission is created, and these
-    rows are no longer needed (but kept for audit — they cascade-delete
-    with the invite if the invite is revoked before acceptance).
-
-    Scoped the same way UserPermission is scoped:
-      branch_id NULL  → org-wide grant
-      branch_id SET   → branch-scoped grant (must belong to organization_id,
-                        enforced at service layer)
-
-    No granted_by here — the granter is always invite.invited_by,
-    resolved at materialization time.
-    """
-
-    __tablename__ = "organization_invite_permissions"
-
-    invite_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organization_invites.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    permission_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("permissions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    # Mirrors the scope fields from UserPermission so materialization
-    # is a direct copy — no inference needed.
-    organization_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    branch_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("branches.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-
-    # ── Relationships ──────────────────────────────────────────────────────
-    invite: Mapped["OrganizationInvite"] = relationship(
-        "OrganizationInvite",
-        back_populates="invite_permissions",
-    )
-    permission: Mapped["Permission"] = relationship(
-        "Permission",
-        foreign_keys=[permission_id],
-    )
-
-    __table_args__ = (
-        # Same partial-index uniqueness pattern as UserPermission —
-        # NULLs are not equal in unique indexes.
-        Index(
-            "uq_invite_permission_no_branch",
-            "invite_id", "permission_id", "organization_id",
-            unique=True,
-            sqlite_where=text("branch_id IS NULL"),
-            postgresql_where=text("branch_id IS NULL"),
-        ),
-        Index(
-            "uq_invite_permission_branch",
-            "invite_id", "permission_id", "organization_id", "branch_id",
-            unique=True,
-            sqlite_where=text("branch_id IS NOT NULL"),
-            postgresql_where=text("branch_id IS NOT NULL"),
-        ),
-    )
-
-    def __repr__(self) -> str:
-        scope = f"branch={self.branch_id}" if self.branch_id else "org-wide"
-        return (
-            f"<OrganizationInvitePermission invite={self.invite_id} "
-            f"permission={self.permission_id} scope={scope}>"
-        )
 
 
 class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -579,14 +482,6 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "User",
         back_populates="joined_via_invite",
         foreign_keys=[accepted_by_id],
-    )
-
-    # Optional permission pre-assignments — materialized into UserPermission
-    # rows when the invite is accepted.
-    invite_permissions: Mapped[list["OrganizationInvitePermission"]] = relationship(
-        "OrganizationInvitePermission",
-        back_populates="invite",
-        cascade="all, delete-orphan",
     )
 
     # ── Indexes ────────────────────────────────────────────────────────────

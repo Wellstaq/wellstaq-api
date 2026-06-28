@@ -104,43 +104,98 @@ def assign_role(user: User, role: Role) -> None:
 
 # ── Permission seeding ─────────────────────────────────────────────────────────
 
-# TODO: move this mapping into a DB seed/migration so permission changes
-# don't require a redeploy. This dict is intentionally one-time seeding only
-# — it has no effect on existing users.
+# Permissions granted to non-owner roles at invite acceptance.
+# Super Admin is intentionally absent — they receive ALL platform
+# permissions via seed_default_permissions(), not a fixed subset.
+#
+# Keep this list in sync with the permission names in
+# scripts/seed_permissions.py. Adding a new permission to the seed
+# script does NOT automatically grant it to existing employees —
+# this mapping only applies at the moment a new user is created.
 DEFAULT_PERMISSIONS: dict[str, list[str]] = {
-    "Super Admin": [
-        "post.create", "post.delete", "post.moderate",
-        "event.create", "event.cancel",
-        "user.invite", "user.suspend", "user.elevate",
-        "user.delete", "permission.grant",
-        "branch.manage", "department.manage",
-        "wellbeing.view_team", "wellbeing.export",
-    ],
     "Employee": [
-        "post.create",
+        "post.delete",       # can delete their own posts
+        "post.moderate",     # can flag/report content
+    ],
+    "Branch Manager": [
+        "member.invite",
+        "member.suspend",
+        "member.reinstate",
+        "member.department.assign",
+        "department.create",
+        "department.update",
+        "club.create",
+        "club.update",
+        "club.member.remove",
+        "event.create",
+        "event.update",
+        "event.delete",
+        "challenge.create",
+        "challenge.update",
+        "post.delete",
+        "post.moderate",
+        "story.delete",
+        "comment.delete",
+        "wellbeing.view_team",
+        "wellbeing.export",
+    ],
+    "Team Leader": [
+        "member.suspend",
+        "member.reinstate",
+        "member.department.assign",
+        "post.delete",
+        "post.moderate",
+        "comment.delete",
+        "wellbeing.view_team",
     ],
 }
 
 
 async def seed_default_permissions(
-    session: AsyncSession, user: User, role_name: str
+    session: AsyncSession,
+    user: User,
+    role_name: str,
 ) -> None:
     """
-    Grant the starter permission set for role_name.
-    granted_by=None marks them as system-seeded.
-    One-time call at signup — editing this dict has no effect on existing users.
+    Grant the starter permission set for role_name at signup/invite acceptance.
+
+    Super Admin (org owner):
+        Receives ALL platform permissions — fetched live from the permissions
+        table so new permissions added via the seed script are automatically
+        included for every new org owner, with no code change required here.
+        All grants are org-wide (branch_id=NULL).
+
+    Other roles (Branch Manager, Team Leader, Employee):
+        Receive the fixed subset defined in DEFAULT_PERMISSIONS above.
+        These are org-wide grants at creation time; branch-scoped grants
+        are added separately by an admin post-join.
+
+    granted_by=None marks every row as system-seeded (not manually granted).
+    One-time call at user creation — this has no effect on existing users.
     """
-    names = DEFAULT_PERMISSIONS.get(role_name)
-    if not names:
-        return
-    result = await session.execute(
-        select(Permission).where(Permission.name.in_(names))
-    )
-    for perm in result.scalars().all():
+    if role_name == "Super Admin":
+        # Fetch every permission that exists in the platform.
+        # This means the org owner always has full authority over their org
+        # regardless of which permissions were added to the seed catalogue
+        # after their account was created — new permissions are granted to
+        # NEW org owners only. Existing owners are unaffected (the service
+        # is called once, at signup, never again).
+        result = await session.execute(select(Permission))
+        permissions = result.scalars().all()
+    else:
+        names = DEFAULT_PERMISSIONS.get(role_name)
+        if not names:
+            return
+        result = await session.execute(
+            select(Permission).where(Permission.name.in_(names))
+        )
+        permissions = result.scalars().all()
+
+    for perm in permissions:
         session.add(UserPermission(
             user_id=user.id,
             permission_id=perm.id,
             organization_id=user.organization_id,
-            granted_by=None,
+            branch_id=None,   # org-wide — owner has authority across the whole org
+            granted_by=None,  # system-seeded, not manually granted
         ))
-

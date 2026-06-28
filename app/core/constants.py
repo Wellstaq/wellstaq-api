@@ -18,6 +18,7 @@ class UserStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
+    PENDING = "pending"
 
 
 class InviteStatus(StrEnum):
@@ -82,11 +83,6 @@ class ReferenceType(StrEnum):
     USER = "user"
 
 
-class UserStatus(StrEnum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    SUSPENDED = "suspended"
-    PENDING = "pending"   # ← add this
 
 
 # ── OTP ───────────────────────────────────────────────────────────────────────

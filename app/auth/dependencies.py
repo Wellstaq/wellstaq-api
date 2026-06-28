@@ -20,13 +20,28 @@ Role vs Permission (independent in this model):
                 ROLE_HIERARCHY. Does NOT carry permissions.
   permissions — granted directly via UserPermission rows, scoped to
                 organization_id. Loaded here via token_service.
+
+Permission scope checking:
+  require_permission()       — flat check: does the user hold this
+                               permission anywhere (org-wide or any branch)?
+                               Use for routes where scope doesn't matter.
+  require_scoped_permission() — scope-aware check: does the user hold
+                               this permission for a specific branch (or
+                               org-wide, which inherits down)?
+                               Use for routes that act on a specific branch
+                               resource (e.g. suspend a user in Lagos branch).
+
+  The two are intentionally separate:
+    - require_permission()        → FastAPI dependency (used in route decorator)
+    - require_scoped_permission() → async function (called inside route body,
+                                    after the target branch_id is known)
 """
 
 from dataclasses import dataclass, field
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,7 +49,8 @@ from app.auth.jwt import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.core.database import get_db
 from app.models import User
-from app.services.auth.token_service import load_user_permissions  
+from app.models.permission import Permission, UserPermission
+from app.services.auth.token_service import load_user_permissions
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -168,17 +184,21 @@ def require_role(minimum_role: str):
 
 def require_permission(permission: str):
     """
-    Dependency factory enforcing a specific permission.
+    Flat permission check — does the user hold this permission anywhere
+    (org-wide OR any branch)?
 
-    Permissions are checked against directly-granted UserPermission rows,
-    NOT derived from role. A user can hold any permission regardless of
-    their role if it was explicitly granted.
+    Use this on routes where the action is not scoped to a specific branch
+    — e.g. creating a department when the target branch_id is not yet
+    known at the dependency layer (it arrives in the request body).
+
+    For routes that act on a known branch resource, call
+    require_scoped_permission() inside the route body instead, once the
+    target branch_id is resolved.
 
     Usage:
-      eg:
-        @router.delete("/posts/{post_id}",
-            dependencies=[Depends(require_permission("post.delete"))])
-        async def delete_post(...): ...
+        @router.post("/departments",
+            dependencies=[Depends(require_permission("department.create"))])
+        async def create_department(...): ...
     """
     async def dependency(
         current_user: CurrentUser = Depends(get_current_user),
@@ -191,6 +211,84 @@ def require_permission(permission: str):
         return current_user
 
     return dependency
+
+
+async def require_scoped_permission(
+    db: AsyncSession,
+    current_user: CurrentUser,
+    permission: str,
+    target_branch_id: str | None,
+) -> None:
+    """
+    Scope-aware permission check. Call this inside a route body after the
+    target branch_id is known — not as a decorator dependency.
+
+    How scope is resolved:
+      target_branch_id=None  (org-level action)
+        → caller must hold the permission org-wide (branch_id IS NULL).
+          A branch-scoped grant does NOT satisfy an org-level action.
+          Example: creating an org-level department.
+
+      target_branch_id=X  (branch-level action)
+        → caller must hold the permission scoped to branch X
+          OR org-wide (branch_id IS NULL), because org-wide grants
+          inherit down to every branch automatically.
+          Example: suspending a user in the Lagos branch.
+
+    super_admin bypass:
+      super_admin always passes regardless of their UserPermission rows,
+      because they own the org and their role sits above the permission
+      system. This mirrors the existing require_same_branch_or_org_level()
+      behaviour.
+
+    Raises:
+      403 — permission not held at the required scope.
+
+    Usage (inside a route):
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.suspend",
+            target_branch_id=target_user.branch_id,
+        )
+    """
+    # super_admin bypasses all scope checks — they own everything in the org.
+    if current_user.role == "super_admin":
+        return
+
+    query = (
+        select(UserPermission)
+        .join(Permission, Permission.id == UserPermission.permission_id)
+        .where(
+            UserPermission.user_id == current_user.user_id,
+            UserPermission.organization_id == current_user.organization_id,
+            Permission.name == permission,
+        )
+    )
+
+    if target_branch_id is not None:
+        # Branch-level action: org-wide grant OR grant scoped to this branch.
+        query = query.where(
+            or_(
+                UserPermission.branch_id.is_(None),
+                UserPermission.branch_id == target_branch_id,
+            )
+        )
+    else:
+        # Org-level action: only an org-wide grant qualifies.
+        query = query.where(UserPermission.branch_id.is_(None))
+
+    result = await db.execute(query)
+    if result.scalar_one_or_none() is None:
+        scope_detail = (
+            f"for branch '{target_branch_id}'"
+            if target_branch_id
+            else "at organization level"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing required permission: '{permission}' {scope_detail}.",
+        )
 
 
 def require_same_organization(

@@ -35,13 +35,28 @@ Scope model (applies to BOTH Role and UserPermission):
           → Role(org_id=X, branch_id=B, name="branch_manager")
           → User.role_id = that role's id
 
+Permission.scope field:
+  Controls which grant context a permission is valid for. Used by the
+  API to filter the permission checklist shown to admins:
+
+    "org"    → org-wide grants only. Never shown on a branch grant page.
+               e.g. org.deactivate, branch.create, member.role.assign
+    "branch" → branch-scoped grants only. Shown on branch grant page.
+               Rarely used — most branch permissions also make sense org-wide.
+    "both"   → valid at either scope. Shown on both org and branch grant pages.
+               e.g. member.suspend, department.create, post.delete
+
+  This is advisory for the UI — the DB does not enforce it. The service
+  layer uses it to filter GET /permissions?context=branch responses so
+  org-only permissions are hidden from the branch grant checklist entirely.
+
 Permission check pattern (service layer):
     -- Org-wide check:
     SELECT 1 FROM user_permissions up
     JOIN permissions p ON p.id = up.permission_id
     WHERE up.user_id = :user_id
       AND up.organization_id = :org_id
-      AND up.branch_id IS NULL          -- org-wide grant
+      AND up.branch_id IS NULL
       AND p.name = :permission_name
     LIMIT 1;
 
@@ -76,17 +91,18 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
     Atomic capability the platform knows about.
 
-    Seeded by the platform via a migration or seed script. Orgs cannot
+    Seeded by the platform via scripts/seed_permissions.py. Orgs cannot
     create, rename, or delete permissions. name follows
     "resource.action" convention and is unique platform-wide. category
-    groups related permissions for UI display.
+    groups related permissions for UI display. scope controls which
+    grant context the permission is valid for (see module docstring).
 
     Examples:
-        post.delete, post.moderate
-        user.suspend, user.elevate
-        user.invite
-        event.create, event.cancel
-        wellbeing.view_team, wellbeing.export
+        post.delete     category=content  scope=both
+        post.moderate   category=content  scope=both
+        member.suspend  category=member   scope=both
+        branch.create   category=branch   scope=org
+        org.deactivate  category=org      scope=org
 
     Granted to users directly via UserPermission — has NO relationship
     to Role.
@@ -94,9 +110,33 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "permissions"
 
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+
+    # Grant context this permission is valid for.
+    # "org"    → org-wide only   — hidden on branch grant pages
+    # "branch" → branch only     — hidden on org grant pages
+    # "both"   → either scope    — shown on both pages
+    # Default is "both" — the safe fallback that shows the permission everywhere.
+    scope: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default="both",
+        index=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('org', 'branch', 'both')",
+            name="ck_permission_scope_valid",
+        ),
+    )
 
     user_permissions: Mapped[list["UserPermission"]] = relationship(
         "UserPermission",
@@ -105,7 +145,7 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<Permission id={self.id} name={self.name}>"
+        return f"<Permission id={self.id} name={self.name} scope={self.scope}>"
 
 
 class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -161,9 +201,8 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # True = platform default, read-only. False = org/branch-created, mutable.
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    
-    # Realationships
 
+    # ── Relationships ──────────────────────────────────────────────────────────
     organization: Mapped[Optional["Organization"]] = relationship(
         "Organization",
         back_populates="custom_roles",
@@ -171,7 +210,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
-        back_populates="invited_role"
+        back_populates="invited_role",
     )
     branch: Mapped[Optional["Branch"]] = relationship(
         "Branch",
@@ -237,6 +276,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ck_role_branch_requires_org",
         ),
     )
+
     def __repr__(self) -> str:
         if self.is_system:
             scope = "system"
@@ -317,7 +357,7 @@ class UserPermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
     )
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # ── Relationships ──────────────────────────────────────────────────────────
     user: Mapped["User"] = relationship(
         "User",
         back_populates="user_permissions",
@@ -341,6 +381,7 @@ class UserPermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "User",
         foreign_keys=[granted_by],
     )
+
     __table_args__ = (
         # Uniqueness on (user, permission, org, branch-scope), split into
         # two partial indexes for the same NULL-comparison reason as Role
