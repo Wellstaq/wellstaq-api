@@ -13,13 +13,25 @@ Design principles:
   background job on join/leave. Never derive via COUNT().
 - No updated_at — clubs are mostly append-only; name/description edits
   are infrequent. Add if needed later.
+
+ClubMember design:
+- A user can only belong to ONE club at a time.
+  UniqueConstraint("user_id") enforces this at the DB level — attempting
+  to insert a second ClubMember row for the same user raises IntegrityError.
+- Changing clubs = DELETE the existing ClubMember row, INSERT a new one.
+  The service layer must do this atomically in one transaction.
+- (club_id, user_id) unique constraint is kept alongside the user_id
+  constraint — it covers the "same user re-joining the same club" case
+  which the user_id constraint alone would also catch, but the named
+  constraint makes the violation message clearer.
 """
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint, DateTime
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from datetime import datetime, timezone
 
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -29,7 +41,8 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # public (anyone can join) | private (invite only) — validated at app layer, no DB enum constraint
+    # public (anyone can join) | private (invite only)
+    # validated at app layer, no DB enum constraint
     privacy: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
 
     category_id: Mapped[str | None] = mapped_column(
@@ -62,13 +75,11 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="clubs",
         foreign_keys=[organization_id],
     )
-
     category: Mapped["Category"] = relationship(
         "Category",
         back_populates="clubs",
         foreign_keys=[category_id],
     )
-
     members: Mapped[list["ClubMember"]] = relationship(
         "ClubMember",
         back_populates="club",
@@ -80,22 +91,29 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<Club id={self.id} name={self.name} org={self.organization_id} privacy={self.privacy}>"
-
-
-"""
-ClubMember model — junction table between clubs and users.
-
-Design principles:
-- Pure many-to-many join: one row per user per club.
-- (club_id, user_id) unique constraint prevents duplicate membership.
-- Leaving a club deletes the row — no soft delete here.
-- joined_at is set automatically at the app layer when the row is created.
-- No role column for now — add later if club admin roles are needed.
-"""
+        return (
+            f"<Club id={self.id} name={self.name} "
+            f"org={self.organization_id} privacy={self.privacy}>"
+        )
 
 
 class ClubMember(Base, UUIDPrimaryKeyMixin):
+    """
+    Junction table between clubs and users.
+
+    One user → one club at a time.
+    UniqueConstraint("user_id") is the DB-level enforcement.
+
+    To move a user to a different club:
+        await db.delete(existing_membership)
+        await db.flush()
+        db.add(ClubMember(club_id=new_club_id, user_id=user_id))
+        await db.flush()
+
+    Both operations must happen in the same transaction so the user is
+    never left without a club mid-request.
+    """
+
     __tablename__ = "club_members"
 
     # ── FKs ───────────────────────────────────────────────────────────────
@@ -130,7 +148,11 @@ class ClubMember(Base, UUIDPrimaryKeyMixin):
     )
 
     __table_args__ = (
-        # One membership row per user per club
+        # One user → one club at a time.
+        # This is the primary business rule constraint.
+        UniqueConstraint("user_id", name="uq_club_members_one_club_per_user"),
+        # Redundant given the above, but kept for a clearer error message
+        # on the specific "re-joining the same club" case.
         UniqueConstraint("club_id", "user_id", name="uq_club_members_club_user"),
     )
 

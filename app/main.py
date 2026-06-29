@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import engine
 from app.models.base import Base
-from app.routers import auth, general, uploads
+from app.routers import auth, general, uploads, departments
 
 
 @asynccontextmanager
@@ -48,6 +48,7 @@ app.add_middleware(
 app.include_router(general.router)
 app.include_router(auth.router)
 app.include_router(uploads.router)
+app.include_router(departments.router)
 
 
 @app.get("/")

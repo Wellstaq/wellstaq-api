@@ -1,10 +1,11 @@
 """
-Department model — a group within an organization or branch.
+Department model — a group within an organization.
 
 Design principles:
 - A department always belongs to an organization.
-- branch_id is nullable: null means the department sits at org level,
-  not scoped to a specific branch.
+- Departments are org-level resources — created at org level, not branch-scoped.
+  branch_id on the Department row is nullable and represents post-creation
+  assignment to a branch, not creation scope.
 - category_id references a Category table (not yet created) — kept as
   plain String(36) until that table exists.
 - created_by is a plain audit string (no FK) — same pattern as deleted_by
@@ -15,11 +16,18 @@ Design principles:
 - avatar_initial is a short string (e.g. "HR", "EN") for display purposes.
 
 DepartmentMember design:
-- Join model for users belonging to a department.
-- Unique (department_id, user_id) — a user can only join a given
-  department once. Leaving deletes the row
+- A user can only belong to ONE department at a time.
+  UniqueConstraint("user_id") enforces this at the DB level — attempting
+  to insert a second DepartmentMember row for the same user raises
+  IntegrityError.
+- Reassigning a user to a different department:
+      DELETE the existing DepartmentMember row
+      INSERT a new one for the target department
+  Both in the same transaction — user is never left without a department
+  mid-request.
 - role is a plain string (e.g. "lead", "member") scoped to this
-  department membership, distinct from User.role_name.
+  department membership, distinct from User.role_id.
+- Leaving a department deletes the row — no soft delete.
 
 DepartmentRankSnapshot design:
 - Periodic snapshot of a department's rank/activity stats, computed by a
@@ -32,7 +40,18 @@ DepartmentRankSnapshot design:
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -53,14 +72,17 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
         index=True,
     )
-    # Org / branch scope
+
+    # Org scope — departments are always org-level
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    # Nullable — null means org-level department, not scoped to a branch
+
+    # Nullable — null means org-level, not yet assigned to a branch.
+    # Set post-creation via a separate assignment endpoint.
     branch_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("branches.id", ondelete="SET NULL"),
@@ -68,15 +90,14 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # Audit
-    # Plain string — no FK, audit trail preserved even if creator is deleted
+    # Audit — plain string, no FK. Preserved even if creator is deleted.
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
-    # Denormalized counter
-    # Managed by app layer / background job — never use COUNT() in queries
+    # Denormalized counter — managed by app layer / background job.
+    # Never use COUNT() in queries.
     member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Relationships
+    # ── Relationships ──────────────────────────────────────────────────────
     organization: Mapped["Organization"] = relationship(
         "Organization",
         back_populates="departments",
@@ -87,7 +108,6 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="departments",
         foreign_keys=[branch_id],
     )
-
     members: Mapped[list["DepartmentMember"]] = relationship(
         "DepartmentMember",
         back_populates="department",
@@ -98,13 +118,11 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="invited_department",
         foreign_keys="OrganizationInvite.invited_department_id",
     )
-
     rank_snapshots: Mapped[list["DepartmentRankSnapshot"]] = relationship(
         "DepartmentRankSnapshot",
         back_populates="department",
         cascade="all, delete-orphan",
     )
-
     category: Mapped["Category"] = relationship(
         "Category",
         back_populates="departments",
@@ -115,22 +133,33 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class DepartmentMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """A user's membership in a department. Unique per (department_id,
-    user_id) — a user can only join a given department once. Leaving
-    deletes the row, same insert/delete pattern as post_likes."""
+    """
+    A user's membership in a department.
+
+    One user → one department at a time.
+    UniqueConstraint("user_id") is the DB-level enforcement.
+
+    To reassign a user to a different department:
+        await db.delete(existing_membership)
+        await db.flush()
+        db.add(DepartmentMember(department_id=new_dept_id, user_id=user_id))
+        await db.flush()
+
+    Both operations must happen in the same transaction so the user is
+    never left without a department mid-request.
+    """
 
     __tablename__ = "department_members"
 
-    # No separate index=True on department_id — it's the leading column of
-    # the unique constraint below, which already indexes it.
+    # No separate index=True on department_id — covered by the composite
+    # unique constraint below, which already indexes it as the leading column.
     department_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("departments.id", ondelete="CASCADE"),
         nullable=False,
     )
 
-    # Not the leading column of the unique constraint, so it keeps its own
-    # index for "all departments this user belongs to" lookups.
+    # Indexed for "which department does this user belong to" lookups.
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -138,14 +167,17 @@ class DepartmentMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
+    # Department-scoped role — distinct from User.role_id (the org/platform role).
+    # e.g. "lead", "member". Nullable — not every membership has a sub-role.
     role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     joined_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
         server_default=func.now(),
     )
 
-    # Relationships
+    # ── Relationships ──────────────────────────────────────────────────────
     department: Mapped["Department"] = relationship(
         "Department",
         back_populates="members",
@@ -158,7 +190,15 @@ class DepartmentMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint("department_id", "user_id", name="uq_department_member_department_user"),
+        # One user → one department at a time.
+        # This is the primary business rule constraint.
+        UniqueConstraint("user_id", name="uq_department_members_one_dept_per_user"),
+        # Redundant given the above, but kept for a clearer error message
+        # on the specific "re-joining the same department" case.
+        UniqueConstraint(
+            "department_id", "user_id",
+            name="uq_department_member_department_user",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -166,14 +206,15 @@ class DepartmentMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class DepartmentRankSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Periodic snapshot of a department's rank/activity stats, computed by
+    """
+    Periodic snapshot of a department's rank/activity stats, computed by
     a background job — same denormalized-for-speed pattern as
-    Department.member_count. Never derived live via aggregate queries."""
+    Department.member_count. Never derived live via aggregate queries.
+    """
 
     __tablename__ = "department_rank_snapshots"
 
-    # No separate index=True — covered by the (department_id, period_start)
-    # composite index below.
+    # No separate index=True — covered by the composite index below.
     department_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("departments.id", ondelete="CASCADE"),
@@ -191,7 +232,7 @@ class DepartmentRankSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         server_default=func.now(),
     )
 
-    # Relationships
+    # ── Relationships ──────────────────────────────────────────────────────
     department: Mapped["Department"] = relationship(
         "Department",
         back_populates="rank_snapshots",
@@ -199,7 +240,10 @@ class DepartmentRankSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        Index("ix_department_rank_snapshots_dept_period_start", "department_id", "period_start"),
+        Index(
+            "ix_department_rank_snapshots_dept_period_start",
+            "department_id", "period_start",
+        ),
     )
 
     def __repr__(self) -> str:

@@ -29,7 +29,7 @@ from .organization_service import (
     check_business_name_available,
     check_phone_available,
     get_system_role,
-    seed_default_permissions,
+    seed_super_admin_permissions,
     unique_slug,
 )
 from .token_service import issue_tokens
@@ -136,7 +136,7 @@ async def org_owner_signup(
     if super_admin_role:
         assign_role(user, super_admin_role)
         await session.flush()  # role must land before seeding permissions
-        await seed_default_permissions(session, user, super_admin_role.name)
+        await seed_super_admin_permissions(session, user)
 
     # ── Step 7 ─────────────────────────────────────────────────────────────────
     _log_audit(

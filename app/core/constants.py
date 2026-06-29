@@ -61,11 +61,12 @@ class RoleName(StrEnum):
     ROLE_HIERARCHY keys in dependencies.py, which are lowercase
     internal identifiers used only for hierarchy comparisons.
 
-    DB roles:  "Super Admin", "Employee"
-    Hierarchy: "super_admin", "employee"   (dependencies.py)
     """
-    SUPER_ADMIN = "Super Admin"
-    EMPLOYEE = "Employee"
+    SUPER_ADMIN = "super_admin"   # was "Super Admin"
+    ADMIN = "admin"
+    BRANCH_MANAGER = "branch_manager"
+    TEAM_LEADER = "team_leader"
+    MEMBER = "member"
 
 
 class ActivityType(StrEnum):

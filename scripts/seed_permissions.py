@@ -1,30 +1,17 @@
 """
 scripts/seed_permissions.py
 
-Platform permission seeder.
+Platform permission + system role seeder.
 
-Run once during initial setup, and again whenever new permissions are added.
+Run once during initial setup, and again whenever new permissions or roles are added.
 Existing rows are never touched — only missing ones are inserted.
 
 Usage:
     python -m scripts.seed_permissions
 
-Design:
-    - Permissions are platform-owned. Orgs cannot create, rename, or delete them.
-    - name follows "resource.action" convention, unique platform-wide.
-    - category groups related permissions for UI display and future filtering.
-    - scope column documents the INTENDED scope of each permission:
-        "org"    → should only ever be granted org-wide (branch_id=NULL)
-        "branch" → typically granted branch-scoped, but can be org-wide
-        "both"   → can sensibly be granted at either scope
-      This is advisory only — the DB does not enforce it. The service
-      layer and admin UI should use it to guide grant flows.
-
-Adding new permissions later:
-    1. Append to PERMISSIONS below.
-    2. Re-run this script (safe — existing rows are skipped).
-    3. If in production, write an Alembic data migration that does the
-       same INSERT ... WHERE NOT EXISTS so it runs automatically on deploy.
+Run order (first-time setup):
+    1. python -m scripts.seed_permissions   ← roles + permissions
+    2. Start the app / register org owner
 """
 
 from __future__ import annotations
@@ -34,31 +21,67 @@ import logging
 import sys
 from pathlib import Path
 
-# Allow running as `python -m scripts.seed_permissions` from project root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db  # adjust if your session factory differs
-from app.models.permission import Permission
+from app.core.database import get_db
+from app.models.permission import Permission, Role
 
 logger = logging.getLogger(__name__)
 
+
+# ── System role catalogue ──────────────────────────────────────────────────────
+#
+# System roles are platform-owned:
+#   is_system=True, organization_id=NULL, branch_id=NULL
+#
+# These are the only roles that exist before any org is created.
+# Custom org/branch roles are created at runtime by org admins.
+#
+# RoleName constants (from app.core.constants) must match these names exactly.
+
+SYSTEM_ROLES: list[dict] = [
+    {
+        "name": "super_admin",
+        "description": (
+            "Organization owner. Receives all platform permissions at registration. "
+            "Has full authority across the entire org."
+        ),
+    },
+    {
+        "name": "admin",
+        "description": (
+            "Organization administrator. Permissions granted explicitly by the super admin."
+        ),
+    },
+    {
+        "name": "branch_manager",
+        "description": (
+            "Manages a specific branch. Permissions scoped to that branch, "
+            "granted explicitly by an admin."
+        ),
+    },
+
+     {
+        "name": "team_leader",        
+        "description": (
+            "Leads a team within a branch or org. Permissions granted explicitly "
+            "by a branch manager or admin."
+        ),
+    },
+    {
+        "name": "member",
+        "description": (
+            "Standard employee. No permissions by default — "
+            "granted individually by an admin."
+        ),
+    },
+]
+
+
 # ── Permission catalogue ───────────────────────────────────────────────────────
-#
-# Fields per entry:
-#   name        — unique platform identifier, "resource.action"
-#   description — human-readable label shown in admin UI
-#   category    — grouping key for UI sections
-#   scope       — advisory: "org" | "branch" | "both"
-#
-# Scope key:
-#   org    → should only ever be granted org-wide (branch_id=NULL)
-#            e.g. inviting someone into the org, deactivating the org
-#   branch → typically granted scoped to a branch; can be org-wide
-#            e.g. suspending a user within a branch
-#   both   → sensibly granted at either level depending on context
 
 PERMISSIONS: list[dict] = [
 
@@ -298,9 +321,49 @@ PERMISSIONS: list[dict] = [
 ]
 
 
-# ── Seeder ─────────────────────────────────────────────────────────────────────
+# ── Seeders ────────────────────────────────────────────────────────────────────
+
+async def seed_roles(session: AsyncSession) -> None:
+    """
+    Insert missing system roles. Existing rows are never modified.
+
+    System roles have is_system=True, organization_id=NULL, branch_id=NULL.
+    The DB CheckConstraint (ck_role_system_org_consistent) enforces this.
+    """
+    inserted = 0
+    skipped = 0
+
+    for entry in SYSTEM_ROLES:
+        result = await session.execute(
+            select(Role).where(
+                Role.name == entry["name"],
+                Role.is_system == True,  # noqa: E712
+            )
+        )
+        if result.scalar_one_or_none():
+            skipped += 1
+            continue
+
+        session.add(Role(
+            name=entry["name"],
+            description=entry["description"],
+            is_system=True,
+            organization_id=None,
+            branch_id=None,
+        ))
+        inserted += 1
+
+    await session.commit()
+    logger.info(
+        "Role seed complete — inserted: %d, skipped (already exist): %d",
+        inserted,
+        skipped,
+    )
+    print(f"✓ Roles:       inserted {inserted}, skipped {skipped} existing.")
+
 
 async def seed_permissions(session: AsyncSession) -> None:
+    """Insert missing permissions. Existing rows are never modified."""
     inserted = 0
     skipped = 0
 
@@ -316,6 +379,7 @@ async def seed_permissions(session: AsyncSession) -> None:
             name=entry["name"],
             description=entry["description"],
             category=entry["category"],
+            scope=entry.get("scope", "both"),
         ))
         inserted += 1
 
@@ -325,13 +389,14 @@ async def seed_permissions(session: AsyncSession) -> None:
         inserted,
         skipped,
     )
-    print(f"✓ Inserted {inserted} permission(s). Skipped {skipped} existing.")
+    print(f"✓ Permissions: inserted {inserted}, skipped {skipped} existing.")
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    # get_db is an async generator — pull one session from it
     async for session in get_db():
+        # Roles first — signup_service.get_system_role() depends on them
+        await seed_roles(session)
         await seed_permissions(session)
         break
 

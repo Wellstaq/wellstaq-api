@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -33,14 +33,6 @@ async def create_department(
     avatar_initial: str | None,
     created_by: str,
 ) -> Department:
-    """
-    Validate org state, enforce name uniqueness, persist the department.
-
-    Raises:
-      404 — organization not found.
-      403 — organization is deactivated.
-      409 — a department with that name already exists in this org.
-    """
     # Org must exist and be active
     result = await session.execute(
         select(Organization).where(Organization.id == organization_id)
@@ -57,11 +49,14 @@ async def create_department(
             detail="Organization is deactivated.",
         )
 
-    # Name uniqueness within the org
+    # Normalize name before uniqueness check and storage
+    name = name.strip()  # remove accidental leading/trailing spaces too
+
+    # Case-insensitive name uniqueness within the org
     duplicate = await session.execute(
         select(Department).where(
             Department.organization_id == organization_id,
-            Department.name == name,
+            func.lower(Department.name) == name.lower(),
         )
     )
     if duplicate.scalar_one_or_none():
@@ -71,16 +66,15 @@ async def create_department(
         )
 
     department = Department(
-        name=name,
+        name=name,          # stores the user's casing e.g. "Engineering"
         description=description,
         avatar_initial=avatar_initial,
         organization_id=organization_id,
-        branch_id=None,   # always None at creation — assigned to branch separately
+        branch_id=None,
         created_by=created_by,
         member_count=0,
     )
     session.add(department)
-    # flush → DB assigns PK; router commits after we return
     await session.flush()
     await session.refresh(department)
 

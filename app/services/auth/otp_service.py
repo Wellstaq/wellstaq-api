@@ -93,6 +93,7 @@ async def _send_email_otp(email: str, code: str, purpose: str) -> None:
         if purpose == "verification"
         else "Your security code"
     )
+    print(f"the virtues of lfie if i have the choice of life I should be able to feel everyday with pleasure, I wll injure no man {code }")
 
     html_body = f"""
     <html>
