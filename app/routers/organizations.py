@@ -1,59 +1,162 @@
 """
-Upload routes — issue presigned URLs so clients upload media directly
-to S3/R2, never through this server.
+app/routers/organization.py
 
-This route is protected: only authenticated users can request an
-upload URL, since object_key is namespaced by user/org to prevent
-one user from overwriting another's files.
+Organization management routes.
+
+Routes:
+  POST  /organizations/{org_id}/invites                       — send an invite
+  GET   /organizations/{org_id}/invites                       — list invites
+  POST  /organizations/{org_id}/invites/{invite_code}/accept  — accept an invite (no auth)
 """
 
-import uuid
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+import logging
+from typing import Literal
 
-from app.auth import CurrentUser, get_current_user
-from app.core.storage import generate_presigned_upload_url
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/uploads", tags=["uploads"])
+from app.auth.dependencies import (
+    CurrentUser,
+    require_permission,
+    require_same_organization,
+)
+from app.core.database import get_db
+from app.core.guards import request_guard
+from app.models import OrganizationInvite
+from app.schemas.organization import (
+    InviteItem,
+    InviteListResponse,
+    SendInviteRequest,
+    SendInviteResponse,
+)
+from app.services.organization.invite_service import (
+    send_invite,
+)
 
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4"}
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/organizations/{org_id}",
+    tags=["organizations"],
+)
 
 
-class PresignRequest(BaseModel):
-    content_type: str
-    purpose: str = "post_media"  # post_media | avatar | event_image | story
+# ── Send invite ────────────────────────────────────────────────────────────────
 
+@router.post(
+    "/invites",
+    response_model=SendInviteResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Send an organization invite",
+    description=(
+        "Invite a new user to join the organization. "
+        "The invitee receives an email with a secure invite link valid for 7 days. "
+        "Requires `member.invite` permission."
+    ),
+)
+async def send_invite_route(
+    org_id: str,
+    body: SendInviteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("member.invite")),
+) -> SendInviteResponse:
+    require_same_organization(org_id, current_user)
 
-class PresignResponse(BaseModel):
-    upload_url: str
-    public_url: str
-    object_key: str
-    expires_in: int
-
-
-@router.post("/presign", response_model=PresignResponse)
-async def presign_upload(
-    payload: PresignRequest,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """
-    Request a short-lived presigned URL to upload a file directly to
-    object storage. The client PUTs the raw file bytes to `upload_url`,
-    then stores `public_url` as the media reference (e.g. on a post).
-    """
-    if payload.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported content_type. Allowed: {sorted(ALLOWED_CONTENT_TYPES)}",
+    async with request_guard(db, "/organizations/{org_id}/invites"):
+        invite = await send_invite(
+            db,
+            org_id=org_id,
+            invited_by_user_id=current_user.user_id,
+            invited_by_role=current_user.role,
+            invited_by_branch_id=current_user.branch_id,
+            invited_by_permissions=current_user.permissions,
+            invited_email=body.invited_email,
+            invited_department_id=body.invited_department_id,
+            invited_role_id=body.invited_role_id,
+            branch_id=body.branch_id,
         )
 
-    object_key = (
-        f"{current_user.organization_id}/{payload.purpose}/"
-        f"{current_user.user_id}/{uuid.uuid4()}"
-    )
+        await db.commit()
+        await db.refresh(invite)
 
-    result = await generate_presigned_upload_url(
-        object_key=object_key, content_type=payload.content_type
-    )
-    return PresignResponse(**result)
+        return SendInviteResponse(
+            invite_id=str(invite.id),
+            invited_email=invite.invited_email,
+            organization_id=str(invite.organization_id),
+            branch_id=str(invite.branch_id) if invite.branch_id else None,
+            invited_department_id=str(invite.invited_department_id),
+            invited_role_id=str(invite.invited_role_id),
+            status=invite.status,
+            expires_at=invite.expires_at.isoformat(),
+        )
+
+
+# ── List invites ───────────────────────────────────────────────────────────────
+
+@router.get(
+    "/invites",
+    response_model=InviteListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List organization invites",
+    description=(
+        "Returns invites for the organization. "
+        "Filter by status: pending, accepted, expired, cancelled. "
+        "Omit status to return all. "
+        "Requires `member.invite` permission."
+    ),
+)
+async def list_invites_route(
+    org_id: str,
+    status_filter: Literal["pending", "accepted", "expired", "cancelled"] | None = Query(
+        default=None,
+        alias="status",
+        description="Filter by invite status. Omit to return all.",
+    ),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("member.invite")),
+) -> InviteListResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/invites"):
+        query = (
+            select(OrganizationInvite)
+            .where(OrganizationInvite.organization_id == org_id)
+            .order_by(OrganizationInvite.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        if status_filter is not None:
+            query = query.where(OrganizationInvite.status == status_filter)
+
+        result = await db.execute(query)
+        invites = result.scalars().all()
+
+        items = [
+            InviteItem(
+                invite_id=str(i.id),
+                invited_email=i.invited_email,
+                organization_id=str(i.organization_id),
+                branch_id=str(i.branch_id) if i.branch_id else None,
+                invited_department_id=str(i.invited_department_id),
+                invited_role_id=str(i.invited_role_id),
+                invited_by=str(i.invited_by),
+                status=i.status,
+                expires_at=i.expires_at.isoformat(),
+                created_at=i.created_at.isoformat(),
+            )
+            for i in invites
+        ]
+
+        return InviteListResponse(
+            items=items,
+            total=len(items),
+            offset=offset,
+            limit=limit,
+        )
+

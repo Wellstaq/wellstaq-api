@@ -33,6 +33,7 @@ from app.core.constants import (
     ReferenceType,
     TokenType,
 )
+from app.core.datetime import ensure_utc
 from app.models import (
     OrganizationInvite,
     User,
@@ -84,25 +85,34 @@ async def _load_pending_invite(
     invite_code: str,
     now: datetime,
     *,
-    load_permissions: bool = False,
+    lock: bool = False,
 ) -> OrganizationInvite:
-    """Load and validate a pending, unexpired invite."""
+    """
+    Load and validate a pending, unexpired invite.
+
+    lock=True issues SELECT ... FOR UPDATE, holding a row lock for the
+    rest of the caller's transaction. Use this only at invite_register
+    (the step that mutates status -> ACCEPTED) to close the race where
+    two concurrent registration attempts on the same invite both pass
+    this check before either commits. Don't set it at otp/request or
+    otp/verify — those only read the invite, and holding a lock across
+    an OTP round trip would serialize unrelated requests for no reason.
+    """
     q = select(OrganizationInvite).where(
         OrganizationInvite.invite_code == invite_code,
         OrganizationInvite.status == InviteStatus.PENDING,
     )
-    if load_permissions:
-        q = q.options(selectinload(OrganizationInvite.invite_permissions))
+    if lock:
+        q = q.with_for_update()
 
     result = await session.execute(q)
     invite = result.scalar_one_or_none()
 
     if not invite:
         raise AuthError("Invalid or already used invite code.", status.HTTP_404_NOT_FOUND)
-    if invite.expires_at < now:
+    if ensure_utc(invite.expires_at) < now:
         raise AuthError("This invite has expired.", status.HTTP_410_GONE)
     return invite
-
 
 def _decode_email_verification_token(raw_token: str) -> str:
     """Decode an email_verification_token, return the verified email."""

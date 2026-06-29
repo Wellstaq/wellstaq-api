@@ -74,15 +74,6 @@ class OrgOwnerRegisterRequest(BaseModel):
         return v
 
 
-   
-class InviteRegisterRequest(BaseModel):
-    """Accept an invite and create a user account."""
-    invite_code: str
-    first_name: str = Field(..., min_length=1, max_length=100)
-    last_name: str = Field(..., min_length=1, max_length=100)
-    password: str = Field(..., min_length=8)
-
-
 # ── Login ──────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):

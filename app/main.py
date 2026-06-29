@@ -15,7 +15,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import engine
 from app.models.base import Base
-from app.routers import auth, general, uploads, departments
+from app.routers import (
+    auth, 
+    general, 
+    uploads, 
+    departments,
+    organizations,
+    roles,
+)
 
 
 @asynccontextmanager
@@ -49,6 +56,8 @@ app.include_router(general.router)
 app.include_router(auth.router)
 app.include_router(uploads.router)
 app.include_router(departments.router)
+app.include_router(organizations.router)
+app.include_router(roles.router)
 
 
 @app.get("/")

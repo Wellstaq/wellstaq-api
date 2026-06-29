@@ -9,7 +9,14 @@ Invite-based registration flows:
 Employee registration flow:
   - User created with status=PENDING
   - Wellbeing baseline + priorities recorded
+  - DepartmentMember row created to assign user to their department
   - User activated (ACTIVE) atomically before tokens issued
+
+Key design note — department membership:
+  User has NO department_id column. Department membership is tracked
+  via the DepartmentMember join table (one row per user, enforced by
+  UniqueConstraint("user_id") on DepartmentMember). The invited_department_id
+  on the invite tells us which department to create that row for.
 """
 
 from __future__ import annotations
@@ -31,10 +38,10 @@ from app.core.constants import (
 from app.models import (
     User,
     UserAuthProvider,
-    UserPermission,
     UserPriority,
     UserWellbeingBaseline,
 )
+from app.models.department import DepartmentMember
 from .token_service import issue_tokens
 from ._helpers import (
     AuthError,
@@ -78,16 +85,12 @@ async def verify_invite_otp(
 
     OtpError propagates to the router (which must commit() to persist
     attempt_count before re-raising — handled by request_guard).
-
-    FIX: previously returned _mask_email() (wrong). Must return the
-    invite_verification_token so the client can pass it to invite_register().
     """
     from .otp_service import verify_otp
 
     now = datetime.now(timezone.utc)
     invite = await _load_pending_invite(session, invite_code, now)
     await verify_otp(session, invite.invited_email, code)
-    # Return the token, not the masked email — the client needs this for step 3
     return _make_invite_verification_token(invite.invited_email, invite_code)
 
 
@@ -113,51 +116,66 @@ async def invite_register(
     token substitution attacks).
 
     Flow:
-      1. Decode token → email, invite_code
-      2. Re-validate invite
-      3. Token substitution guard
-      4. Duplicate email guard
-      5. Create user (PENDING — not yet active)
-      6. Ancillary records: auth provider, settings, permissions
-      7. Wellbeing baseline rows
-      8. Priority rows
-      9. Activate user (ACTIVE) + mark invite accepted + audit
-      10. Issue tokens
+      1.  Decode token → email, invite_code
+      2.  Re-validate invite
+      3.  Token substitution guard
+      4.  Duplicate email guard
+      5.  Create User (PENDING — not yet active)
+      6.  Ancillary records: auth provider, settings
+      7.  DepartmentMember row — assigns user to invited_department_id
+      8.  Wellbeing baseline rows
+      9.  Priority rows
+      10. Activate user (ACTIVE) + mark invite accepted + audit
+      11. Issue tokens
+
+    Department membership note:
+      User has no department_id column — membership lives in the
+      DepartmentMember join table. Step 7 creates that row using
+      invite.invited_department_id. UniqueConstraint("user_id") on
+      DepartmentMember ensures the user can only ever be in one
+      department at a time.
     """
     # ── Step 1 ─────────────────────────────────────────────────────────────────
     email, invite_code = _decode_invite_verification_token(invite_verification_token)
 
+    # Normalize — belt-and-suspenders, token already stores lowercased email
+    email = email.lower().strip()
+
     # ── Step 2 ─────────────────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
-    invite = await _load_pending_invite(
-        session, invite_code, now, load_permissions=True
-    )
+    invite = await _load_pending_invite(session, invite_code, now)
 
-    # ── Step 3 ─────────────────────────────────────────────────────────────────
-    if invite.invited_email.lower() != email:
+    # ── Step 3: token substitution guard ──────────────────────────────────────
+    # Ensures the token was issued for exactly this invite, not swapped
+    if invite.invited_email.lower().strip() != email:
         raise AuthError("Invalid or expired invite verification token.")
 
-    # ── Step 4 ─────────────────────────────────────────────────────────────────
+    # ── Step 4: duplicate email guard ─────────────────────────────────────────
     existing = await session.execute(select(User).where(User.email == email))
     if existing.scalar_one_or_none():
-        raise AuthError("An account already exists for this email.", status.HTTP_409_CONFLICT)
+        raise AuthError(
+            "An account already exists for this email.",
+            status.HTTP_409_CONFLICT,
+        )
 
-    # ── Step 5: create user as PENDING ─────────────────────────────────────────
+    # ── Step 5: create user as PENDING ────────────────────────────────────────
+    # Department is NOT set here — User has no department_id column.
+    # Department membership is created in Step 7 via DepartmentMember.
+    # first_name and last_name are stripped of whitespace before storing.
     user = User(
-        first_name=first_name,
-        last_name=last_name,
+        first_name=first_name.strip(),
+        last_name=last_name.strip(),
         email=email,
         hashed_password=hash_password(password),
         organization_id=invite.organization_id,
-        branch_id=invite.branch_id,
-        department_id=invite.invited_department_id,
+        branch_id=invite.branch_id,        # nullable — may be None for org-level invites
         role_id=invite.invited_role_id,
-        country=country,
-        state=state,
-        status=UserStatus.PENDING,  # activated in step 9 after all data is staged
+        country=country.strip() if country else None,
+        state=state.strip() if state else None,
+        status=UserStatus.PENDING,          # activated atomically in step 10
     )
     session.add(user)
-    await session.flush()  # need user.id for child records
+    await session.flush()  # need user.id for all child records below
 
     # ── Step 6: ancillary records ──────────────────────────────────────────────
     session.add(UserAuthProvider(
@@ -170,40 +188,43 @@ async def invite_register(
     ))
     session.add(_create_user_settings(user))
 
-    for ip in invite.invite_permissions:
-        session.add(UserPermission(
-            user_id=user.id,
-            permission_id=ip.permission_id,
-            organization_id=ip.organization_id,
-            branch_id=ip.branch_id,
-            granted_by=invite.invited_by,
-        ))
+    # ── Step 7: department membership ─────────────────────────────────────────
+    # Creates the DepartmentMember join row that places this user into
+    # the department the inviter pre-selected on the invite.
+    # UniqueConstraint("user_id") on DepartmentMember guarantees the user
+    # cannot be in two departments simultaneously — this is the first and
+    # only DepartmentMember row for this user_id.
+    session.add(DepartmentMember(
+        department_id=invite.invited_department_id,
+        user_id=user.id,
+    ))
 
-    # ── Step 7: wellbeing baseline ─────────────────────────────────────────────
+    # ── Step 8: wellbeing baseline ────────────────────────────────────────────
     if "entries" not in baseline:
         raise AuthError("Invalid baseline format.", status.HTTP_400_BAD_REQUEST)
 
     recorded = datetime.now(timezone.utc)
-    for entry in baseline["entries"]:
+    for entry in baseline.get("entries", []):
         session.add(UserWellbeingBaseline(
             user_id=user.id,
             organization_id=user.organization_id,
             dimension=entry["dimension"],
             level=entry["level"],
-            reason=entry["reason"],
+            reason=entry.get("reason"),
             recorded_at=recorded,
         ))
 
-    # ── Step 8: priorities ─────────────────────────────────────────────────────
+    # ── Step 9: priorities ────────────────────────────────────────────────────
     for item in priorities:
         session.add(UserPriority(
             user_id=user.id,
             priority=item["priority"],
-            rank=item["rank"],  # FIX: was item["rank] (missing closing quote)
+            rank=item["rank"],
         ))
 
-    # ── Step 9: activate user + mark invite accepted + audit ───────────────────
-    # All required data is now staged. Activate atomically.
+    # ── Step 10: activate + mark invite accepted + audit ──────────────────────
+    # All required data is now staged in the session.
+    # Flip status atomically — if anything above failed, we never reach here.
     user.status = UserStatus.ACTIVE
 
     invite.status = InviteStatus.ACCEPTED
@@ -216,9 +237,22 @@ async def invite_register(
         activity_type=ActivityType.JOINED_ORGANIZATION,
         reference_id=invite.organization_id,
         reference_type=ReferenceType.ORGANIZATION,
-        metadata={"invited_by": str(invite.invited_by), "provider": OAuthProvider.PASSWORD},
+        metadata={
+            "invited_by": str(invite.invited_by),
+            "provider": OAuthProvider.PASSWORD,
+            "department_id": invite.invited_department_id,
+            "branch_id": str(invite.branch_id) if invite.branch_id else None,
+        },
     )
     await session.flush()
 
-    # ── Step 10: issue tokens ──────────────────────────────────────────────────
+    # ── Step 11: issue tokens ─────────────────────────────────────────────────
+    # Eagerly reload the role relationship before calling issue_tokens.
+    # token_service.build_claims() accesses user.role which is a lazy
+    # relationship — in async SQLAlchemy, implicit lazy loads raise
+    # MissingGreenlet. Refreshing with selectinload here resolves it
+    # without an extra round-trip (refresh only fetches what's listed).
+    from sqlalchemy.orm import selectinload
+    await session.refresh(user, ["role"])
+
     return await issue_tokens(session, user, device_name, device_fingerprint, ip_address)
