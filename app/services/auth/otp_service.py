@@ -25,18 +25,9 @@ from app.core.constants import (
     TokenType,
 )
 from app.models.otp_code import OtpCode
+from app.services.errors import OtpError
 
 logger = logging.getLogger(__name__)
-
-
-# ── Error ──────────────────────────────────────────────────────────────────────
-
-class OtpError(Exception):
-    """Raised by all OTP service functions. Router catches and maps to HTTP."""
-    def __init__(self, message: str, status_code: int = status.HTTP_400_BAD_REQUEST):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -93,7 +84,6 @@ async def _send_email_otp(email: str, code: str, purpose: str) -> None:
         if purpose == "verification"
         else "Your security code"
     )
-    print(f"the virtues of lfie if i have the choice of life I should be able to feel everyday with pleasure, I wll injure no man {code }")
 
     html_body = f"""
     <html>
@@ -147,6 +137,10 @@ async def request_otp(
     already belong to an existing account — no code is generated or sent.
     For purpose="2fa_email", the user must already exist, so this guard
     is intentionally skipped.
+
+    Channel availability is checked BEFORE any OtpCode row is created —
+    an unsupported channel (e.g. 2fa_sms, not yet integrated) must leave
+    no DB trace at all, same principle as an email delivery failure.
     """
     email = email.lower().strip()
 
@@ -160,12 +154,24 @@ async def request_otp(
                 status.HTTP_409_CONFLICT,
             )
 
+    # ── Guard: reject unsupported channels BEFORE touching the DB ─────────────
+    # This must run before the OtpCode insert below — an unsupported
+    # channel should never leave a dangling, undeliverable code row.
+    if purpose == "2fa_sms":
+        # TODO: integrate Twilio / AWS SNS
+        raise OtpError(
+            "SMS delivery is not currently configured. Please use email or TOTP.",
+            status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
+    # ── Burn prior unused codes for this email ─────────────────────────────────
     existing = await session.execute(
         select(OtpCode).where(OtpCode.email == email, OtpCode.used == False)  # noqa: E712
     )
     for old in existing.scalars().all():
         old.used = True
 
+    # ── Create the new code ─────────────────────────────────────────────────────
     raw_code = _make_code()
     session.add(OtpCode(
         email=email,
@@ -176,14 +182,9 @@ async def request_otp(
     ))
     await session.flush()
 
-    if purpose in ("verification", "2fa_email"):
-        await _send_email_otp(email, raw_code, purpose)
-    elif purpose == "2fa_sms":
-        # TODO: integrate Twilio / AWS SNS
-        raise OtpError(
-            "SMS delivery is not currently configured. Please use email or TOTP.",
-            status.HTTP_501_NOT_IMPLEMENTED,
-        )
+    # purpose is guaranteed to be "verification" or "2fa_email" here —
+    # 2fa_sms already returned above.
+    await _send_email_otp(email, raw_code, purpose)
 
 
 async def verify_otp(session: AsyncSession, email: str, code: str) -> str:

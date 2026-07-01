@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import (
@@ -57,13 +57,15 @@ async def load_user_permissions(
         .distinct()
     )
     return list(result.scalars().all())
-
-
 async def _load_role_name(session: AsyncSession, user: User) -> str | None:
     if not user.role_id:
         return None
-    if user.role is not None:       # already eager-loaded
-        return user.role.name
+
+    state = inspect(user)
+    if "role" not in state.unloaded:
+        # already eager-loaded — safe to access without triggering lazy-load I/O
+        return user.role.name if user.role is not None else None
+
     result = await session.execute(select(Role.name).where(Role.id == user.role_id))
     return result.scalar_one_or_none()
 

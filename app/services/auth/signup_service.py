@@ -133,10 +133,13 @@ async def org_owner_signup(
     session.add(_create_user_settings(user))
 
     super_admin_role = await get_system_role(session, RoleName.SUPER_ADMIN)
-    if super_admin_role:
-        assign_role(user, super_admin_role)
-        await session.flush()  # role must land before seeding permissions
-        await seed_super_admin_permissions(session, user)
+    if not super_admin_role:
+        raise RuntimeError(
+            "System role 'super_admin' not found — run the seed script before accepting signups."
+        )
+    assign_role(user, super_admin_role)
+    await session.flush()
+    await seed_super_admin_permissions(session, user)
 
     # ── Step 7 ─────────────────────────────────────────────────────────────────
     _log_audit(

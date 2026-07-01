@@ -179,7 +179,7 @@ async def oauth_login(
         # depth check ensures the token genuinely belongs to the linked account.
         # Mismatch means a different Google/Apple identity is presenting a token
         # for this email — deny until the user explicitly re-links.
-        if provider_linked.provider_user_id and provider_linked.provider_user_id != provider_sub:
+        if provider_linked.provider_user_id != provider_sub:
             logger.warning(
                 "OAuth sub mismatch — possible account hijack attempt",
                 extra={

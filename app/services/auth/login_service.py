@@ -27,6 +27,12 @@ from ._helpers import (
     _log_audit,
 )
 
+import bcrypt
+
+# A syntactically valid bcrypt hash with no real corresponding password.
+# Generated once at import time so verify_password's timing is identical
+# whether or not the email exists (anti-enumeration defense).
+_DUMMY_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode()
 
 async def password_login(
     session: AsyncSession,
@@ -45,7 +51,7 @@ async def password_login(
     prevent timing attacks that reveal whether an email is registered.
 
     Single query: User + settings + auth_providers loaded together to
-    avoid the previous two-query pattern (user then provider check).
+    avoid the two-query pattern (user then provider check).
     """
     result = await session.execute(
         select(User)
@@ -56,9 +62,7 @@ async def password_login(
         .where(User.email == email.lower())
     )
     user = result.scalar_one_or_none()
-
-    dummy_hash = "$2b$12$notarealhashjustpaddingtomakethisalongstring00000000000"
-    stored_hash = user.hashed_password if user else dummy_hash
+    stored_hash = user.hashed_password if user else _DUMMY_HASH
     password_ok = verify_password(password, stored_hash)
 
     if not password_ok or user is None:

@@ -1,6 +1,5 @@
-
 """
-app/auth/jwt.py  (updated)
+app/auth/jwt.py
 
 JWT token creation and verification.
 
@@ -24,13 +23,29 @@ Hash strategy for stored refresh tokens:
   The raw refresh token is sent to the client. The stored value in
   UserDevice.refresh_token is a SHA-256 hex digest of it — so a
   DB breach doesn't expose usable tokens.
+
+jti (JWT ID):
+  Every token — access or refresh — gets a random UUID jti claim.
+  Without this, two tokens issued for the same subject within the
+  same second (same iat/exp) are byte-for-byte identical, which
+  breaks refresh-token rotation (the "new" hash would collide with
+  the "old" hash). jti guarantees uniqueness regardless of timing,
+  and is also a prerequisite for any future per-token revocation
+  (e.g. a Redis jti blocklist).
+
+Library:
+  Uses PyJWT instead of python-jose. PyJWT is actively maintained
+  and uses timezone-aware datetimes internally, eliminating the
+  utcnow() DeprecationWarning that python-jose emits.
 """
 
 import hashlib
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 
 from app.core.config import settings
 
@@ -51,6 +66,7 @@ def _create_token(
         "type": token_type,
         "iat": now,
         "exp": now + expires_delta,
+        "jti": str(uuid.uuid4()),
     }
     if extra_claims:
         payload.update(extra_claims)
@@ -85,7 +101,7 @@ def create_access_token(
 
 def create_refresh_token(user_id: str) -> str:
     """
-    Create a long-lived refresh token. Only sub + type embedded —
+    Create a long-lived refresh token. Only sub + type (+ jti) embedded —
     no permissions or org claims. Store the hashed version in DB,
     send the raw version to the client.
     """

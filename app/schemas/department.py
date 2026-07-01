@@ -76,3 +76,11 @@ class DepartmentListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+class DepartmentMemberAssignResponse(BaseModel):
+    """Returned after a successful department assignment."""
+    user_id: str
+    department_id: str
+    organization_id: str
+    message: str
+

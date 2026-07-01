@@ -35,12 +35,19 @@ Permission scope checking:
     - require_permission()        → FastAPI dependency (used in route decorator)
     - require_scoped_permission() → async function (called inside route body,
                                     after the target branch_id is known)
+
+Auth scheme:
+  Uses HTTPBearer instead of OAuth2PasswordBearer. OAuth2PasswordBearer
+  forces Swagger's Authorize modal to show a username/password form (OAuth2
+  spec hardcodes "username"), which doesn't match our email-based login.
+  HTTPBearer gives a single token field in the modal — paste the
+  access_token from POST /auth/login and all protected endpoints work.
 """
 
 from dataclasses import dataclass, field
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -52,7 +59,7 @@ from app.models import User
 from app.models.permission import Permission, UserPermission
 from app.services.auth.token_service import load_user_permissions
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+http_bearer = HTTPBearer()
 
 # Numeric hierarchy for require_role().
 # Higher number = more privileged.
@@ -83,7 +90,7 @@ class CurrentUser:
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials=Depends(http_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> CurrentUser:
     """
@@ -93,6 +100,8 @@ async def get_current_user(
       401 — token invalid / expired / wrong type
       403 — account not active, or no organization_id
     """
+    token = credentials.credentials  # extracts raw token from Authorization header
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials.",

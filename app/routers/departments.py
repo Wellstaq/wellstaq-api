@@ -17,15 +17,18 @@ Permission check sequence (CREATE / LIST / EDIT):
      super_admin bypasses automatically.
   4. Service call — business logic.
 
-Permission check sequence (GET single department):
-  1. require_same_organization() — tenant isolation; sync, no DB.
-  2. Service resolves access: department.create grant OR membership.
+Permission check sequence (ASSIGN USER TO DEPARTMENT):
+  1. require_permission("department.update") — flat decorator dependency.
+  2. require_same_organization() — tenant isolation.
+  3. require_scoped_permission(..., target_branch_id=None) — org-wide check.
+  4. Service: validates user + dept belong to org, handles membership swap.
 
 Routes:
-  POST   /organizations/{org_id}/departments               — create
-  GET    /organizations/{org_id}/departments               — list all (paginated)
-  GET    /organizations/{org_id}/departments/{dept_id}     — get one
-  PATCH  /organizations/{org_id}/departments/{dept_id}     — edit
+  POST   /organizations/{org_id}/departments                              — create
+  GET    /organizations/{org_id}/departments                              — list all (paginated)
+  GET    /organizations/{org_id}/departments/{dept_id}                    — get one
+  PATCH  /organizations/{org_id}/departments/{dept_id}                    — edit
+  PUT    /organizations/{org_id}/departments/{dept_id}/members/{user_id}  — assign user
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
@@ -49,12 +53,16 @@ from app.schemas.department import (
     DepartmentListResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    DepartmentMemberAssignResponse,
 )
 from app.services.department import (
     create_department,
-    edit_department,
     get_department,
     get_departments,
+)
+from app.services.department.update_department import (
+    assign_user_to_department,
+    edit_department,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +73,7 @@ router = APIRouter(
 )
 
 
-# ── Create ─────────────────────────────────────────────────────────────────────
+
 
 @router.post(
     "",
@@ -106,8 +114,7 @@ async def create_department_route(
         return DepartmentResponse.model_validate(department)
 
 
-# ── List ───────────────────────────────────────────────────────────────────────
-
+# List 
 @router.get(
     "",
     response_model=DepartmentListResponse,
@@ -144,14 +151,13 @@ async def list_departments_route(
         items = [DepartmentResponse.model_validate(d) for d in departments]
         return DepartmentListResponse(
             items=items,
-            total=len(items),   # reflects current page; swap for COUNT query if needed
+            total=len(items),
             offset=offset,
             limit=limit,
         )
 
 
-# ── Get single ─────────────────────────────────────────────────────────────────
-
+# Get single 
 @router.get(
     "/{dept_id}",
     response_model=DepartmentResponse,
@@ -172,20 +178,16 @@ async def get_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}"):
-        # Resolve whether caller holds the broad permission; service uses this
-        # to skip the membership check for privileged users.
-       
         department = await get_department(
             session=db,
             organization_id=org_id,
             department_id=dept_id,
             user_id=current_user.user_id,
-           
         )
         return DepartmentResponse.model_validate(department)
 
 
-# ── Edit ───────────────────────────────────────────────────────────────────────
+#  Edit
 
 @router.patch(
     "/{dept_id}",
@@ -195,7 +197,7 @@ async def get_department_route(
     description=(
         "Partially updates a department. All fields are optional — "
         "only provided fields are changed. "
-        "Requires `department.create` granted org-wide."
+        "Requires `department.update` granted org-wide."
     ),
 )
 async def edit_department_route(
@@ -208,10 +210,11 @@ async def edit_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}"):
+        # FIX: was incorrectly using "department.create" here
         await require_scoped_permission(
             db=db,
             current_user=current_user,
-            permission="department.create",
+            permission="department.update",
             target_branch_id=None,
         )
 
@@ -225,3 +228,51 @@ async def edit_department_route(
         )
         await db.commit()
         return DepartmentResponse.model_validate(department)
+
+
+# Assign user to department 
+
+@router.put(
+    "/{dept_id}/members/{user_id}",
+    response_model=DepartmentMemberAssignResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Assign a user to a department",
+    description=(
+        "Assigns a user to the specified department. "
+        "If the user already belongs to another department within this "
+        "organization, they are removed from it first. "
+        "A user can only belong to one department at a time. "
+        "Requires `department.update` granted org-wide."
+    ),
+)
+async def assign_user_to_department_route(
+    org_id: str,
+    dept_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("department.update")),
+) -> DepartmentMemberAssignResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}/members/{user_id}"):
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="department.update",
+            target_branch_id=None,
+        )
+
+        await assign_user_to_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+            user_id=user_id,
+        )
+        await db.commit()
+
+        return DepartmentMemberAssignResponse(
+            user_id=user_id,
+            department_id=dept_id,
+            organization_id=org_id,
+            message="User successfully assigned to department.",
+        )

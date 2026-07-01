@@ -2,6 +2,8 @@
 
 FastAPI backend for the Wellstaq corporate wellness platform.
 
+Important Notice: The script folder contains script that run the deafault/platform wide permission, role etc
+
 ## Stack
 
 - FastAPI

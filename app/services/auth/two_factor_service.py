@@ -47,7 +47,7 @@ def _auth_error(message: str, status_code: int = status.HTTP_400_BAD_REQUEST) ->
     Imports from the new package path (app.services.auth.errors),
     not the old monolith (app.services.auth_service).
     """
-    from app.services.auth.errors import AuthError
+    from app.services.errors import AuthError
     return AuthError(message, status_code)
 
 
@@ -214,21 +214,20 @@ async def initiate_two_fa_setup(
                 "phone_number is required for SMS 2FA.",
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
-        from app.services.otp_service import request_otp
+        from app.services.auth.otp_service import request_otp
         user.phone_number = phone_number
         try:
             await request_otp(session, user.email, purpose="2fa_sms")
         except Exception as exc:
-            raise _auth_error(
-                "Failed to send SMS verification code. Please try again.",
-                status.HTTP_502_BAD_GATEWAY,
-            ) from exc
+            code = getattr(exc, "status_code", status.HTTP_502_BAD_GATEWAY)
+            msg = getattr(exc, "message", "Failed to send SMS verification code. Please try again.")
+            raise _auth_error(msg, code) from exc
         settings_row.two_fa_secret = _make_pending(f"sms:{phone_number}")
         await session.flush()
         return {"method": TwoFaMethod.SMS, "totp_secret": None, "totp_uri": None}
 
     elif method == TwoFaMethod.EMAIL:
-        from app.services.otp_service import request_otp
+        from app.services.auth.otp_service import request_otp
         await request_otp(session, user.email, purpose="2fa_email")
         settings_row.two_fa_secret = _make_pending("email")
         await session.flush()
@@ -285,12 +284,12 @@ async def confirm_two_fa_setup(
         settings_row.two_fa_secret = clean
 
     elif method in (TwoFaMethod.SMS, TwoFaMethod.EMAIL):
-        from app.services.otp_service import OtpError, verify_otp
+        from app.services.auth.otp_service import OtpError, verify_otp
         try:
             await verify_otp(session, user.email, code)
         except OtpError as exc:
             raise _auth_error(exc.message, exc.status_code) from exc
-        settings_row.two_fa_secret = clean
+        settings_row.two_fa_secret = None
 
     settings_row.two_fa_method = method
     settings_row.two_fa_enabled = True
@@ -348,7 +347,7 @@ async def verify_two_fa_challenge(
             raise _auth_error("Invalid or expired TOTP code.", status.HTTP_401_UNAUTHORIZED)
 
     elif method in (TwoFaMethod.EMAIL, TwoFaMethod.SMS):
-        from app.services.otp_service import OtpError, verify_otp
+        from app.services.auth.otp_service import OtpError, verify_otp
         try:
             await verify_otp(session, user.email, code)
         except OtpError as exc:
