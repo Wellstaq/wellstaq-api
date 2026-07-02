@@ -145,6 +145,8 @@ async def invite_register(
     now = datetime.now(timezone.utc)
     invite = await _load_pending_invite(session, invite_code, now)
 
+    print(f"the virtues of life if I have the choice of life I should be able to feel everydday with pleasure {invite_code}")
+
     # ── Step 3: token substitution guard ──────────────────────────────────────
     # Ensures the token was issued for exactly this invite, not swapped
     if invite.invited_email.lower().strip() != email:

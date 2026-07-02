@@ -22,11 +22,15 @@ Scope / RBAC notes:
 - user_permissions: all UserPermission rows whose branch_id points here.
   When the branch is deleted, those branch-scoped grants are cascade-
   deleted automatically (FK ondelete="CASCADE" on UserPermission.branch_id).
+- clubs: all Club rows that belong to this branch. When the branch is
+  deleted, all its clubs (and their members) are cascade-deleted via
+  Club.branch_id ondelete="CASCADE".
 """
 
-from sqlalchemy import ForeignKey, Index, String, UniqueConstraint, CheckConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional
+
+from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -55,9 +59,7 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Manager (branch_manager role user) ────────────────────────────────
     # Nullable — a branch can exist without an assigned manager.
     # SET NULL on delete — manager can be deleted freely; the branch
-    # survives and manager_id is nulled until reassigned. Only the
-    # org Super Admin (Organization.owner_id) cannot be deleted
-    # independently — that rule is enforced at the service layer, not here.
+    # survives and manager_id is nulled until reassigned.
     manager_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL", use_alter=True, name="fk_branch_manager_id"),
@@ -76,13 +78,11 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="branches",
         foreign_keys=[organization_id],
     )
-
     manager: Mapped[Optional["User"]] = relationship(
         "User",
         back_populates="managed_branches",
         foreign_keys=[manager_id],
     )
-
     members: Mapped[list["User"]] = relationship(
         "User",
         back_populates="branch",
@@ -92,7 +92,14 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Department",
         back_populates="branch",
     )
-
+    # Clubs scoped to this branch. Cascade handled at DB level via
+    # Club.branch_id ondelete="CASCADE" — no ORM cascade needed here.
+    clubs: Mapped[list["Club"]] = relationship(
+        "Club",
+        back_populates="branch",
+        foreign_keys="Club.branch_id",
+        cascade="all, delete-orphan",
+    )
     events: Mapped[list["Event"]] = relationship(
         "Event",
         back_populates="branch",
@@ -101,7 +108,6 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Challenge",
         back_populates="branch",
     )
-
     invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
         back_populates="branch",
@@ -121,10 +127,8 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="Role.branch_id",
         cascade="all, delete-orphan",
     )
-
     # All UserPermission grants scoped to this branch. When the branch is
-    # deleted, these rows are cascade-deleted via UserPermission.branch_id FK,
-    # so no user retains a dangling branch-scoped permission grant.
+    # deleted, these rows are cascade-deleted via UserPermission.branch_id FK.
     user_permissions: Mapped[list["UserPermission"]] = relationship(
         "UserPermission",
         back_populates="branch",

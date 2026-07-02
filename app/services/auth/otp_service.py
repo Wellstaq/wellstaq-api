@@ -22,6 +22,7 @@ from app.core.constants import (
     OTP_LENGTH,
     OTP_MAX_ATTEMPTS,
     OTP_TTL_MINUTES,
+    EMAIL_VERIFICATION_TOKEN_TTL_DAYS,
     TokenType,
 )
 from app.models.otp_code import OtpCode
@@ -61,7 +62,7 @@ def _make_email_verification_token(email: str) -> str:
     from app.auth import jwt as _jwt
     return _jwt._create_token(
         subject=email,
-        expires_delta=timedelta(minutes=OTP_TTL_MINUTES),
+        expires_delta=timedelta(days=EMAIL_VERIFICATION_TOKEN_TTL_DAYS),
         token_type="access",
         extra_claims={
             "type": TokenType.EMAIL_VERIFICATION,

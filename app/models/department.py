@@ -73,6 +73,14 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
+    head_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+
     # Org scope — departments are always org-level
     organization_id: Mapped[str] = mapped_column(
         String(36),
@@ -107,6 +115,10 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Branch",
         back_populates="departments",
         foreign_keys=[branch_id],
+    )
+    head: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[head_user_id],
     )
     members: Mapped[list["DepartmentMember"]] = relationship(
         "DepartmentMember",

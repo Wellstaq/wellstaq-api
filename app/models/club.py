@@ -1,9 +1,13 @@
 """
-Club model — an org-wide affinity or interest group.
+Club model — a branch-scoped affinity or interest group.
 
 Design principles:
-- Clubs are created only by overall_manager and are intentionally NOT
-  branch-scoped — they are visible across the entire organization.
+- A club always belongs to exactly ONE branch (branch_id NOT NULL).
+  Clubs are visible org-wide for discovery but are operationally scoped
+  to their branch — membership, activity, and moderation all happen
+  within the branch context.
+- A club cannot belong to two branches. The branch_id FK is NOT NULL
+  and carries no uniqueness relaxation — one row, one branch, always.
 - privacy controls visibility: 'public' = anyone in org can see/join,
   'private' = invite only. Validated at app/schema layer (no DB enum).
 - category_id is a plain string stub — FK added when categories table exists.
@@ -11,8 +15,8 @@ Design principles:
   Department. Preserved even if the creator user is later deleted.
 - member_count is denormalized — incremented/decremented by app layer or
   background job on join/leave. Never derive via COUNT().
-- No updated_at — clubs are mostly append-only; name/description edits
-  are infrequent. Add if needed later.
+- Club name must be unique within an organization
+  (UniqueConstraint on organization_id + name).
 
 ClubMember design:
 - A user can only belong to ONE club at a time.
@@ -53,10 +57,21 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # ── Org scope ─────────────────────────────────────────────────────────
-    # Clubs are org-wide — intentionally no branch_id
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # ── Branch scope ───────────────────────────────────────────────────────
+    # NOT NULL — every club must belong to exactly one branch.
+    # A club can never be moved between branches — branch_id is set at
+    # creation and never updated. If a branch is deleted, all its clubs
+    # are cascade-deleted with it.
+    branch_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -75,6 +90,11 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="clubs",
         foreign_keys=[organization_id],
     )
+    branch: Mapped["Branch"] = relationship(
+        "Branch",
+        back_populates="clubs",
+        foreign_keys=[branch_id],
+    )
     category: Mapped["Category"] = relationship(
         "Category",
         back_populates="clubs",
@@ -90,10 +110,16 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="club",
     )
 
+    __table_args__ = (
+        # A club name must be unique within an organization.
+        # Two branches in the same org cannot have a club with the same name.
+        UniqueConstraint("organization_id", "name", name="uq_club_org_name"),
+    )
+
     def __repr__(self) -> str:
         return (
             f"<Club id={self.id} name={self.name} "
-            f"org={self.organization_id} privacy={self.privacy}>"
+            f"org={self.organization_id} branch={self.branch_id} privacy={self.privacy}>"
         )
 
 
@@ -149,10 +175,8 @@ class ClubMember(Base, UUIDPrimaryKeyMixin):
 
     __table_args__ = (
         # One user → one club at a time.
-        # This is the primary business rule constraint.
         UniqueConstraint("user_id", name="uq_club_members_one_club_per_user"),
-        # Redundant given the above, but kept for a clearer error message
-        # on the specific "re-joining the same club" case.
+        # Kept for a clearer violation message on the re-joining case.
         UniqueConstraint("club_id", "user_id", name="uq_club_members_club_user"),
     )
 

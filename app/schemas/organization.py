@@ -15,9 +15,10 @@ class SendInviteRequest(BaseModel):
     invited_email: EmailStr
     invited_department_id: str = Field(..., min_length=1)
     invited_role_id: str = Field(..., min_length=1)
-    branch_id: str | None = Field(
-        default=None,
-        description="Assign invitee to a specific branch. Omit for org-level.",
+    branch_id: str = Field(
+        ...,
+        min_length=1,
+        description="Branch to assign the invitee to. Required — every invite must target a branch.",
     )
 
 
@@ -25,7 +26,7 @@ class SendInviteResponse(BaseModel):
     invite_id: str
     invited_email: str
     organization_id: str
-    branch_id: str | None
+    branch_id: str
     invited_department_id: str
     invited_role_id: str
     status: str
@@ -54,4 +55,3 @@ class InviteListResponse(BaseModel):
     total: int
     offset: int
     limit: int
-

@@ -22,6 +22,7 @@ from app.routers import (
     departments,
     organizations,
     roles,
+    branches,
 )
 
 
@@ -58,6 +59,7 @@ app.include_router(uploads.router)
 app.include_router(departments.router)
 app.include_router(organizations.router)
 app.include_router(roles.router)
+app.include_router(branches.router)
 
 
 @app.get("/")

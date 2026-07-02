@@ -56,7 +56,6 @@ def _generate_invite_code() -> str:
     """
     return secrets.token_urlsafe(32)
 
-
 async def send_invite(
     session: AsyncSession,
     *,
@@ -68,7 +67,7 @@ async def send_invite(
     invited_email: str,
     invited_department_id: str,
     invited_role_id: str,
-    branch_id: str | None = None,
+    branch_id: str,  # ── now required, not Optional ────────────────────────────
 ) -> OrganizationInvite:
     """
     Create and send an organization invite.
@@ -83,7 +82,8 @@ async def send_invite(
     invited_email           — recipient email (lowercased + stripped here)
     invited_department_id   — department the invitee will join
     invited_role_id         — role the invitee will receive on joining
-    branch_id               — if set, invitee is assigned to this branch
+    branch_id               — REQUIRED. Every invite must assign the invitee
+                               to a branch — there is no org-level-only invite.
 
     Returns the created OrganizationInvite (unflushed — caller flushes).
 
@@ -158,59 +158,42 @@ async def send_invite(
             status.HTTP_400_BAD_REQUEST,
         )
 
-    # ── Guard 6: branch must exist and belong to this org (if provided) ────────
-    if branch_id is not None:
-        from app.models.branch import Branch  # local import avoids circular
-        branch_result = await session.execute(
-            select(Branch).where(
-                Branch.id == branch_id,
-                Branch.organization_id == org_id,
-            )
+    # ── Guard 6: branch must exist and belong to this org ──────────────────────
+    from app.models.branch import Branch  # local import avoids circular
+    branch_result = await session.execute(
+        select(Branch).where(
+            Branch.id == branch_id,
+            Branch.organization_id == org_id,
         )
-        if branch_result.scalar_one_or_none() is None:
-            raise AuthError(
-                "Branch not found or does not belong to this organization.",
-                status.HTTP_404_NOT_FOUND,
-            )
+    )
+    if branch_result.scalar_one_or_none() is None:
+        raise AuthError(
+            "Branch not found or does not belong to this organization.",
+            status.HTTP_404_NOT_FOUND,
+        )
 
-        # If branch_id is provided, validate that the role is not scoped
-        # to a DIFFERENT branch (role.branch_id must match or be None)
-        if role.branch_id is not None and role.branch_id != branch_id:
-            raise AuthError(
-                "The assigned role is scoped to a different branch.",
-                status.HTTP_400_BAD_REQUEST,
-            )
+    # If the role is branch-scoped, it must match the invite's branch.
+    if role.branch_id is not None and role.branch_id != branch_id:
+        raise AuthError(
+            "The assigned role is scoped to a different branch.",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── Guard 7: scope check — inviter can only invite into their own branch ───
-    # super_admin bypasses this — they can invite into any branch or org-wide.
-    # Everyone else must hold member.invite org-wide (branch_id=NULL grant)
-    # to invite into a branch they don't belong to, or into the org without
-    # a branch assignment. If they only hold member.invite branch-scoped,
-    # they can only invite into their own branch.
+    # super_admin bypasses this — they can invite into any branch.
+    # Everyone else must either hold member.invite org-wide, or be a
+    # member of the target branch themselves.
     if invited_by_role != RoleName.SUPER_ADMIN:
         has_org_wide_invite = "member.invite" in invited_by_permissions
-
-        if branch_id is not None:
-            # Inviting into a specific branch — inviter must either hold
-            # member.invite org-wide OR be in that same branch
-            if not has_org_wide_invite and invited_by_branch_id != branch_id:
-                raise AuthError(
-                    "You can only invite users into your own branch.",
-                    status.HTTP_403_FORBIDDEN,
-                )
-        else:
-            # Inviting without a branch (org-level) — must hold
-            # member.invite org-wide
-            if not has_org_wide_invite:
-                raise AuthError(
-                    "You do not have permission to send org-wide invites.",
-                    status.HTTP_403_FORBIDDEN,
-                )
+        if not has_org_wide_invite and invited_by_branch_id != branch_id:
+            raise AuthError(
+                "You can only invite users into your own branch.",
+                status.HTTP_403_FORBIDDEN,
+            )
 
     # ── Create invite ──────────────────────────────────────────────────────────
     invite_code = _generate_invite_code()
     print(f"The virtues of life if I have the choice of life  I should be able to feel everyday with pleasure {invite_code}")
-
     invite = OrganizationInvite(
         organization_id=org_id,
         branch_id=branch_id,

@@ -100,8 +100,18 @@ OTP_TTL_MINUTES = 10
 # 10 minutes is the TOTP window convention and short enough to limit
 # the practical brute-force window on a 6-digit code.
 
+EMAIL_VERIFICATION_TOKEN_TTL_DAYS = 7
+
 OTP_MAX_ATTEMPTS = 5
 # Wrong guesses allowed before the code is locked.
 # After this many failures the record is marked used=True, forcing the
-# user to request a fresh code.
-# Pair with attempt_count on the OtpCode model — see otp_service.verify_otp().
+
+# app/core/constants.py
+
+WELLBEING_DIMENSIONS = ("mood", "energy", "stress", "work_life_balance")
+
+WELLBEING_LEVELS = ("good", "bad", "stressed", "tired", "excited", "amazed", "infuriated")
+# expand this list as your product defines more valid levels
+
+WELLBEING_REASONS = ("work", "family", "health", "finances", "sleep", "love")
+# reason is optional but if supplied, must be from this list

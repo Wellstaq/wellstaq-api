@@ -84,3 +84,56 @@ class DepartmentMemberAssignResponse(BaseModel):
     organization_id: str
     message: str
 
+
+class DepartmentMemberInfo(BaseModel):
+    """Allow-list — deliberately excludes hashed_password and any other
+    sensitive User fields. Add fields here only as needed by the client."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    first_name: str
+    last_name: str
+    email: str
+    avatar_url: str | None
+    status: str
+
+
+class DepartmentMembersListResponse(BaseModel):
+    items: list[DepartmentMemberInfo]
+    total: int
+    offset: int
+    limit: int
+class DepartmentDeleteRequest(BaseModel):
+    """
+    transfer_to_department_id is required when the department still has
+    members — they must be moved atomically before deletion so no user
+    is ever left without a department.
+    """
+    transfer_to_department_id: str | None = Field(
+        default=None,
+        description=(
+            "Required if the department has members. "
+            "All members are moved here before deletion."
+        ),
+    )
+
+
+class DepartmentDeleteResponse(BaseModel):
+    department_id: str
+    organization_id: str
+    members_transferred: int
+    message: str
+
+
+class DepartmentHeadAssignResponse(BaseModel):
+    department_id: str
+    organization_id: str
+    head_user_id: str
+    message: str
+
+
+class DepartmentHeadRemoveResponse(BaseModel):
+    department_id: str
+    organization_id: str
+    message: str
+
