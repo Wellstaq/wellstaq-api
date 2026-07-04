@@ -460,28 +460,28 @@ async def test_department_member_duplicate_raises(db_session: AsyncSession):
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
-
 @pytest.mark.asyncio
-async def test_department_member_different_departments_same_user(db_session: AsyncSession):
-    """A user can join multiple different departments."""
+async def test_department_member_cannot_join_two_departments(db_session: AsyncSession):
+    """A user can only belong to ONE department at a time.
+    UniqueConstraint on user_id enforces this at the DB level."""
     _, org = await setup_org(db_session)
     dept_a = await setup_department(db_session, org.id, name="Engineering")
     dept_b = await setup_department(db_session, org.id, name="Marketing")
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(
+        db_session, organization_id=org.id,
+        email="member@example.com", role_name="employee"
+    )
     db_session.add(member)
     await db_session.flush()
 
     db_session.add(make_department_member(dept_a.id, member.id))
-    db_session.add(make_department_member(dept_b.id, member.id))
     await db_session.flush()
 
-    result = await db_session.execute(
-        select(DepartmentMember).where(DepartmentMember.user_id == member.id)
-    )
-    assert len(result.scalars().all()) == 2
-
-
+    db_session.add(make_department_member(dept_b.id, member.id))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+        
 @pytest.mark.asyncio
 async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
     """Leaving a department deletes the membership row."""

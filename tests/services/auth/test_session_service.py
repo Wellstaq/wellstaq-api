@@ -317,7 +317,7 @@ class TestGetMe:
     async def test_returns_user_with_settings_loaded(self, db_session: AsyncSession):
         org, user = await _make_active_user(db_session, email="getme@gmail.com")
 
-        result = await get_me(db_session, user.id)
+        result, department_id = await get_me(db_session, user.id)
 
         assert result.id == user.id
         assert result.email == "getme@gmail.com"

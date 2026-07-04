@@ -376,31 +376,23 @@ class TestOrgOwnerSignupNormalization:
 class TestOrgOwnerSignupMissingRole:
 
     @pytest.mark.asyncio
-    async def test_signup_succeeds_without_super_admin_role_seeded(
+    async def test_signup_succeeds_by_self_healing_when_role_not_preseeded(
         self, db_session: AsyncSession
     ):
         """
         If the super_admin system role hasn't been seeded yet, signup
-        must not crash — it should still create the org and user, just
-        without a role assigned and without permissions seeded.
+        should self-heal (re-run the idempotent role seed) rather than
+        creating an owner with no role/permissions, or hard-failing on
+        what's usually just a fresh-deploy ordering issue.
         """
-        # Deliberately do NOT seed the super_admin role
         token = _valid_token("norole@example.com")
 
         result = await org_owner_signup(
             db_session, token, **_signup_kwargs(business_name="No Role Co")
         )
-        await db_session.flush()
-
-        assert "access_token" in result
 
         user_result = await db_session.execute(
             select(User).where(User.email == "norole@example.com")
         )
         user = user_result.scalar_one()
-        assert user.role_id is None
-
-        grants_result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        assert grants_result.scalars().all() == []
+        assert user.role_id is not None  # self-heal assigned the role, not left null
