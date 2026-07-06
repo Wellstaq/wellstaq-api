@@ -174,7 +174,7 @@ class TestGetSystemRole:
         org_role = Role(
             name="custom_manager",
             organization_id=org.id,
-            branch_id=None,
+            branch_id=owner.branch_id,  # ← add this
             is_system=False,
         )
         db_session.add(org_role)
@@ -182,7 +182,6 @@ class TestGetSystemRole:
 
         found = await get_system_role(db_session, "custom_manager")
         assert found is None, "get_system_role must not return org-scoped roles"
-
 
 # ── assign_role() ─────────────────────────────────────────────────────────────────
 

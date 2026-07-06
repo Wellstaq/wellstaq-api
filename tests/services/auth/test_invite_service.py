@@ -48,12 +48,14 @@ from tests.conftest import  make_org_with_owner, make_user_with_role
 
 
 # ── Local factories — specific to invite tests, not reused elsewhere ────────
-
-def make_department(organization_id: str, **overrides) -> Department:
+def make_department(organization_id: str, branch_id: str, **overrides) -> Department:
     """Build a Department instance (not yet persisted)."""
     defaults = dict(name="Engineering")
-    return Department(organization_id=organization_id, **{**defaults, **overrides})
-
+    return Department(
+        organization_id=organization_id,
+        branch_id=branch_id,  
+        **{**defaults, **overrides}
+    )
 
 def make_invite(
     *,
@@ -61,8 +63,8 @@ def make_invite(
     invited_department_id: str,
     invited_role_id: str,
     invited_by: str,
+    branch_id: str,  # Make this required (no default)
     invited_email: str = "invitee@example.com",
-    branch_id: str | None = None,
     status: str = InviteStatus.PENDING,
     expires_in: timedelta = timedelta(days=7),
     **overrides,
@@ -76,7 +78,7 @@ def make_invite(
     defaults = dict(
         invite_code=secrets.token_urlsafe(32),
         invited_email=invited_email.lower().strip(),
-        branch_id=branch_id,
+        branch_id=branch_id,  # Now guaranteed to be provided
         status=status,
         expires_at=now + expires_in,
     )
@@ -85,16 +87,16 @@ def make_invite(
         invited_department_id=invited_department_id,
         invited_role_id=invited_role_id,
         invited_by=invited_by,
-        **{**defaults, **overrides},
+        **{**defaults, **overrides}
     )
 
-
 # ── Shared setup helper ─────────────────────────────────────────────────────
-
 async def _setup_org_dept_invite(db_session: AsyncSession, **invite_overrides):
     """Org + owner + department + a pending invite, all persisted."""
     org, owner = await make_org_with_owner(db_session)
-    dept = make_department(organization_id=org.id)
+    
+    # Create department with the owner's branch
+    dept = make_department(organization_id=org.id, branch_id=owner.branch_id)
     db_session.add(dept)
     await db_session.flush()
 
@@ -103,12 +105,12 @@ async def _setup_org_dept_invite(db_session: AsyncSession, **invite_overrides):
         invited_department_id=dept.id,
         invited_role_id=owner.role_id,
         invited_by=owner.id,
+        branch_id=owner.branch_id,  # Add this required field
         **invite_overrides,
     )
     db_session.add(invite)
     await db_session.flush()
     return org, owner, dept, invite
-
 
 @pytest.fixture(autouse=True)
 def mock_send_email(monkeypatch):
@@ -178,19 +180,23 @@ class TestRequestInviteOtp:
             await request_invite_otp(db_session, invite.invite_code)
         assert exc_info.value.status_code == 404
 
+   
     @pytest.mark.asyncio
     async def test_existing_account_for_invited_email_raises_409(
         self, db_session: AsyncSession
-    ):
+        ):
         org, owner, dept, invite = await _setup_org_dept_invite(
             db_session, invited_email="taken@example.com"
         )
         existing = await make_user_with_role(
-            db_session, organization_id=org.id, email="taken@example.com"
+            db_session, 
+            organization_id=org.id, 
+            email="taken@example.com",
+            branch_id=owner.branch_id,  # Add this
         )
         db_session.add(existing)
         await db_session.flush()
-
+    
         with pytest.raises(AuthError) as exc_info:
             await request_invite_otp(db_session, invite.invite_code)
         assert exc_info.value.status_code == 409
@@ -384,17 +390,22 @@ class TestInviteRegisterValidation:
         assert exc_info.value.status_code == 410
 
     @pytest.mark.asyncio
-    async def test_duplicate_email_raises_409(self, db_session: AsyncSession):
+    async def test_existing_account_for_invited_email_raises_409(
+        self, db_session: AsyncSession
+        ):
         org, owner, dept, invite = await _setup_org_dept_invite(
-            db_session, invited_email="reg7@example.com"
+            db_session, invited_email="taken@example.com"
         )
         existing = await make_user_with_role(
-            db_session, organization_id=org.id, email="reg7@example.com"
+            db_session,
+            organization_id=org.id,
+            email="taken@example.com",
+            branch_id=owner.branch_id,
         )
         db_session.add(existing)
         await db_session.flush()
 
-        token = _make_invite_verification_token("reg7@example.com", invite.invite_code)
+        token = _make_invite_verification_token("taken@example.com", invite.invite_code)
         with pytest.raises(AuthError) as exc_info:
             await invite_register(db_session, token, **_register_kwargs())
         assert exc_info.value.status_code == 409

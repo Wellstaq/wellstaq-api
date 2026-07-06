@@ -43,13 +43,13 @@ def _apple_claims(email: str, sub: str = "apple-sub-123", **overrides) -> dict:
 async def _make_active_user(db_session: AsyncSession, *, email: str, **overrides) -> tuple:
     org, owner = await make_org_with_owner(db_session)
     overrides.setdefault("status", UserStatus.ACTIVE)
+    overrides.setdefault("branch_id", owner.branch_id)  # ← add this
     user = await make_user_with_role(
         db_session, organization_id=org.id, email=email, **overrides
     )
     db_session.add(user)
     await db_session.flush()
     return org, user
-
 
 def _add_provider(db_session: AsyncSession, user: User, provider: str, provider_user_id: str):
     row = UserAuthProvider(

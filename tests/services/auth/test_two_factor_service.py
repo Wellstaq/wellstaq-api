@@ -45,6 +45,7 @@ from tests.conftest import make_org_with_owner, make_user_with_role
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
+
 async def _make_active_user(
     db_session: AsyncSession,
     *,
@@ -52,20 +53,9 @@ async def _make_active_user(
     password: str | None = None,
     **overrides,
 ) -> tuple:
-    """
-    Create an org + active user with a UserSettings row, and eagerly load
-    the settings relationship into the identity map.
-
-    Eagerly loading after flush is critical: without it, any subsequent
-    synchronous access to user.settings triggers a lazy load, which raises
-    MissingGreenlet in an async SQLAlchemy context.
-
-    password=None leaves hashed_password as the factory default ("$2b$12$fakehash").
-    Pass password="..." for a real bcrypt hash, or hashed_password=None explicitly
-    to simulate an OAuth-only user with no password.
-    """
     org, owner = await make_org_with_owner(db_session)
     overrides.setdefault("status", UserStatus.ACTIVE)
+    overrides.setdefault("branch_id", owner.branch_id)   
     if password is not None:
         overrides["hashed_password"] = hash_password(password)
     user = await make_user_with_role(
@@ -74,13 +64,9 @@ async def _make_active_user(
     db_session.add(user)
     await db_session.flush()
 
-    # Match production invariant: every User always has a UserSettings row.
-    # make_user_with_role() doesn't create one; signup_service does.
     db_session.add(_create_user_settings(user))
     await db_session.flush()
 
-    # Eagerly load the settings relationship so user.settings never
-    # triggers a lazy load later in the test body.
     await db_session.refresh(user, attribute_names=["settings"])
     return org, user
 
@@ -283,23 +269,17 @@ class TestInitiateTwoFaSetup:
 
     @pytest.mark.asyncio
     async def test_missing_settings_row_raises_500(self, db_session: AsyncSession):
-        """
-        Deliberately bypasses _make_active_user to construct the one state
-        that should never exist in production: a User with no UserSettings row.
-        _load_user_with_settings() must surface this as 500, not silently
-        proceed or crash with an unrelated error.
-        """
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)   # ← change this line
         bare_user = User(
             first_name="No",
             last_name="Settings",
             email="nosettings@example.com",
             organization_id=org.id,
+            branch_id=owner.branch_id,                 
             status=UserStatus.ACTIVE,
         )
         db_session.add(bare_user)
         await db_session.flush()
-        # intentionally no UserSettings row
 
         with pytest.raises(Exception) as exc_info:
             await initiate_two_fa_setup(db_session, bare_user.id, TwoFaMethod.TOTP)

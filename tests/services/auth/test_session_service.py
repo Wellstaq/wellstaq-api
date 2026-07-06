@@ -28,11 +28,10 @@ from tests.conftest import make_org_with_owner, make_user_with_role
 
 
 # ── Local helpers ────────────────────────────────────────────────────────────
-
-
 async def _make_active_user(db_session: AsyncSession, *, email: str, **overrides) -> tuple:
     org, owner = await make_org_with_owner(db_session)
     overrides.setdefault("status", UserStatus.ACTIVE)
+    overrides.setdefault("branch_id", owner.branch_id)
     user = await make_user_with_role(
         db_session, organization_id=org.id, email=email, **overrides
     )
@@ -46,6 +45,7 @@ async def _make_active_user(db_session: AsyncSession, *, email: str, **overrides
     await db_session.flush()
 
     return org, user
+
 
 def _add_device(
     db_session: AsyncSession,
