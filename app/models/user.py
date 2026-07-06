@@ -28,55 +28,27 @@ Design principles:
   corrupt RLS tenant isolation silently — treat this as a critical
   invariant in all service-layer code.
 
-- role_id is a nullable FK to the roles table (ondelete="SET NULL").
-  Permission logic lives in Role rows. NULL = no role assigned yet.
-  Deleting a Role never cascades to User — it clears role_id instead.
-- hashed_password is nullable: OAuth-only users have no password.
-  App layer enforces that at least one auth provider exists.
-- email is globally unique — every human maps to exactly one account
-  for their entire lifetime on the platform. This is intentional: the
-  product has no multi-org membership model (a user belongs to exactly
-  one org for life). If multi-org membership is ever introduced, this
-  constraint must be relaxed to UNIQUE(organization_id, email).
-- Deletion is hard delete only — there is no soft-delete / grace
-  window on User. Deleting a user removes the row immediately and
-  cascades (via ondelete="CASCADE" on every child FK already defined
-  on UserSettings, UserDevice, UserAuthProvider, posts, etc.) to all
-  of their data in the same transaction. This is deliberate: it gives
-  an honest, immediate answer to "delete my data," and it means the
-  user's email is free for re-registration the instant the row is
-  gone — no lingering row, no unique-constraint conflict to work
-  around. There is no deleted_at / deleted_by on this table for this
-  reason; if a future product need calls for reversible deactivation,
-  that should be a separate explicit status (e.g. status="suspended"
-  below), not a soft-delete flag that could be confused with deletion.
-
-organization_id (NOT NULL):
-- A User row is only ever created in one of two ways: (1) accepting an
-  OrganizationInvite, where the organization is already known, or (2)
-  the self-serve signup flow, which creates the Organization and the
-  owner User together in a single atomic transaction (see Organization
-  model docstring for the exact step order that resolves the circular
-  FK). There is no product flow that creates a User without a
-  resolved organization_id, so the column is NOT NULL — a User row
-  belonging to no organization is not a valid state, not even
-  transiently outside of a transaction.
-- ondelete="CASCADE": deleting an Organization (app-owner-only, see
-  Organization docstring) deletes every member User row, including
-  the owner. This matches the product rule that an organization and
-  all its users are deleted together as one unit. Deactivation
-  (Organization.is_active=False) is the non-destructive alternative
-  and never touches this FK at all.
-- BLAST RADIUS WARNING: deleting a User who is currently an
-  Organization's owner must NEVER be allowed to happen silently.
-  Organization.owner_id is ondelete="CASCADE" — if the owner User row
-  is deleted, the entire Organization (and every member User in it)
-  is deleted in the same transaction. This is catastrophic and
-  irreversible. The service layer MUST check that no Organization
-  references this user as owner_id before executing any user delete.
-  This guard is not encoded in the model (it is a service/session
-  concern), but it is a hard requirement on any code path that deletes
-  User rows.
+branch_id:
+- Every user now MUST belong to exactly one branch — their "home"
+  branch. This is completely separate from oversight: a user's role
+  (User.role_id) may be exercised across MULTIPLE branches or
+  departments via UserRoleAssignment rows (see permission.py), but
+  User.branch_id always answers exactly one question: "where does
+  this person live/belong as a member." It is never a list, never
+  ambiguous, and is NOT updated by role-assignment operations.
+- Every organization has an auto-created Headquarters branch (see
+  signup_service). "Org-wide" positions like super_admin are simply
+  users whose home branch is Headquarters — there is no separate
+  "no branch" state anymore.
+- ondelete: Branch deletion must now either
+  reassign every user whose home branch is the one being deleted, or
+  be blocked outright while such users exist — see delete_branch.py.
+  A silent SET NULL would leave a NOT NULL column null, which the DB
+  will reject anyway; this FK's ondelete behavior needs explicit
+  service-layer handling before a branch can ever be deleted (this is
+  the "creepy" edge case flagged during design — home branch vs.
+  oversight assignments are different relationships to the same table
+  and must be treated as such).
 """
 
 
@@ -110,27 +82,32 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # Status — constrained to known values; see ck_user_status below.
-    # pending | active | inactive | suspended
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending", index=True
     )
 
-    # Auth (nullable: OAuth users may have no password)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Every committed User row belongs to exactly one organization for
-    # its entire life — see module docstring.
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    branch_id: Mapped[str | None] = mapped_column(
+
+    # Every user has exactly one home branch now — see module docstring
+    # above. ondelete="CASCADE": if a branch is ever deleted while a user
+    # still calls it home, that user is deleted too. This is a safety
+    # fallback only — the real guard is in delete_branch.py, which
+    # transfers every home-branch member OUT before it ever issues the
+    # actual DELETE, so this CASCADE should never fire against a real,
+    # still-wanted user in that path. It exists so a full Organization
+    # deletion (which cascades to Branch, which would otherwise leave
+    # dangling User rows) can complete in one atomic operation.
+    branch_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("branches.id", ondelete="SET NULL", use_alter=True, name="fk_users_branch_id"),
-        nullable=True,
+        ForeignKey("branches.id", ondelete="CASCADE", use_alter=True, name="fk_users_branch_id"),
+        nullable=False,
         index=True,
     )
 
@@ -233,12 +210,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     pinned_group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
         "GroupChatMessage", back_populates="pinned_by_user", foreign_keys="GroupChatMessage.pinned_by",
     )
-    sent_direct_messages: Mapped[list["DirectMessage"]] = relationship(
-        "DirectMessage", back_populates="sender", foreign_keys="DirectMessage.sender_id",
-    )
-    received_direct_messages: Mapped[list["DirectMessage"]] = relationship(
-        "DirectMessage", back_populates="recipient", foreign_keys="DirectMessage.recipient_id",
-    )
+
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="user", foreign_keys="Notification.user_id",
     )
@@ -285,12 +257,19 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="UserPermission.user_id",
         cascade="all, delete-orphan",
     )
+    # NEW — every branch/department this user's single role is
+    # actively exercised in (oversight), completely separate from
+    # branch_id above (home/membership). See permission.py
+    # UserRoleAssignment docstring.
+    role_assignments: Mapped[list["UserRoleAssignment"]] = relationship(
+        "UserRoleAssignment",
+        back_populates="user",
+        foreign_keys="UserRoleAssignment.user_id",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_users_org_role", "organization_id", "role_id"),
-        # Constrain status to known values — same pattern as
-        # notification_type, reference_type, etc. Prevents free-text
-        # status values slipping in via a bug or direct DB write.
         CheckConstraint(
             f"status IN ({', '.join(repr(s) for s in USER_STATUSES)})",
             name="ck_user_status",
@@ -299,6 +278,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} role={self.role_id}>"
+
+
 
 
 """

@@ -1,6 +1,13 @@
 """
-ActivityLog and EngagementLog — organization_id added to both for
-tenant isolation and direct org-level querying without joining through User.
+ActivityLog and EngagementLog — organization_id and branch_id are both
+denormalized onto these tables for tenant isolation and direct
+org/branch-level querying without joining through User.
+
+branch_id is compulsory: every user in an organization belongs to a
+branch, so every log row does too. Branch-level dashboards filter by
+(organization_id, branch_id) directly; an org-wide rollup for someone
+with cross-branch permission just omits the branch_id filter and
+aggregates across all branches under the org.
 
 ActivityLog design principles:
 - One row per (user, metric_type, date) is the intended grain, but NOT
@@ -54,6 +61,12 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
         nullable=False,
         index=True,
     )
+    branch_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -73,6 +86,11 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
         back_populates="activity_logs",
         foreign_keys=[organization_id],
     )
+    branch: Mapped["Branch"] = relationship(
+        "Branch",
+        back_populates="activity_logs",
+        foreign_keys=[branch_id],
+    )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="activity_logs",
@@ -81,12 +99,14 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
 
     __table_args__ = (
         Index("ix_activity_logs_org_user_date", "organization_id", "user_id", "date"),
+        Index("ix_activity_logs_org_branch_date", "organization_id", "branch_id", "date"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<ActivityLog org={self.organization_id} user_id={self.user_id} "
-            f"metric_type={self.metric_type} value={self.value} date={self.date}>"
+            f"<ActivityLog org={self.organization_id} branch={self.branch_id} "
+            f"user_id={self.user_id} metric_type={self.metric_type} "
+            f"value={self.value} date={self.date}>"
         )
 
 
@@ -109,6 +129,12 @@ class EngagementLog(Base, UUIDPrimaryKeyMixin):
         nullable=False,
         index=True,
     )
+    branch_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -127,6 +153,11 @@ class EngagementLog(Base, UUIDPrimaryKeyMixin):
         back_populates="engagement_logs",
         foreign_keys=[organization_id],
     )
+    branch: Mapped["Branch"] = relationship(
+        "Branch",
+        back_populates="engagement_logs",
+        foreign_keys=[branch_id],
+    )
     user: Mapped["User"] = relationship(
         "User",
         back_populates="engagement_logs",
@@ -135,10 +166,12 @@ class EngagementLog(Base, UUIDPrimaryKeyMixin):
 
     __table_args__ = (
         Index("ix_engagement_logs_org_user_date", "organization_id", "user_id", "date"),
+        Index("ix_engagement_logs_org_branch_date", "organization_id", "branch_id", "date"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<EngagementLog org={self.organization_id} user_id={self.user_id} "
-            f"metric_type={self.metric_type} value={self.value} date={self.date}>"
+            f"<EngagementLog org={self.organization_id} branch={self.branch_id} "
+            f"user_id={self.user_id} metric_type={self.metric_type} "
+            f"value={self.value} date={self.date}>"
         )

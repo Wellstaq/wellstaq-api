@@ -16,20 +16,37 @@ Design principles:
 - organization_id is CASCADE on delete — when the org is deleted (app
   owner only action), all its branches are deleted with it.
 
+Headquarters branch:
+  Every org has exactly ONE protected branch created automatically at
+  registration (see signup_service.py). It is marked with
+  is_headquarters=True. The service layer uses this flag to:
+    - Block deletion (delete_branch.py).
+    - Block renaming (update_branch.py / edit_branch).
+    - Block any regular branch from claiming the "Headquarters" name
+      (create_branch.py).
+  The org owner and any other "org-wide" users live here as their home
+  branch. There is no separate "org-wide / no branch" state — HQ is
+  the implementation of that concept.
+
 Scope / RBAC notes:
-- role: one-to-one with the branch-scoped Role row (if any). When the
-  branch is deleted, its scoped Role is cascade-deleted.
-- user_permissions: all UserPermission rows whose branch_id points here.
-  When the branch is deleted, those branch-scoped grants are cascade-
-  deleted automatically (FK ondelete="CASCADE" on UserPermission.branch_id).
-- clubs: all Club rows that belong to this branch. When the branch is
-  deleted, all its clubs (and their members) are cascade-deleted via
-  Club.branch_id ondelete="CASCADE".
+- roles: A branch can have MANY custom Role rows (one-to-many as of the
+  role-isolation redesign). When the branch is deleted, all its custom
+  roles are cascade-deleted (Role.branch_id ondelete="CASCADE").
+- role_assignments: Every UserRoleAssignment row scoped to this branch
+  (e.g. branch-level oversight positions like branch_manager).
+  Cascade-deleted when the branch is deleted — does NOT affect
+  User.branch_id (home branch) for any user; that FK is handled
+  independently by delete_branch.py before deletion proceeds.
+- user_permissions: All UserPermission rows scoped to this branch.
+  Cascade-deleted by the DB FK when the branch is removed.
+- clubs: Cascade-deleted when the branch is deleted.
+- departments: Cascade-deleted when the branch is deleted (branch_id
+  is now NOT NULL on Department — see department.py).
 """
 
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -39,13 +56,11 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "branches"
     __mapper_args__ = {"confirm_deleted_rows": False}
     __table_args__ = (
-        # Ensures branch names are unique *within* the same organization
         UniqueConstraint("organization_id", "name", name="uq_branch_org_name"),
-        # Prevents empty strings or whitespace-only names at the database layer
         CheckConstraint("length(trim(name)) > 0", name="chk_branch_name_not_empty"),
     )
 
-    # ── Organization ──────────────────────────────────────────────────────
+    # ── Core ──────────────────────────────────────────────────────────────────
     organization_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -53,13 +68,19 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Identity ──────────────────────────────────────────────────────────
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # ── Manager (branch_manager role user) ────────────────────────────────
-    # Nullable — a branch can exist without an assigned manager.
-    # SET NULL on delete — manager can be deleted freely; the branch
-    # survives and manager_id is nulled until reassigned.
+    # True for the single auto-created "Headquarters" branch per org.
+    # Protected by the service layer against deletion and renaming.
+    # Only ever set to True by signup_service — never by any admin
+    # action. Defaults False for all regular branches.
+    is_headquarters: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+
     manager_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL", use_alter=True, name="fk_branch_manager_id"),
@@ -67,12 +88,12 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # ── Audit ─────────────────────────────────────────────────────────────
-    # Intentionally no FK — audit trail, same pattern as Club/Department.
-    # Preserved even if the creator is later deleted.
+    # Plain audit string — no FK. Preserved even if the creator is deleted.
+    # NULL during org creation (user doesn't exist yet); backfilled by
+    # signup_service once user.id is available.
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # ── Relationships ──────────────────────────────────────────────────────────
     organization: Mapped["Organization"] = relationship(
         "Organization",
         back_populates="branches",
@@ -83,17 +104,23 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="managed_branches",
         foreign_keys=[manager_id],
     )
+    # Home-branch members. Every User row requires branch_id (NOT NULL),
+    # so this is a true membership list, never "users with no branch."
+    # passive_deletes=True prevents SQLAlchemy from issuing SET NULL
+    # before the delete — the RESTRICT FK on User.branch_id means the
+    # service layer must transfer members before any branch can be
+    # deleted (see delete_branch.py).
     members: Mapped[list["User"]] = relationship(
         "User",
         back_populates="branch",
         foreign_keys="User.branch_id",
+        passive_deletes=True,
     )
     departments: Mapped[list["Department"]] = relationship(
         "Department",
         back_populates="branch",
+        cascade="all, delete-orphan",
     )
-    # Clubs scoped to this branch. Cascade handled at DB level via
-    # Club.branch_id ondelete="CASCADE" — no ORM cascade needed here.
     clubs: Mapped[list["Club"]] = relationship(
         "Club",
         back_populates="branch",
@@ -103,6 +130,7 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     events: Mapped[list["Event"]] = relationship(
         "Event",
         back_populates="branch",
+        cascade="all, delete-orphan",
     )
     challenges: Mapped[list["Challenge"]] = relationship(
         "Challenge",
@@ -117,25 +145,44 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Post",
         back_populates="branch",
     )
-
-    # ── RBAC ──────────────────────────────────────────────────────────────
-    # Branch-scoped Role row (one per branch at most). When the branch is
-    # deleted, its scoped Role is cascade-deleted via Role.branch_id FK.
-    role: Mapped[Optional["Role"]] = relationship(
+    stories: Mapped[list["Story"]] = relationship(
+        "Story",
+        back_populates="branch",
+        passive_deletes=True,  # let the DB SET NULL handle it, not the ORM
+    )
+    # ── RBAC ──────────────────────────────────────────────────────────────────
+    # One-to-many: a branch can have many custom roles, all isolated
+    # to this branch. Cascade-deleted with the branch.
+    roles: Mapped[list["Role"]] = relationship(
         "Role",
         back_populates="branch",
         foreign_keys="Role.branch_id",
         cascade="all, delete-orphan",
     )
-    # All UserPermission grants scoped to this branch. When the branch is
-    # deleted, these rows are cascade-deleted via UserPermission.branch_id FK.
+    # Oversight assignments scoped to this branch (e.g. who is branch_manager
+    # here). Separate from members above — a user can oversee a branch without
+    # their home branch being this one. Cascade-deleted with the branch.
+    role_assignments: Mapped[list["UserRoleAssignment"]] = relationship(
+        "UserRoleAssignment",
+        back_populates="branch",
+        foreign_keys="UserRoleAssignment.branch_id",
+        cascade="all, delete-orphan",
+    )
+    # Branch-scoped permission grants. No ORM cascade — DB FK ondelete="CASCADE"
+    # handles it. Adding ORM cascade too would cause a double-delete race.
     user_permissions: Mapped[list["UserPermission"]] = relationship(
         "UserPermission",
         back_populates="branch",
         foreign_keys="UserPermission.branch_id",
-        # No cascade here — the DB FK (ondelete="CASCADE") handles deletion.
-        # Letting SQLAlchemy also cascade would cause a double-delete race.
+    )
+    activity_logs: Mapped[list["ActivityLog"]] = relationship(
+        "ActivityLog", back_populates="branch", cascade="all, delete-orphan"
+    )
+    engagement_logs: Mapped[list["EngagementLog"]] = relationship(
+        "EngagementLog", back_populates="branch", cascade="all, delete-orphan"
     )
 
+
     def __repr__(self) -> str:
-        return f"<Branch id={self.id} name={self.name} org={self.organization_id}>"
+        hq = " [HQ]" if self.is_headquarters else ""
+        return f"<Branch id={self.id} name={self.name} org={self.organization_id}{hq}>"

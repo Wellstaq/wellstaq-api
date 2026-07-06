@@ -3,12 +3,16 @@ Event and EventParticipant models — one file per domain group, same
 pairing pattern as Club/ClubMember.
 
 Event design principles:
-- organization_id is nullable with ondelete=SET NULL: null = platform-wide
-  general event. The event survives org deletion and degrades to
-  platform-wide rather than being deleted with it.
-- branch_id is nullable with ondelete=SET NULL: null = org-level event
-  (or platform-wide if organization_id is also null). Same degrade-gracefully
-  reasoning — losing a branch shouldn't delete its events.
+- organization_id is required (NOT NULL) and CASCADE: every event
+  belongs to an organization now — there is no platform-wide event
+  concept. Deleting the organization deletes its events.
+- branch_id is required (NOT NULL) and CASCADE: every event belongs to
+  a specific branch — there is no org-wide (branch-less) event.
+  Deleting the branch deletes its events.
+- CONSISTENCY INVARIANT: organization_id must always equal
+  branch.organization_id — same app-layer responsibility pattern as
+  User's denormalized organization_id on child tables (see User model
+  docstring). Enforce at creation: never let these two fields disagree.
 - created_by is a real FK to users with ondelete=SET NULL: lets you query
   "events created by user X" via relationship, while the event survives
   if the creator is deleted (degrades to creator-unknown, not destroyed).
@@ -79,26 +83,28 @@ class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="scheduled")
 
     # ── Scope ─────────────────────────────────────────────────────────────
-    # Nullable, SET NULL — null = platform-wide general event; survives
-    # org deletion instead of being deleted with it.
-    organization_id: Mapped[str | None] = mapped_column(
+    # Required, CASCADE — every event belongs to an organization; there is
+    # no platform-wide event concept.
+    organization_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("organizations.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    # Nullable, SET NULL — null = org-level event, not branch-specific;
-    # survives branch deletion instead of being deleted with it.
-    # No use_alter needed here: unlike User/Branch, Event has no circular
-    # FK dependency (nothing points back to events), so the FK can be
-    # created inline with the table.
-    branch_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("branches.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
 
+    # Required, CASCADE — every event belongs to a specific branch; there
+    # is no org-wide (branch-less) event.
+    #
+    # CONSISTENCY INVARIANT: organization_id must always equal
+    # branch.organization_id — same app-layer responsibility pattern as
+    # User's denormalized organization_id on child tables (see User model
+    # docstring). Enforce at creation: never let these two fields disagree.
+    branch_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("branches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     # ── Audit ─────────────────────────────────────────────────────────────
     # Real FK, ondelete=SET NULL — lets us query "events created by user X"
     # via relationship while preserving the event if the creator is deleted.

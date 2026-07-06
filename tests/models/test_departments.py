@@ -12,9 +12,20 @@ are created via make_user(organization_id=org.id, ...) since
 User.organization_id is NOT NULL — every user must belong to an org.
 Non-User factories (make_branch, make_department, make_rank_snapshot)
 are unchanged.
+
+Department.branch_id is NOT NULL (ondelete="CASCADE") — every
+department must belong to a specific branch from creation; there is no
+more "org-level, not yet branch-assigned" state (see department.py
+model docstring). setup_department() reflects this: if no branch_id is
+given, it creates a fresh branch under the target org and uses that,
+so tests that don't care about branch specifics don't need to think
+about it. Tests that DO care about branch behavior (branch_id FK,
+branch relationship, cascade-on-branch-delete, multiple depts under
+one branch) still create/pass branch_id explicitly.
 """
 
 from datetime import date
+import uuid
 
 import pytest
 from sqlalchemy import select, text
@@ -35,11 +46,29 @@ from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 # ── Factories ──────────────────────────────────────────────────────────────────
 
 def make_branch(organization_id: str, **overrides) -> Branch:
-    defaults = dict(name="Lagos Branch", organization_id=organization_id)
+    """
+    Default name is unique per call (not a fixed "Lagos Branch") because
+    setup_department() below auto-creates a branch whenever one isn't
+    supplied — a test that calls it more than once for the same org
+    (e.g. two departments, each getting their own auto-branch) would
+    otherwise collide on Branch's (organization_id, name) unique
+    constraint. Tests that care about a specific/shared name still
+    override it explicitly via **overrides.
+    """
+    defaults = dict(name=f"Branch-{uuid.uuid4().hex[:8]}", organization_id=organization_id)
     return Branch(**{**defaults, **overrides})
 
 
 def make_department(organization_id: str, **overrides) -> Department:
+    """
+    branch_id is intentionally NOT defaulted here — Department.branch_id
+    is NOT NULL, so every caller must supply one explicitly (directly,
+    or via setup_department() below, which creates one automatically).
+    Leaving it unset by default (rather than picking an arbitrary
+    fallback) keeps test_department_branch_id_required meaningful: a
+    genuinely missing branch_id should fail loudly, not silently pick
+    up a default.
+    """
     defaults = dict(
         name="Engineering",
         organization_id=organization_id,
@@ -87,8 +116,24 @@ async def setup_branch(db_session: AsyncSession, org_id: str, **overrides) -> Br
     return branch
 
 
-async def setup_department(db_session: AsyncSession, org_id: str, **overrides) -> Department:
-    dept = make_department(org_id, **overrides)
+async def setup_department(
+    db_session: AsyncSession,
+    org_id: str,
+    *,
+    branch_id: str | None = None,
+    **overrides,
+) -> Department:
+    """
+    Create a department under org_id. If branch_id isn't supplied, a
+    fresh branch is created automatically — Department.branch_id is
+    NOT NULL, so *some* branch is required, and most tests calling this
+    helper don't care which one. Pass branch_id explicitly when the
+    test is actually about branch behavior.
+    """
+    if branch_id is None:
+        branch = await setup_branch(db_session, org_id)
+        branch_id = branch.id
+    dept = make_department(org_id, branch_id=branch_id, **overrides)
     db_session.add(dept)
     await db_session.flush()
     return dept
@@ -100,9 +145,7 @@ async def setup_department(db_session: AsyncSession, org_id: str, **overrides) -
 async def test_department_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     result = await db_session.execute(select(Department).where(Department.id == dept.id))
     fetched = result.scalar_one()
@@ -114,9 +157,7 @@ async def test_department_persists(db_session: AsyncSession):
 async def test_department_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     parts = dept.id.split("-")
     assert len(parts) == 5
@@ -127,9 +168,7 @@ async def test_department_id_is_uuid_format(db_session: AsyncSession):
 async def test_department_timestamps_auto_set(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     assert dept.created_at is not None
     assert dept.updated_at is not None
@@ -139,25 +178,24 @@ async def test_department_timestamps_auto_set(db_session: AsyncSession):
 async def test_department_default_member_count_is_zero(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     assert dept.member_count == 0
 
 
 @pytest.mark.asyncio
 async def test_department_optional_fields_nullable(db_session: AsyncSession):
+    """branch_id is no longer among the optional fields — it's NOT NULL
+    now (see test_department_branch_id_required). The rest are still
+    nullable."""
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     assert dept.description is None
     assert dept.avatar_initial is None
     assert dept.rank is None
-    assert dept.branch_id is None
+    assert dept.branch_id is not None
     assert dept.created_by is None
 
 
@@ -189,22 +227,33 @@ async def test_department_full_fields(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_department_org_level_has_no_branch(db_session: AsyncSession):
-    """branch_id=None means department sits at org level, not under a branch."""
+async def test_department_branch_id_required(db_session: AsyncSession):
+    """branch_id is NOT NULL — every department must belong to a specific
+    branch from creation. There is no more org-level, branchless
+    department state (see department.py model docstring); this replaces
+    the old test_department_org_level_has_no_branch, whose premise no
+    longer holds."""
     _, org = await setup_org(db_session)
 
     dept = make_department(org.id, branch_id=None)
     db_session.add(dept)
-    await db_session.flush()
-
-    assert dept.branch_id is None
-    assert dept.organization_id == org.id
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
 
 
 @pytest.mark.asyncio
 async def test_department_org_fk_must_exist(db_session: AsyncSession):
-    """organization_id must reference a real organization."""
-    dept = make_department(organization_id="00000000-0000-0000-0000-000000000000")
+    """organization_id must reference a real organization. A valid
+    branch_id is supplied so this isolates the organization_id FK
+    failure specifically, rather than incidentally passing because of
+    the (also NOT NULL) branch_id being missing."""
+    _, org = await setup_org(db_session)
+    branch = await setup_branch(db_session, org.id)
+
+    dept = make_department(
+        organization_id="00000000-0000-0000-0000-000000000000",
+        branch_id=branch.id,
+    )
     db_session.add(dept)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -212,7 +261,7 @@ async def test_department_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_department_branch_fk_must_exist(db_session: AsyncSession):
-    """branch_id must reference a real branch if provided."""
+    """branch_id must reference a real branch."""
     _, org = await setup_org(db_session)
 
     dept = make_department(org.id, branch_id="00000000-0000-0000-0000-000000000000")
@@ -225,9 +274,10 @@ async def test_department_branch_fk_must_exist(db_session: AsyncSession):
 async def test_department_cascades_on_org_delete(db_session: AsyncSession):
     """Deleting an org cascades to its departments."""
     _, org = await setup_org(db_session)
+    branch = await setup_branch(db_session, org.id)
 
-    db_session.add(make_department(org.id, name="Engineering"))
-    db_session.add(make_department(org.id, name="HR"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="Engineering"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="HR"))
     await db_session.flush()
 
     await db_session.delete(org)
@@ -240,30 +290,41 @@ async def test_department_cascades_on_org_delete(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_department_branch_delete_nullifies_branch_id(db_session: AsyncSession):
-    """ondelete=SET NULL — deleting a branch detaches its departments, doesn't delete them."""
+async def test_department_branch_delete_cascades_to_department(db_session: AsyncSession):
+    """ondelete=CASCADE — deleting a branch now deletes its departments
+    (changed from the old SET NULL behavior). There's no more org-level,
+    branchless state for an existing department to fall back into, so
+    the branch going away takes the department with it. Guarding
+    against this as unwanted data loss at the API/service layer (e.g.
+    requiring departments to be transferred or deleted first) is
+    delete_branch.py's job — this test only documents the DB-level
+    cascade itself.
+
+    This replaces the old test_department_branch_delete_nullifies_branch_id,
+    whose SET NULL premise no longer matches the schema."""
     _, org = await setup_org(db_session)
     branch = await setup_branch(db_session, org.id)
 
     dept = make_department(org.id, branch_id=branch.id)
     db_session.add(dept)
     await db_session.flush()
+    dept_id = dept.id
 
     await db_session.delete(branch)
     await db_session.flush()
-    await db_session.refresh(dept)
 
-    assert dept.branch_id is None
-    assert dept.organization_id == org.id
+    result = await db_session.execute(select(Department).where(Department.id == dept_id))
+    assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
 async def test_org_can_have_multiple_departments(db_session: AsyncSession):
     _, org = await setup_org(db_session)
+    branch = await setup_branch(db_session, org.id)
 
-    db_session.add(make_department(org.id, name="Engineering"))
-    db_session.add(make_department(org.id, name="HR"))
-    db_session.add(make_department(org.id, name="Finance"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="Engineering"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="HR"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="Finance"))
     await db_session.flush()
 
     result = await db_session.execute(
@@ -292,9 +353,7 @@ async def test_department_member_count_can_be_updated(db_session: AsyncSession):
     """member_count is updated by app layer — verify it persists correctly."""
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
 
     dept.member_count = 10
     await db_session.flush()
@@ -310,11 +369,9 @@ async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
     before being assigned as the new org.owner_id."""
     owner, org = await setup_org(db_session)
 
-    dept = make_department(org.id, created_by=owner.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id, created_by=owner.id)
 
-    new_owner = make_user(organization_id=org.id, email="new_owner@example.com")
+    new_owner = make_user(organization_id=org.id, email="new_owner@example.com", branch_id=owner.branch_id)
     db_session.add(new_owner)
     await db_session.flush()
 
@@ -338,9 +395,7 @@ async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
 async def test_department_organization_relationship(db_session: AsyncSession):
     _, org = await setup_org(db_session)
 
-    dept = make_department(org.id)
-    db_session.add(dept)
-    await db_session.flush()
+    dept = await setup_department(db_session, org.id)
     await db_session.refresh(dept, ["organization"])
 
     assert dept.organization is not None
@@ -364,9 +419,10 @@ async def test_department_branch_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_organization_departments_relationship(db_session: AsyncSession):
     _, org = await setup_org(db_session)
+    branch = await setup_branch(db_session, org.id)
 
-    db_session.add(make_department(org.id, name="Engineering"))
-    db_session.add(make_department(org.id, name="HR"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="Engineering"))
+    db_session.add(make_department(org.id, branch_id=branch.id, name="HR"))
     await db_session.flush()
     await db_session.refresh(org, ["departments"])
 
@@ -392,7 +448,7 @@ async def test_department_member_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -414,7 +470,7 @@ async def test_department_member_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -432,7 +488,7 @@ async def test_department_member_joined_at_auto_set(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -449,7 +505,7 @@ async def test_department_member_duplicate_raises(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -470,7 +526,8 @@ async def test_department_member_cannot_join_two_departments(db_session: AsyncSe
 
     member = await make_user_with_role(
         db_session, organization_id=org.id,
-        email="member@example.com", role_name="employee"
+        email="member@example.com", role_name="employee",
+        branch_id=dept_a.branch_id,
     )
     db_session.add(member)
     await db_session.flush()
@@ -488,7 +545,7 @@ async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee")
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 

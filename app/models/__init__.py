@@ -9,7 +9,7 @@ from app.models.branch import Branch
 from app.models.department import Department, DepartmentMember, DepartmentRankSnapshot
 from app.models.club import Club, ClubMember
 from app.models.event import Event, EventParticipant
-from app.models.chat import DirectMessage, GroupChatMessage
+from app.models.chat import  GroupChatMessage
 from app.models.notification import Notification
 from app.models.post import Post, PostComment, PostSave, PostLike, PostShare, PostHashtag
 from app.models.hashtag import Hashtag, HashtagTrendSnapshot

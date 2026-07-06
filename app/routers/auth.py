@@ -506,7 +506,6 @@ async def logout_route(payload: RefreshRequest, db: AsyncSession = Depends(get_d
         await logout(session=db, raw_refresh_token=payload.refresh_token)
         await db.commit()
 
-
 @router.get("/me", response_model=UserMeResponse,
             summary="Current user identity, permissions, and 2FA status")
 async def me(
@@ -514,7 +513,7 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     async with request_guard(db, "/auth/me", user_id=str(current_user.user_id)):
-        user = await get_me(db, current_user.user_id)
+        user, department_id = await get_me(db, current_user.user_id, role=current_user.role)
         settings_row = user.settings
         return UserMeResponse(
             user_id=user.id,
@@ -524,6 +523,7 @@ async def me(
             role=current_user.role,
             organization_id=current_user.organization_id,
             branch_id=current_user.branch_id,
+            department_id=department_id,
             permissions=current_user.permissions,
             avatar_url=user.avatar_url,
             two_fa_enabled=settings_row.two_fa_enabled if settings_row else False,

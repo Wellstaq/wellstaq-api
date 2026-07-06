@@ -1,37 +1,42 @@
 """
 Story model tests.
 
-All tests are async, isolated per test via rollback in conftest.
-No HTTP client needed — these are model/ORM-level tests.
+branch_id is NULLABLE on Story — a user chooses between posting to their
+branch feed (branch_id set) or the org-wide feed (branch_id null).
+This mirrors Post.branch_id.
 
-Factory note:
-setup_org() is a thin wrapper around tests.conftest.make_org_with_owner()
-— same pattern as test_wellbeings.py. The original setup_org() created
-User without organization_id (NOT NULL violation since User.organization_id
-became NOT NULL). Any additional users (poster, poster2) that aren't the
-org owner are now created via make_user(organization_id=org.id, ...)
-from conftest, since every User row must belong to an org.
+make_story() accepts an optional branch_id (default None = org-level story).
+Tests that explicitly need a branch-scoped story pass owner.branch_id.
 
-Story now uses the shared TimestampMixin (see app/models/base.py) instead
-of a one-off created_at column, so it also carries updated_at — not
-expected to change after insert, but present for consistency with every
-other model in the project.
+Branch deletion uses SET NULL on Story.branch_id — the story survives
+as an org-level story; it is NOT cascade-deleted.
 """
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Organization, Story, User
+from app.models.branch import Branch
 from tests.conftest import make_user, make_org_with_owner
 
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 
-def make_story(user_id: str, organization_id: str, **overrides) -> Story:
+def make_story(
+    user_id: str,
+    organization_id: str,
+    *,
+    branch_id: str | None = None,
+    **overrides,
+) -> Story:
+    """
+    branch_id is optional — pass it for a branch-scoped story,
+    omit it (or pass None) for an org-level story.
+    """
     now = datetime.now(timezone.utc)
     defaults = dict(
         media_url="https://cdn.example.com/story.jpg",
@@ -41,6 +46,7 @@ def make_story(user_id: str, organization_id: str, **overrides) -> Story:
     return Story(
         user_id=user_id,
         organization_id=organization_id,
+        branch_id=branch_id,
         **{**defaults, **overrides},
     )
 
@@ -52,9 +58,6 @@ async def setup_org(
     email: str = "owner@example.com",
     slug: str = "acme-corp",
 ) -> tuple[User, Organization]:
-    """Thin wrapper around the shared make_org_with_owner() factory.
-    Preserves this file's original (user, org) return order and
-    (email, slug) signature so existing call sites didn't need to change."""
     org, user = await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug=slug),
@@ -66,10 +69,11 @@ async def setup_org(
 # ── Creation / required fields ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_story_persists(db_session: AsyncSession):
+async def test_org_level_story_persists(db_session: AsyncSession):
+    """branch_id=None creates an org-level story (no branch scope)."""
     owner, org = await setup_org(db_session)
 
-    story = make_story(owner.id, org.id)
+    story = make_story(owner.id, org.id)  # no branch_id
     db_session.add(story)
     await db_session.flush()
 
@@ -79,6 +83,21 @@ async def test_story_persists(db_session: AsyncSession):
     assert fetched.media_type == "image"
     assert fetched.user_id == owner.id
     assert fetched.organization_id == org.id
+    assert fetched.branch_id is None
+
+
+@pytest.mark.asyncio
+async def test_branch_level_story_persists(db_session: AsyncSession):
+    """branch_id set creates a branch-scoped story."""
+    owner, org = await setup_org(db_session)
+
+    story = make_story(owner.id, org.id, branch_id=owner.branch_id)
+    db_session.add(story)
+    await db_session.flush()
+
+    result = await db_session.execute(select(Story).where(Story.id == story.id))
+    fetched = result.scalar_one()
+    assert fetched.branch_id == owner.branch_id
 
 
 @pytest.mark.asyncio
@@ -95,7 +114,6 @@ async def test_story_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_story_timestamps_auto_set(db_session: AsyncSession):
-    """created_at / updated_at now come from the shared TimestampMixin."""
     owner, org = await setup_org(db_session)
     story = make_story(owner.id, org.id)
     db_session.add(story)
@@ -162,14 +180,37 @@ async def test_story_organization_id_required(db_session: AsyncSession):
         await db_session.flush()
 
 
+@pytest.mark.asyncio
+async def test_story_branch_id_is_nullable(db_session: AsyncSession):
+    """branch_id=None is valid — that's an org-level story."""
+    owner, org = await setup_org(db_session)
+    story = make_story(owner.id, org.id, branch_id=None)
+    db_session.add(story)
+    await db_session.flush()  # must not raise
+
+    result = await db_session.execute(select(Story).where(Story.id == story.id))
+    assert result.scalar_one().branch_id is None
+
+
+@pytest.mark.asyncio
+async def test_story_branch_fk_must_exist_when_set(db_session: AsyncSession):
+    """If branch_id is provided it must reference a real branch."""
+    owner, org = await setup_org(db_session)
+    story = make_story(
+        owner.id, org.id,
+        branch_id="00000000-0000-0000-0000-000000000000",
+    )
+    db_session.add(story)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
 # ── FK constraints ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_user_delete_cascades_to_stories(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
-
-    # Non-owner member — must have organization_id set
-    poster = make_user(organization_id=org.id, email="poster@example.com")
+    poster = make_user(organization_id=org.id, email="poster@example.com", branch_id=owner.branch_id)
     db_session.add(poster)
     await db_session.flush()
 
@@ -199,6 +240,41 @@ async def test_organization_delete_cascades_to_stories(db_session: AsyncSession)
     result = await db_session.execute(select(Story).where(Story.id == story_id))
     assert result.scalar_one_or_none() is None
 
+@pytest.mark.asyncio
+async def test_branch_delete_sets_story_branch_id_to_null(db_session: AsyncSession):
+    """
+    branch_id uses ondelete=SET NULL — deleting a branch does NOT delete
+    its stories. They survive as org-level stories (branch_id → null).
+
+    Uses a secondary branch (no members) so the branch deletion doesn't
+    cascade through users to stories. The owner posts a story scoped to
+    that branch; after deletion the story survives with branch_id=None.
+    """
+    owner, org = await setup_org(db_session)
+
+    # Create a separate branch with no members so deleting it doesn't
+    # cascade through User.branch_id → Story.user_id → story deleted.
+    other_branch = Branch(
+        organization_id=org.id,
+        name="Other Branch",
+        created_by=owner.id,
+    )
+    db_session.add(other_branch)
+    await db_session.flush()
+
+    story = make_story(owner.id, org.id, branch_id=other_branch.id)
+    db_session.add(story)
+    await db_session.flush()
+    story_id = story.id
+
+    await db_session.delete(other_branch)
+    await db_session.flush()
+    db_session.expire_all()  # ← force re-fetch from DB on next access
+
+    result = await db_session.execute(select(Story).where(Story.id == story_id))
+    surviving = result.scalar_one_or_none()
+    assert surviving is not None
+    assert surviving.branch_id is None
 
 # ── Relationships ─────────────────────────────────────────────────────────────
 
@@ -227,6 +303,31 @@ async def test_story_organization_relationship(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_story_branch_relationship_when_set(db_session: AsyncSession):
+    """story.branch loads the branch when branch_id is set."""
+    owner, org = await setup_org(db_session)
+    story = make_story(owner.id, org.id, branch_id=owner.branch_id)
+    db_session.add(story)
+    await db_session.flush()
+    await db_session.refresh(story, ["branch"])
+
+    assert story.branch is not None
+    assert story.branch.id == owner.branch_id
+
+
+@pytest.mark.asyncio
+async def test_story_branch_relationship_is_none_for_org_level(db_session: AsyncSession):
+    """story.branch is None when branch_id is not set."""
+    owner, org = await setup_org(db_session)
+    story = make_story(owner.id, org.id)  # no branch_id
+    db_session.add(story)
+    await db_session.flush()
+    await db_session.refresh(story, ["branch"])
+
+    assert story.branch is None
+
+
+@pytest.mark.asyncio
 async def test_user_stories_relationship(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
 
@@ -241,9 +342,7 @@ async def test_user_stories_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_organization_stories_relationship(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
-
-    # Second poster must belong to the same org
-    poster2 = make_user(organization_id=org.id, email="poster2@example.com")
+    poster2 = make_user(organization_id=org.id, email="poster2@example.com", branch_id=owner.branch_id)
     db_session.add(poster2)
     await db_session.flush()
 
@@ -259,28 +358,21 @@ async def test_organization_stories_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_expired_story_still_queryable_until_purged(db_session: AsyncSession):
-    """Expiry is enforced by a background purge job, not a query filter —
-    an expired row still exists in the table until that job runs. The
-    row is created already-expired relative to "now" at assertion time,
-    but expires_at is still set after created_at, so the
-    ck_stories_expires_after_created constraint is satisfied."""
+    """Expiry is enforced by a background purge job — expired rows still
+    exist in the table until that job runs."""
     owner, org = await setup_org(db_session)
-    created = datetime.now(timezone.utc)
-    soon_after = created + timedelta(seconds=1)
+    soon_after = datetime.now(timezone.utc) + timedelta(seconds=1)
 
     story = make_story(owner.id, org.id, expires_at=soon_after)
     db_session.add(story)
     await db_session.flush()
 
     result = await db_session.execute(select(Story).where(Story.id == story.id))
-    fetched = result.scalar_one()
-    assert fetched.expires_at == soon_after
+    assert result.scalar_one().expires_at == soon_after
 
 
 @pytest.mark.asyncio
 async def test_purge_query_deletes_only_expired_stories(db_session: AsyncSession):
-    """Sanity check on the purge query logic — only expired rows are
-    removed, active ones survive."""
     owner, org = await setup_org(db_session)
     now = datetime.now(timezone.utc)
 
@@ -291,7 +383,6 @@ async def test_purge_query_deletes_only_expired_stories(db_session: AsyncSession
     active_id = active.id
     cutoff = now + timedelta(seconds=2)
 
-    from sqlalchemy import delete
     await db_session.execute(delete(Story).where(Story.expires_at <= cutoff))
     await db_session.flush()
 
@@ -301,14 +392,12 @@ async def test_purge_query_deletes_only_expired_stories(db_session: AsyncSession
     assert remaining[0].id == active_id
 
 
-# ── CheckConstraint ───────────────────────────────────────────────────────────
+# ── CheckConstraints ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_story_invalid_media_type_raises(db_session: AsyncSession):
-    """media_type is enforced at the DB layer via CheckConstraint."""
     owner, org = await setup_org(db_session)
-
-    story = make_story(owner.id, org.id, media_type="audio")  # invalid
+    story = make_story(owner.id, org.id, media_type="audio")
     db_session.add(story)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -316,12 +405,7 @@ async def test_story_invalid_media_type_raises(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_story_expires_at_before_created_at_raises(db_session: AsyncSession):
-    """ck_stories_expires_after_created blocks a story whose expires_at
-    is not after created_at — guards against a bad TTL computation
-    (e.g. subtracting instead of adding) producing an already-expired
-    or backwards-dated row at insert time."""
     owner, org = await setup_org(db_session)
-
     story = make_story(
         owner.id, org.id,
         expires_at=datetime.now(timezone.utc) - timedelta(hours=1),

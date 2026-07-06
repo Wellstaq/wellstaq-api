@@ -120,17 +120,11 @@ async def list_branches_route(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.create")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> BranchListResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="branch.create",
-            target_branch_id=None,
-        )
 
         branches, total = await get_branches(
             session=db, organization_id=org_id, offset=offset, limit=limit,
@@ -191,7 +185,7 @@ async def edit_branch_route(
             db=db,
             current_user=current_user,
             permission="branch.update",
-            target_branch_id=None,
+            target_branch_id=branch_id, 
         )
 
         branch = await edit_branch(
@@ -254,17 +248,11 @@ async def list_branch_members_route(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.create")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> BranchMembersListResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/members"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="branch.create",
-            target_branch_id=None,
-        )
 
         members, total = await get_branch_members(
             session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
@@ -302,7 +290,7 @@ async def assign_user_to_branch_route(
             db=db,
             current_user=current_user,
             permission="branch.update",
-            target_branch_id=None,
+            target_branch_id=branch_id,
         )
 
         await assign_user_to_branch(
@@ -334,16 +322,14 @@ async def assign_branch_manager_route(
     branch_id: str,
     body: BranchManagerAssignRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.update")),
+    current_user: CurrentUser = Depends(require_permission("branch.manager.assign")),
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
-
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/manager"):
         await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="branch.update",
-            target_branch_id=None,
+            db=db, current_user=current_user,
+            permission="branch.manager.assign",
+            target_branch_id=None,   # scope="org" — always org-wide only
         )
 
         branch = await assign_branch_manager(
@@ -376,7 +362,7 @@ async def unassign_branch_manager_route(
     org_id: str,
     branch_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.update")),
+    current_user: CurrentUser = Depends(require_permission("branch.manager.assign")),
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
 
@@ -384,7 +370,7 @@ async def unassign_branch_manager_route(
         await require_scoped_permission(
             db=db,
             current_user=current_user,
-            permission="branch.update",
+            permission="branch.manager.assign",
             target_branch_id=None,
         )
 

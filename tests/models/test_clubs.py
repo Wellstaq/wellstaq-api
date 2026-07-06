@@ -349,7 +349,6 @@ async def test_club_member_count_can_be_updated(db_session: AsyncSession):
 
     assert club.member_count == 25
 
-
 @pytest.mark.asyncio
 async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
     """created_by is an audit string — no FK, preserved even if creator
@@ -361,7 +360,11 @@ async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
     db_session.add(club)
     await db_session.flush()
 
-    new_owner = make_user(organization_id=org.id, email="new_owner@example.com")
+    new_owner = make_user(
+        organization_id=org.id,
+        email="new_owner@example.com",
+        branch_id=owner.branch_id,   # ← added; branch_id is NOT NULL now
+    )
     db_session.add(new_owner)
     await db_session.flush()
 
@@ -376,8 +379,7 @@ async def test_created_by_is_plain_string_no_fk(db_session: AsyncSession):
     result = await db_session.execute(select(Club).where(Club.id == club.id))
     fetched = result.scalar_one()
     assert fetched.created_by == owner.id
-
-
+    
 # ── Relationships ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

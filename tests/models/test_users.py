@@ -81,13 +81,19 @@ async def test_user_default_status_is_pending(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_organization_id_required(db_session: AsyncSession):
-    """NOT NULL — no user can exist without a resolved organization_id."""
+    """NOT NULL — no user can exist without a resolved organization_id.
+
+    Note: branch_id is also NOT NULL. SQLite may raise IntegrityError for
+    either column — both missing is an invalid state, so any IntegrityError
+    correctly signals the constraint violation.
+    """
     user = User(
         first_name="No",
         last_name="Org",
         email="noorg@example.com",
         hashed_password="$2b$12$fakehash",
         organization_id=None,
+        # branch_id also intentionally absent — both required
     )
     db_session.add(user)
     with pytest.raises(IntegrityError):
@@ -96,13 +102,18 @@ async def test_user_organization_id_required(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_organization_fk_must_exist(db_session: AsyncSession):
-    """organization_id must reference a real organization."""
+    """organization_id must reference a real organization.
+
+    Both organization_id and branch_id are phantom UUIDs here — either
+    FK violation raises IntegrityError, confirming the constraint exists.
+    """
     user = User(
         first_name="Ghost",
         last_name="User",
         email="ghost@example.com",
         hashed_password="$2b$12$fakehash",
         organization_id="00000000-0000-0000-0000-000000000000",
+        branch_id="00000000-0000-0000-0000-000000000001",
     )
     db_session.add(user)
     with pytest.raises(IntegrityError):
@@ -111,14 +122,14 @@ async def test_user_organization_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_duplicate_email_raises(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(
+    org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="first@example.com")
     )
-    db_session.add(make_user(organization_id=org.id, email="dup@example.com"))
+    db_session.add(make_user(org.id, email="dup@example.com", branch_id=owner.branch_id))
     await db_session.flush()
 
     db_session.add(
-        make_user(organization_id=org.id, email="dup@example.com", first_name="Other")
+        make_user(org.id, email="dup@example.com", first_name="Other", branch_id=owner.branch_id)
     )
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -126,10 +137,10 @@ async def test_user_duplicate_email_raises(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_optional_fields_nullable(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(
+    org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-min@example.com")
     )
-    user = make_user(organization_id=org.id, email="min@example.com")
+    user = make_user(org.id, email="min@example.com", branch_id=owner.branch_id)
     db_session.add(user)
     await db_session.flush()
 
@@ -137,7 +148,8 @@ async def test_user_optional_fields_nullable(db_session: AsyncSession):
     assert user.avatar_url is None
     assert user.country is None
     assert user.state is None
-    assert user.branch_id is None
+    # branch_id is no longer optional — every user must belong to a branch.
+    assert user.branch_id == owner.branch_id
     assert user.role_id is None
 
 
@@ -146,10 +158,10 @@ async def test_user_optional_fields_nullable(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_role_id_nullable(db_session: AsyncSession):
     """role_id is nullable — a user can exist with no role assigned yet."""
-    org, _ = await make_org_with_owner(
+    org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-norole@example.com")
     )
-    user = make_user(organization_id=org.id, email="norole@example.com")
+    user = make_user(org.id, email="norole@example.com", branch_id=owner.branch_id)
     db_session.add(user)
     await db_session.flush()
 
@@ -159,12 +171,13 @@ async def test_user_role_id_nullable(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_invalid_role_id_raises(db_session: AsyncSession):
     """role_id FK must reference a real Role row — phantom UUID raises IntegrityError."""
-    org, _ = await make_org_with_owner(
+    org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-badrole@example.com")
     )
     user = make_user(
-        organization_id=org.id,
+        org.id,
         email="badrole@example.com",
+        branch_id=owner.branch_id,
         role_id="00000000-0000-0000-0000-000000000000",
     )
     db_session.add(user)
@@ -189,10 +202,15 @@ async def test_user_valid_statuses_accepted(db_session: AsyncSession, status: st
 @pytest.mark.asyncio
 async def test_user_invalid_status_raises(db_session: AsyncSession):
     """status is constrained to known values — anything else raises."""
-    org, _ = await make_org_with_owner(
+    org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-badstatus@example.com")
     )
-    user = make_user(organization_id=org.id, email="badstatus@example.com", status="potato")
+    user = make_user(
+        org.id,
+        email="badstatus@example.com",
+        branch_id=owner.branch_id,
+        status="potato",
+    )
     db_session.add(user)
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -206,7 +224,7 @@ async def test_organization_deletion_cascades_to_member_users(db_session: AsyncS
     org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner@example.com")
     )
-    member = make_user(organization_id=org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
     owner_id, member_id = owner.id, member.id
@@ -436,7 +454,7 @@ async def test_settings_org_mismatch_allowed_at_db_level(db_session: AsyncSessio
     User.organization_id — that is an app-layer invariant. This test
     documents the intentional gap so future developers don't assume a
     constraint exists."""
-    org_a, _ = await make_org_with_owner(
+    org_a, owner_a = await make_org_with_owner(
         db_session,
         org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
@@ -446,7 +464,7 @@ async def test_settings_org_mismatch_allowed_at_db_level(db_session: AsyncSessio
         org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
-    user = make_user(org_a.id, email="mismatch-settings@example.com")
+    user = make_user(org_a.id, email="mismatch-settings@example.com", branch_id=owner_a.branch_id)
     db_session.add(user)
     await db_session.flush()
 
@@ -466,8 +484,9 @@ async def test_settings_org_scoped_query(db_session: AsyncSession):
         db_session, user_kwargs=dict(email="settings-scope-owner@example.com")
     )
     member = make_user(
-        organization_id=org.id,
+        org.id,
         email="settings-scope-member@example.com",
+        branch_id=owner.branch_id,
     )
     db_session.add(member)
     await db_session.flush()
@@ -625,7 +644,7 @@ async def test_auth_provider_password_with_access_token_raises(db_session: Async
 async def test_auth_provider_org_mismatch_allowed_at_db_level(db_session: AsyncSession):
     """Same documented gap as UserSettings — DB allows mismatched
     organization_id; service layer must prevent it."""
-    org_a, _ = await make_org_with_owner(
+    org_a, owner_a = await make_org_with_owner(
         db_session,
         org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
@@ -635,7 +654,7 @@ async def test_auth_provider_org_mismatch_allowed_at_db_level(db_session: AsyncS
         org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
-    user = make_user(org_a.id, email="mismatch-auth@example.com")
+    user = make_user(org_a.id, email="mismatch-auth@example.com", branch_id=owner_a.branch_id)
     db_session.add(user)
     await db_session.flush()
 
@@ -654,8 +673,9 @@ async def test_auth_providers_org_scoped_query(db_session: AsyncSession):
         db_session, user_kwargs=dict(email="org-scope-owner@example.com")
     )
     member = make_user(
-        organization_id=org.id,
+        org.id,
         email="org-scope-member@example.com",
+        branch_id=owner.branch_id,
     )
     db_session.add(member)
     await db_session.flush()
@@ -758,7 +778,7 @@ async def test_device_optional_fields_nullable(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_device_org_mismatch_allowed_at_db_level(db_session: AsyncSession):
     """Same documented gap as UserSettings and UserAuthProvider."""
-    org_a, _ = await make_org_with_owner(
+    org_a, owner_a = await make_org_with_owner(
         db_session,
         org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
@@ -768,7 +788,7 @@ async def test_device_org_mismatch_allowed_at_db_level(db_session: AsyncSession)
         org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
-    user = make_user(org_a.id, email="mismatch-device@example.com")
+    user = make_user(org_a.id, email="mismatch-device@example.com", branch_id=owner_a.branch_id)
     db_session.add(user)
     await db_session.flush()
 
@@ -787,8 +807,9 @@ async def test_devices_org_scoped_query(db_session: AsyncSession):
         db_session, user_kwargs=dict(email="org-scope-device-owner@example.com")
     )
     member = make_user(
-        organization_id=org.id,
+        org.id,
         email="org-scope-device-member@example.com",
+        branch_id=owner.branch_id,
     )
     db_session.add(member)
     await db_session.flush()
@@ -828,8 +849,9 @@ async def test_organization_all_user_settings_relationship(db_session: AsyncSess
         db_session, user_kwargs=dict(email="rel-org-settings-owner@example.com")
     )
     member = make_user(
-        organization_id=org.id,
+        org.id,
         email="rel-org-settings-member@example.com",
+        branch_id=owner.branch_id,
     )
     db_session.add(member)
     await db_session.flush()
@@ -878,7 +900,7 @@ async def test_user_delete_cascades_to_children(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
         db_session, user_kwargs=dict(email="owner-for-cascade@example.com")
     )
-    user = make_user(organization_id=org.id, email="cascade@example.com")
+    user = make_user(org.id, email="cascade@example.com", branch_id=owner.branch_id)
     db_session.add(user)
     await db_session.flush()
 

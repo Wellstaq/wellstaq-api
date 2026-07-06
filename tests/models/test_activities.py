@@ -131,7 +131,7 @@ async def test_user_delete_cascades_to_priorities(db_session: AsyncSession):
     not because of UserPriority.user_id's own CASCADE, which is what
     this test is actually meant to isolate and verify."""
     org, owner = await make_org_with_owner(db_session)
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -255,7 +255,7 @@ async def test_user_delete_cascades_to_checkins(db_session: AsyncSession):
     """Deletes a non-owner member — see test_user_delete_cascades_to_priorities
     for why deleting the owner directly would not isolate this cascade."""
     org, owner = await make_org_with_owner(db_session)
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -420,7 +420,7 @@ async def test_user_delete_cascades_to_activity_feed(db_session: AsyncSession):
     (UserActivityFeed.user_id's own CASCADE) from the separate
     owner_id/org cascade."""
     org, owner = await make_org_with_owner(db_session)
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -500,7 +500,7 @@ async def test_organization_activity_feed_relationship(db_session: AsyncSession)
     """org.activity_feed loads all activity rows scoped to that org."""
     org, owner = await make_org_with_owner(db_session)
 
-    user2 = make_user(org.id, email="other@example.com")
+    user2 = make_user(org.id, email="other@example.com", branch_id=owner.branch_id)
     db_session.add(user2)
     await db_session.flush()
 

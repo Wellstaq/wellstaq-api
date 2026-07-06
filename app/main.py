@@ -23,6 +23,8 @@ from app.routers import (
     organizations,
     roles,
     branches,
+    clubs,
+    permissions,
 )
 
 
@@ -60,7 +62,8 @@ app.include_router(departments.router)
 app.include_router(organizations.router)
 app.include_router(roles.router)
 app.include_router(branches.router)
-
+app.include_router(clubs.router)
+app.include_router(permissions.router)
 
 @app.get("/")
 async def root():

@@ -4,30 +4,26 @@ scripts/seed_dev_db.py
 Dev-only seed script. Bypasses the service/router layer entirely and
 inserts rows directly via the ORM.
 
+REVISED: Branch is now created BEFORE the owner user, because
+User.branch_id is NOT NULL as of the branch/role redesign — every
+user, including the org owner, must belong to a real branch from the
+moment they're created. Previously the owner was created with
+branch_id=None and the branch came afterward; that ordering no longer
+works and will raise an IntegrityError if left unchanged.
+
 WHAT IT DOES (in order):
   1. (Optional) DROP + CREATE all tables from your current models.
-     Rebuilds the schema straight from Base.metadata every run, so it
-     can never drift from your models the way a stale app.db file can.
-  2. Reuse your REAL scripts/seed_permissions.py — calls its
-     seed_roles() and seed_permissions() directly, so this script never
-     maintains its own duplicate copy of the role/permission catalogue
-     that could drift out of sync with the real one.
+  2. Reuse your REAL scripts/seed_permissions.py — seed_roles() and
+     seed_permissions().
   3. Create an Organization.
-  4. Look up the 5 SYSTEM roles (super_admin, admin, branch_manager,
-     team_leader, member) that step 2 just seeded.
-  5. Create the owner User with role=super_admin, and grant them ALL
-     36 permissions org-wide (UserPermission rows, branch_id=None).
-  6. Create a Branch and a Department.
-  7. Create N additional test Users, each with a REQUIRED role from
-     EXTRA_USERS config, assigned to the branch/department above.
+  4. Look up the 5 SYSTEM roles.
+  5. Create a Branch (moved up — see note above).
+  6. Create the owner User with role=super_admin, branch_id=<branch
+     just created>, and grant them ALL permissions org-wide.
+  7. Create a Department under that branch.
+  8. Create N additional test Users, each assigned to the same branch.
 
 Every user gets the SAME password (see PASSWORD below).
-
-BEFORE RUNNING — fix these for your actual project layout:
-  (a) DB engine import (search "ADJUST ME") — only needed for RESET_DB.
-  (b) Password hashing function import (search "ADJUST ME").
-  (c) Organization / UserPermission model field names, if they differ
-      from what's assumed here (search "ADJUST ME").
 
 Run with:
     python -m scripts.seed_dev_db
@@ -50,9 +46,9 @@ logger = logging.getLogger("seed_dev")
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-RESET_DB = True  # True = drop_all + create_all before seeding
+RESET_DB = True
 
-PASSWORD = "TestPass123!"  # same password for every seeded user
+PASSWORD = "TestPass123!"
 
 ORG = {
     "business_name": "Wellstaq Test Org",
@@ -89,25 +85,15 @@ EXTRA_USERS = [
     {"first_name": "Zainab", "last_name": "Member", "email": "member2@example.com", "role": "member"},
 ]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ADJUST ME (a) — only needed if RESET_DB=True. Point at your actual engine.
-# ─────────────────────────────────────────────────────────────────────────────
 from app.core.database import engine, get_db
 from app.models.base import Base
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ADJUST ME (b) — point at your real password hashing function so seeded
-# users can actually log in through your real /auth/login.
-# ─────────────────────────────────────────────────────────────────────────────
 try:
     from app.auth.security import hash_password  # noqa: E402
 except ImportError:
     logger.warning(
         "Could not import app.core.security.hash_password — falling back to "
-        "a local bcrypt hasher. If your login check uses a DIFFERENT hashing "
-        "scheme, seeded users will NOT be able to log in. Fix the import above."
+        "a local bcrypt hasher."
     )
     from passlib.context import CryptContext
 
@@ -131,7 +117,6 @@ from app.models import (  # noqa: E402
 )
 from app.models.permission import Permission, Role  # noqa: E402
 
-# Reuse the REAL role/permission catalogue — single source of truth.
 from scripts.seed_permissions import seed_roles, seed_permissions  # noqa: E402
 
 ROLE_NAMES = ["super_admin", "admin", "branch_manager", "team_leader", "member"]
@@ -146,7 +131,6 @@ async def reset_schema() -> None:
 
 
 async def load_system_roles(session: AsyncSession) -> dict[str, Role]:
-    """Fetch the system roles that seed_roles() just ensured exist."""
     result = await session.execute(
         select(Role).where(Role.name.in_(ROLE_NAMES), Role.is_system == True)  # noqa: E712
     )
@@ -173,7 +157,6 @@ async def grant_all_permissions(
     permissions: list[Permission],
     granted_by: str,
 ) -> None:
-    """Grant every permission to `user`, org-wide (branch_id=None)."""
     for perm in permissions:
         session.add(
             UserPermission(
@@ -192,8 +175,8 @@ async def create_user_with_auth(
     session: AsyncSession,
     *,
     organization_id: str,
-    branch_id: str | None,
-    role_id: str,  # required — no user is created without a role
+    branch_id: str,  # CHANGED: was `str | None` — now required, no default
+    role_id: str,
     first_name: str,
     last_name: str,
     email: str,
@@ -202,11 +185,14 @@ async def create_user_with_auth(
 ) -> User:
     """
     Creates a User + UserSettings + a 'password' UserAuthProvider row.
-    role_id is required — enforced here even though the DB column is
-    nullable, per the product rule that every user must have a role.
+    branch_id and role_id are both required now — User.branch_id is
+    NOT NULL at the DB level as of the branch/role redesign, so this
+    is enforced here as well as by the DB itself.
     """
     if not role_id:
         raise ValueError(f"role_id is required — got {role_id!r} for {email}")
+    if not branch_id:
+        raise ValueError(f"branch_id is required — got {branch_id!r} for {email}")
 
     user = User(
         first_name=first_name,
@@ -236,8 +222,8 @@ async def create_user_with_auth(
     await session.flush()
 
     logger.info(
-        "Created user %s <%s> role_id=%s (id=%s)",
-        f"{first_name} {last_name}", email, role_id, user.id,
+        "Created user %s <%s> role_id=%s branch_id=%s (id=%s)",
+        f"{first_name} {last_name}", email, role_id, branch_id, user.id,
     )
     return user
 
@@ -247,7 +233,6 @@ async def seed() -> None:
         await reset_schema()
 
     async for session in get_db():
-        # ── Reuse the real roles + permissions seeder ───────────────────────
         await seed_roles(session)
         await seed_permissions(session)
 
@@ -260,14 +245,25 @@ async def seed() -> None:
         await session.flush()
         logger.info("Created organization %s (id=%s)", org.business_name, org.id)
 
+        # ── Branch (MOVED UP — before the owner) ────────────────────────────
+        # User.branch_id is now NOT NULL. The owner needs a real branch
+        # to belong to from the moment they're created, so the branch
+        # must exist first. created_by is backfilled once the owner
+        # exists, same pattern as the real signup_service's HQ branch.
+        branch = Branch(organization_id=org.id, name=BRANCH["name"], created_by=None)
+        session.add(branch)
+        await session.flush()
+        logger.info("Created branch %s (id=%s)", branch.name, branch.id)
+
         # ── Owner (super_admin) ──────────────────────────────────────────────
         owner = await create_user_with_auth(
             session,
             organization_id=org.id,
-            branch_id=None,
+            branch_id=branch.id,  # CHANGED: was None
             role_id=roles["super_admin"].id,
             **OWNER,
         )
+        branch.created_by = owner.id  # backfill now that the owner exists
 
         if hasattr(org, "owner_id"):
             org.owner_id = owner.id
@@ -280,12 +276,6 @@ async def seed() -> None:
             permissions=all_permissions,
             granted_by=owner.id,
         )
-
-        # ── Branch ───────────────────────────────────────────────────────────
-        branch = Branch(organization_id=org.id, name=BRANCH["name"], created_by=owner.id)
-        session.add(branch)
-        await session.flush()
-        logger.info("Created branch %s (id=%s)", branch.name, branch.id)
 
         # ── Department ───────────────────────────────────────────────────────
         department = Department(

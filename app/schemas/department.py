@@ -5,20 +5,14 @@ Pydantic v2 schemas for department endpoints.
 """
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
+from datetime import datetime
 
 class DepartmentCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-    avatar_initial: str | None = Field(default=None, max_length=10)
-
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Department name must not be blank.")
-        return v.strip()
-
+    name: str
+    description: str | None = None
+    avatar_initial: str | None = None
+    branch_id: str  # REQUIRED now — every department is branch-scoped,
+                     # no more org-wide departments.
 
 class DepartmentUpdateRequest(BaseModel):
     """All fields optional — only provided fields are updated (PATCH semantics)."""
@@ -64,21 +58,19 @@ class DepartmentResponse(BaseModel):
     description: str | None
     avatar_initial: str | None
     organization_id: str
-    branch_id: str | None
+    branch_id: str  # CHANGED: was str | None — always set now
+    created_by: str
     member_count: int
-    created_by: str | None
-
+    created_at: datetime
+    updated_at: datetime
 
 class DepartmentListResponse(BaseModel):
-    """Paginated list of departments."""
-
     items: list[DepartmentResponse]
     total: int
     offset: int
     limit: int
 
 class DepartmentMemberAssignResponse(BaseModel):
-    """Returned after a successful department assignment."""
     user_id: str
     department_id: str
     organization_id: str
@@ -86,8 +78,6 @@ class DepartmentMemberAssignResponse(BaseModel):
 
 
 class DepartmentMemberInfo(BaseModel):
-    """Allow-list — deliberately excludes hashed_password and any other
-    sensitive User fields. Add fields here only as needed by the client."""
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -103,12 +93,9 @@ class DepartmentMembersListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
 class DepartmentDeleteRequest(BaseModel):
-    """
-    transfer_to_department_id is required when the department still has
-    members — they must be moved atomically before deletion so no user
-    is ever left without a department.
-    """
     transfer_to_department_id: str | None = Field(
         default=None,
         description=(
@@ -136,4 +123,3 @@ class DepartmentHeadRemoveResponse(BaseModel):
     department_id: str
     organization_id: str
     message: str
-

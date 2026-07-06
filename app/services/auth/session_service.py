@@ -20,6 +20,9 @@ from app.models import User, UserDevice
 from .token_service import hash_refresh_token, revoke_device, rotate_refresh_token
 from ._helpers import AuthError
 
+from app.models.department import DepartmentMember
+from app.core.constants import RoleName
+
 
 async def refresh_access_token(
     session: AsyncSession, raw_refresh_token: str
@@ -107,8 +110,12 @@ async def logout(session: AsyncSession, raw_refresh_token: str) -> None:
         await revoke_device(session, device)
 
 
-async def get_me(session: AsyncSession, user_id: str) -> User:
-    """Load the current user with settings for the /auth/me endpoint."""
+async def get_me(session: AsyncSession, user_id: str, role: str | None = None) -> tuple[User, str | None]:
+    """
+    Load the current user with settings for /auth/me.
+    Also resolves department_id unless the user is super_admin.
+    Returns (user, department_id).
+    """
     result = await session.execute(
         select(User)
         .options(selectinload(User.settings))
@@ -117,4 +124,14 @@ async def get_me(session: AsyncSession, user_id: str) -> User:
     user = result.scalar_one_or_none()
     if not user:
         raise AuthError("User not found.", status.HTTP_404_NOT_FOUND)
-    return user
+
+    # super_admin has no meaningful department — skip the lookup
+    department_id: str | None = None
+    if role != RoleName.SUPER_ADMIN:
+        dept_result = await session.execute(
+            select(DepartmentMember.department_id)
+            .where(DepartmentMember.user_id == user_id)
+        )
+        department_id = dept_result.scalar_one_or_none()
+
+    return user, department_id

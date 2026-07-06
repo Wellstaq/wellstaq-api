@@ -1,6 +1,5 @@
 """
-Chat models — GroupChatMessage (merged club/event group chats) and
-DirectMessage (1:1 personal messaging).
+Chat models — GroupChatMessage (merged club/event group chats).
 
 GroupChatMessage design:
 - conversation_type + conversation_id is a polymorphic pointer: type is
@@ -48,20 +47,6 @@ writing any route that touches GroupChatMessage):
   substitute for checking membership/permission on the underlying club
   or event at request time. Never accept a bare conversation_id from a
   client and trust it without that upstream check.
-
-DirectMessage design:
-- Personal 1:1 messaging between two users, separate from
-  GroupChatMessage. Sender and recipient must belong to the same
-  organization (enforced in the service layer).
-- sender_id and recipient_id must differ — self-messaging is not a
-  supported feature and is rejected at the DB level.
-- content is nullable, same content-or-media CHECK constraint as above.
-- No pinning here — pinning only applies to group chats, per product
-  decision.
-- is_read / read_at track a single recipient's read state, which is the
-  natural shape for a 1:1 conversation (unlike group chats, where each
-  member would need independent read state — a different problem,
-  intentionally not solved here).
 """
 
 from datetime import datetime
@@ -161,10 +146,6 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "conversation_type IN ('club', 'event')",
             name="ck_group_chat_message_conversation_type",
         ),
-        # Pin consistency — two rules:
-        # 1. is_pinned=true requires both audit fields (no broken audit trail).
-        # 2. is_pinned=false requires both audit fields to be null (no ghost state).
-        # Together they guarantee the three fields are always in sync.
         CheckConstraint(
             "(is_pinned = 0 AND pinned_by IS NULL AND pinned_at IS NULL)"
             " OR "
@@ -178,82 +159,3 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             f"<GroupChatMessage id={self.id} org={self.organization_id} "
             f"{self.conversation_type}={self.conversation_id} user={self.user_id}>"
         )
-
-
-class DirectMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    __tablename__ = "direct_messages"
-
-    # Sender and recipient must belong to the same org — enforced in the
-    # service layer, the DB only stores the scope.
-    organization_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    sender_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    recipient_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    # Content
-    content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    media_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-    media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-
-    # Read receipt — single recipient, so a plain boolean + timestamp is
-    # sufficient (unlike group chats, which would need per-member read
-    # state).
-    is_read: Mapped[bool] = mapped_column(nullable=False, default=False)
-    read_at: Mapped[datetime | None] = mapped_column(nullable=True)
-
-    # Relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization",
-        back_populates="direct_messages",
-        foreign_keys=[organization_id],
-    )
-    sender: Mapped["User"] = relationship(
-        "User",
-        back_populates="sent_direct_messages",
-        foreign_keys=[sender_id],
-    )
-    recipient: Mapped["User"] = relationship(
-        "User",
-        back_populates="received_direct_messages",
-        foreign_keys=[recipient_id],
-    )
-
-    __table_args__ = (
-        Index(
-            "ix_direct_messages_sender_recipient_created_at",
-            "sender_id",
-            "recipient_id",
-            "created_at",
-        ),
-        Index(
-            "ix_direct_messages_recipient_sender_created_at",
-            "recipient_id",
-            "sender_id",
-            "created_at",
-        ),
-        CheckConstraint(
-            "content IS NOT NULL OR media_url IS NOT NULL",
-            name="ck_direct_message_content_or_media",
-        ),
-        # Self-messaging is not a supported feature.
-        CheckConstraint(
-            "sender_id <> recipient_id",
-            name="ck_direct_message_no_self_message",
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return f"<DirectMessage id={self.id} sender={self.sender_id} recipient={self.recipient_id}>"

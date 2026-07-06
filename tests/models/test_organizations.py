@@ -1,47 +1,22 @@
 """
 Organization and OrganizationInvite model tests.
 
+REVISED for the branch/role redesign:
+  - User.branch_id is NOT NULL now. make_member() takes a required
+    branch_id parameter — every call site below passes owner.branch_id
+    (the org's Headquarters branch, auto-created by make_org_with_owner)
+    since these tests aren't about branch assignment specifically.
+  - Department.branch_id is NOT NULL now. make_invite_deps() takes a
+    required branch_id and creates the Department under it.
+  - OrganizationInvite.branch_id is NOT NULL now (was optional before
+    this redesign — see OrganizationInvite model). make_invite() takes
+    a required branch_id parameter. test_invite_optional_fields_nullable
+    no longer asserts invite.branch_id is None (that's now impossible)
+    — it asserts the opposite: branch_id is always set, matching what
+    was passed in.
+
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
-
-Schema change this file reflects:
-- User.organization_id is now NOT NULL with ondelete="CASCADE".
-- Organization.owner_id is ondelete="CASCADE" (was RESTRICT) to avoid
-  a deadlock against the members cascade during org deletion.
-- Because Organization.owner_id and User.organization_id now form a
-  circular NOT NULL-ish dependency, every org+owner pair in these
-  tests is created via make_org_with_owner(), which mirrors the real
-  signup transaction: create org with owner_id deferred -> flush to
-  get org.id -> create user with that organization_id -> flush ->
-  patch org.owner_id -> flush. No test should construct a User without
-  an organization_id, and no test should construct an Organization
-  with a permanently-null owner_id outside of that sequence.
-- User.role_name (a free string) has been replaced by User.role_id, a
-  FK to roles.id (see Permission/Role model). Role is no longer a
-  string on the user — it's a real row. Tests that need a user to
-  have a role now go through make_user_with_role() (async — it
-  resolves/creates a system Role row via get_or_create_system_role()
-  and sets role_id), not a bare role_name= kwarg on User(...) directly.
-  make_org_with_owner() already does this internally for the owner;
-  only call-sites that build non-owner Users need to call it
-  themselves.
-- OrganizationInvitePermission has been removed from the schema.
-  Invites no longer carry pre-assigned permission rows; permissions
-  are granted post-join by an authority.
-- make_invite() now requires invited_department_id and invited_role_id
-  (both NOT NULL FKs). The local make_invite_deps() helper creates
-  the minimum Department and Role rows needed to satisfy these
-  constraints so individual tests stay focused on their own concerns.
-
-Known schema limitation acknowledged in tests:
-- test_committed_org_owner_id_cannot_be_null documents that the DB
-  does NOT currently enforce "committed org must have owner_id". The
-  nullable=True on owner_id is required for the circular-FK bootstrap
-  but means a raw INSERT with owner_id=NULL will succeed at the DB
-  level. This is an application-layer guarantee only. The test is
-  marked xfail to document intent vs. current reality; it should be
-  converted to a passing test once a deferred NOT NULL constraint or
-  equivalent is added.
 """
 
 import pytest
@@ -51,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, timezone
 
 from app.models import Organization, OrganizationInvite, Role, User
-from app.models.department import Department  # adjust import path to match your project
+from app.models.department import Department
 from tests.conftest import (
     get_or_create_system_role,
     make_org_with_owner,
@@ -62,16 +37,22 @@ from tests.conftest import (
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 
-async def make_member(db_session: AsyncSession, organization_id: str, **overrides) -> User:
+async def make_member(
+    db_session: AsyncSession, organization_id: str, branch_id: str, **overrides
+) -> User:
     """A non-owner member of an existing org — analogous to a user who
     joined via accepted invite. organization_id must already exist.
+    branch_id is now REQUIRED (User.branch_id is NOT NULL) — pass the
+    org's home branch (e.g. owner.branch_id) unless the test is
+    specifically about branch assignment.
 
     role_name (if not overridden) defaults to "employee" and is
-    resolved to a real system Role's id via make_user_with_role() —
-    role_name is no longer a column on User itself."""
+    resolved to a real system Role's id via make_user_with_role()."""
     overrides.setdefault("email", "member@example.com")
     overrides.setdefault("role_name", "employee")
-    user = await make_user_with_role(db_session, organization_id=organization_id, **overrides)
+    user = await make_user_with_role(
+        db_session, organization_id=organization_id, branch_id=branch_id, **overrides
+    )
     db_session.add(user)
     await db_session.flush()
     return user
@@ -80,18 +61,23 @@ async def make_member(db_session: AsyncSession, organization_id: str, **override
 async def make_invite_deps(
     db_session: AsyncSession,
     organization_id: str,
+    branch_id: str,
 ) -> tuple[Department, Role]:
     """
-    Create the minimum Department and Role rows required by OrganizationInvite's
-    NOT NULL FKs (invited_department_id, invited_role_id).
+    Create the minimum Department and Role rows required by
+    OrganizationInvite's NOT NULL FKs (invited_department_id,
+    invited_role_id). branch_id is now REQUIRED — Department.branch_id
+    is NOT NULL, so the department must be created under a real branch.
 
-    Returns (department, role) so callers can pass their IDs into make_invite().
-    Role is resolved via get_or_create_system_role() so it is safe to call
-    multiple times within the same test session without hitting a unique violation.
+    Returns (department, role) so callers can pass their IDs into
+    make_invite(). Role is resolved via get_or_create_system_role() so
+    it is safe to call multiple times within the same test session
+    without hitting a unique violation.
     """
     department = Department(
         name="General",
         organization_id=organization_id,
+        branch_id=branch_id,
     )
     db_session.add(department)
     await db_session.flush()
@@ -106,17 +92,22 @@ def make_invite(
     invited_by_id: str,
     invited_department_id: str,
     invited_role_id: str,
+    branch_id: str,
     email: str = "guest@example.com",
     **overrides,
 ) -> OrganizationInvite:
     """
     Construct an OrganizationInvite with all NOT NULL fields supplied.
 
-    invited_department_id and invited_role_id are required — get them
-    from make_invite_deps() before calling this factory.
+    invited_department_id, invited_role_id, AND branch_id are all
+    required now (branch_id was optional before this redesign — see
+    OrganizationInvite model docstring). Get department/role from
+    make_invite_deps() before calling this factory, and pass the same
+    branch_id used to create that department.
     """
     defaults = dict(
         organization_id=organization_id,
+        branch_id=branch_id,
         invited_email=email,
         invite_code="some-secure-token-123",
         status="pending",
@@ -159,10 +150,7 @@ async def test_organization_timestamps_auto_set(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_slug_unique(db_session: AsyncSession):
-    """Two orgs cannot share the same slug. The unique constraint fires
-    the moment the second Organization row is flushed — before any
-    owner User is even created for it, since slug uniqueness is a
-    property of Organization alone."""
+    """Two orgs cannot share the same slug."""
     await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug="same-slug"),
@@ -207,7 +195,6 @@ async def test_organization_full_fields(db_session: AsyncSession):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("org_type", ["startup", "enterprise", "ngo", "government", "custom_type"])
 async def test_organization_accepts_any_org_type(db_session: AsyncSession, org_type: str):
-    """organization_type is a free string — no enum constraint."""
     org, _ = await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug=f"org-{org_type}", organization_type=org_type),
@@ -219,7 +206,6 @@ async def test_organization_accepts_any_org_type(db_session: AsyncSession, org_t
 @pytest.mark.asyncio
 @pytest.mark.parametrize("work_model", ["remote", "hybrid", "onsite"])
 async def test_organization_accepts_any_work_model(db_session: AsyncSession, work_model: str):
-    """work_model is a free string — no enum constraint."""
     org, _ = await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug=f"org-{work_model}", work_model=work_model),
@@ -230,7 +216,6 @@ async def test_organization_accepts_any_work_model(db_session: AsyncSession, wor
 
 @pytest.mark.asyncio
 async def test_organization_owner_fk_must_exist(db_session: AsyncSession):
-    """owner_id, once set, must reference a real user."""
     org = Organization(
         business_name="Acme Corp",
         slug="acme-corp",
@@ -247,15 +232,12 @@ async def test_organization_owner_fk_must_exist(db_session: AsyncSession):
         "Schema limitation: owner_id is nullable=True at the DB level to allow the "
         "circular-FK bootstrap transaction (see Organization model docstring). The DB "
         "therefore accepts a committed org with owner_id=NULL even though the application "
-        "contract forbids it. This test documents the gap between documented intent and "
-        "current schema enforcement. To make this test pass, add a DEFERRABLE INITIALLY "
+        "contract forbids it. To make this test pass, add a DEFERRABLE INITIALLY "
         "DEFERRED NOT NULL constraint on owner_id (PostgreSQL only) and remove xfail."
     ),
     strict=True,
 )
 async def test_committed_org_owner_id_cannot_be_null(db_session: AsyncSession):
-    """Documents that a committed org with owner_id=NULL is currently NOT
-    prevented by the schema — only by application discipline."""
     org = Organization(
         business_name="Ownerless Corp",
         slug="ownerless-corp",
@@ -278,11 +260,13 @@ async def test_committed_org_owner_id_cannot_be_null(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_make_org_with_owner_signup_invariant(db_session: AsyncSession):
     """The make_org_with_owner() helper (and the real signup transaction
-    it mirrors) must leave the database in a fully linked state."""
+    it mirrors) must leave the database in a fully linked state,
+    including the owner having a real home branch (HQ)."""
     org, owner = await make_org_with_owner(db_session)
 
     assert org.owner_id == owner.id
     assert owner.organization_id == org.id
+    assert owner.branch_id is not None  # HQ branch, auto-created
 
     await db_session.refresh(org, ["owner"])
     assert org.owner is not None
@@ -294,18 +278,14 @@ async def test_make_org_with_owner_signup_invariant(db_session: AsyncSession):
 @pytest.mark.xfail(
     reason=(
         "SQLite does not reliably fire ondelete=CASCADE on deferred/use_alter FKs "
-        "(owner_id uses use_alter=True for circular FK resolution). In SQLite the "
-        "owner row is deleted but the org survives with owner_id=None instead of "
-        "being cascade-deleted. This cascade chain DOES fire correctly in PostgreSQL "
-        "(production). The test documents the intended DB behavior and the danger of "
-        "deleting an owner directly — it should pass once CI runs against Postgres."
+        "(owner_id uses use_alter=True for circular FK resolution). This cascade chain "
+        "DOES fire correctly in PostgreSQL (production). Documents intended behavior."
     ),
     strict=True,
 )
 async def test_deleting_owner_directly_cascades_entire_org(db_session: AsyncSession):
-    """Documents the intended DB behavior when the owner User row is deleted directly."""
     org, owner = await make_org_with_owner(db_session)
-    member = await make_member(db_session, org.id, email="bystander@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="bystander@example.com")
 
     org_id = org.id
     owner_id = owner.id
@@ -346,7 +326,6 @@ async def test_user_organization_id_required(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_deletion_cascades_to_owner(db_session: AsyncSession):
-    """Deleting an org deletes the owner's User row too."""
     org, owner = await make_org_with_owner(db_session)
     owner_id = owner.id
 
@@ -359,10 +338,9 @@ async def test_organization_deletion_cascades_to_owner(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_organization_deletion_cascades_to_all_members(db_session: AsyncSession):
-    """Deleting an org deletes every member User row, not just the owner."""
     org, owner = await make_org_with_owner(db_session)
-    member1 = await make_member(db_session, org.id, email="member1@example.com")
-    member2 = await make_member(db_session, org.id, email="member2@example.com")
+    member1 = await make_member(db_session, org.id, owner.branch_id, email="member1@example.com")
+    member2 = await make_member(db_session, org.id, owner.branch_id, email="member2@example.com")
 
     member_ids = [owner.id, member1.id, member2.id]
 
@@ -375,9 +353,8 @@ async def test_organization_deletion_cascades_to_all_members(db_session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_deleting_non_owner_member_does_not_delete_org(db_session: AsyncSession):
-    """Deleting a regular member must not affect the organization or other members."""
     org, owner = await make_org_with_owner(db_session)
-    member = await make_member(db_session, org.id, email="leaving@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="leaving@example.com")
 
     await db_session.delete(member)
     await db_session.flush()
@@ -391,7 +368,6 @@ async def test_deleting_non_owner_member_does_not_delete_org(db_session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_one_user_can_own_multiple_orgs(db_session: AsyncSession):
-    """No constraint prevents one user from owning multiple organizations."""
     org1, owner = await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug="org-one", business_name="Org One"),
@@ -469,13 +445,14 @@ async def test_organization_deactivation_does_not_delete_children(db_session: As
         org_kwargs=dict(slug="org-deactivate-children"),
         user_kwargs=dict(email="deactivate_children@example.com"),
     )
-    member = await make_member(db_session, org.id, email="stays@example.com")
+    member = await make_member(db_session, org.id, manager.branch_id, email="stays@example.com")
 
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
     invite = make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="stillhere@example.com",
     )
     db_session.add(invite)
@@ -527,8 +504,8 @@ async def test_user_owned_organizations_relationship(db_session: AsyncSession):
 async def test_organization_members_relationship(db_session: AsyncSession):
     """org.members loads owner + every other user attached to the org."""
     org, owner = await make_org_with_owner(db_session)
-    member1 = await make_member(db_session, org.id, email="m1@example.com")
-    member2 = await make_member(db_session, org.id, email="m2@example.com")
+    member1 = await make_member(db_session, org.id, owner.branch_id, email="m1@example.com")
+    member2 = await make_member(db_session, org.id, owner.branch_id, email="m2@example.com")
 
     await db_session.refresh(org, ["members"])
 
@@ -543,12 +520,13 @@ async def test_organization_invite_persists(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
     invite = make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="newhire@example.com",
     )
     db_session.add(invite)
@@ -564,6 +542,7 @@ async def test_organization_invite_persists(db_session: AsyncSession):
     assert fetched.invited_by == manager.id
     assert fetched.invited_department_id == dept.id
     assert fetched.invited_role_id == role.id
+    assert fetched.branch_id == manager.branch_id
 
 
 @pytest.mark.asyncio
@@ -571,9 +550,12 @@ async def test_invite_id_is_uuid_format(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
 
@@ -587,9 +569,12 @@ async def test_invite_timestamps_auto_set(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
 
@@ -603,9 +588,12 @@ async def test_invite_default_status_is_pending(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
 
@@ -614,32 +602,42 @@ async def test_invite_default_status_is_pending(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_invite_optional_fields_nullable(db_session: AsyncSession):
+    """
+    REVISED: branch_id used to be optional on OrganizationInvite and
+    this test asserted invite.branch_id is None. branch_id is NOT NULL
+    now (every invite must target a branch) — this test now asserts
+    the opposite: branch_id is always set to whatever was passed in.
+    accepted_at/accepted_by_id remain genuinely optional.
+    """
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
 
-    assert invite.branch_id is None
+    assert invite.branch_id == manager.branch_id
     assert invite.accepted_at is None
     assert invite.accepted_by_id is None
 
 
 @pytest.mark.asyncio
 async def test_invite_code_unique(db_session: AsyncSession):
-    """Two invites cannot share the same invite_code."""
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
     db_session.add(make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         invite_code="same-code",
     ))
     await db_session.flush()
@@ -648,6 +646,7 @@ async def test_invite_code_unique(db_session: AsyncSession):
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="other@example.com",
         invite_code="same-code",
     ))
@@ -657,17 +656,17 @@ async def test_invite_code_unique(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_invite_org_fk_must_exist(db_session: AsyncSession):
-    """organization_id must reference a real organization."""
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
     invite = make_invite(
         organization_id="00000000-0000-0000-0000-000000000000",
         invited_by_id=manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
     )
     db_session.add(invite)
     with pytest.raises(IntegrityError):
@@ -676,13 +675,15 @@ async def test_invite_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_cascades_to_invites(db_session: AsyncSession):
-    """Deleting an organization cascades to its invites."""
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="boss@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
 
@@ -701,13 +702,14 @@ async def test_invite_accepted_by_nullable_on_user_delete(db_session: AsyncSessi
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
-    acceptor = await make_member(db_session, org.id, email="acceptor@example.com")
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
+    acceptor = await make_member(db_session, org.id, manager.branch_id, email="acceptor@example.com")
 
     invite = make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         accepted_by_id=acceptor.id,
     )
     db_session.add(invite)
@@ -717,30 +719,30 @@ async def test_invite_accepted_by_nullable_on_user_delete(db_session: AsyncSessi
     await db_session.flush()
     await db_session.refresh(invite)
 
-    assert invite.accepted_by_id is None  # nulled out
-    assert invite.id is not None          # row still exists
+    assert invite.accepted_by_id is None
+    assert invite.id is not None
 
 
 # ── OrganizationInvite Relationships ───────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_organization_invite_dual_user_relationships(db_session: AsyncSession):
-    """A manager sends an invite; a new user accepts it and becomes a member."""
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="sender@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
     invite = make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="receiver@example.com",
     )
     db_session.add(invite)
     await db_session.flush()
 
-    new_user = await make_member(db_session, org.id, email="receiver@example.com")
+    new_user = await make_member(db_session, org.id, manager.branch_id, email="receiver@example.com")
 
     invite.status = "accepted"
     invite.accepted_by_id = new_user.id
@@ -764,9 +766,12 @@ async def test_invite_organization_relationship(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
     await db_session.refresh(invite, ["organization"])
@@ -780,9 +785,12 @@ async def test_invite_inviter_relationship(db_session: AsyncSession):
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
-    invite = make_invite(org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id)
+    invite = make_invite(
+        org.id, manager.id, invited_department_id=dept.id, invited_role_id=role.id,
+        branch_id=manager.branch_id,
+    )
     db_session.add(invite)
     await db_session.flush()
     await db_session.refresh(invite, ["inviter"])
@@ -793,16 +801,16 @@ async def test_invite_inviter_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_invites_relationship(db_session: AsyncSession):
-    """org.invites loads all invite rows for that org."""
     org, manager = await make_org_with_owner(
         db_session, user_kwargs=dict(email="manager@example.com")
     )
-    dept, role = await make_invite_deps(db_session, org.id)
+    dept, role = await make_invite_deps(db_session, org.id, manager.branch_id)
 
     db_session.add(make_invite(
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="a@example.com",
         invite_code="code-a",
     ))
@@ -810,6 +818,7 @@ async def test_organization_invites_relationship(db_session: AsyncSession):
         org.id, manager.id,
         invited_department_id=dept.id,
         invited_role_id=role.id,
+        branch_id=manager.branch_id,
         email="b@example.com",
         invite_code="code-b",
     ))

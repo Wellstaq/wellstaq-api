@@ -90,7 +90,7 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        # NOTE: no index=True here — user_id is the leading column of the
+        # NOTE: no index=True here — user_id ijs the leading column of the
         # composite index ix_notifications_user_is_read_created_at below,
         # which already covers single-column lookups on user_id. A
         # redundant standalone index would waste write overhead.

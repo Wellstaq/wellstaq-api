@@ -6,7 +6,7 @@ Pydantic schemas for organization-related endpoints.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # ── Send invite ────────────────────────────────────────────────────────────────
@@ -52,6 +52,51 @@ class InviteItem(BaseModel):
 
 class InviteListResponse(BaseModel):
     items: list[InviteItem]
+    total: int
+    offset: int
+    limit: int
+
+
+# ── Members ──────────────────────────────────────────────────────────────────
+
+class OrganizationMemberInfo(BaseModel):
+    """Allow-list — deliberately excludes hashed_password and other
+    sensitive User fields. Add fields only as the client actually needs."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    first_name: str
+    last_name: str
+    email: str
+    avatar_url: str | None
+    status: str
+    role_id: str | None
+    branch_id: str | None
+
+
+class OrganizationMembersListResponse(BaseModel):
+    items: list[OrganizationMemberInfo]
+    total: int
+    offset: int
+    limit: int
+
+
+# ── Clubs ────────────────────────────────────────────────────────────────────
+
+class OrganizationClubInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    description: str | None
+    privacy: str
+    category_id: str | None
+    branch_id: str | None
+    member_count: int
+
+
+class OrganizationClubsListResponse(BaseModel):
+    items: list[OrganizationClubInfo]
     total: int
     offset: int
     limit: int

@@ -69,6 +69,7 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "organizations"
+    __mapper_args__ = {"confirm_deleted_rows": False}  # ← add this line
 
     # Identity
     business_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -267,11 +268,6 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
-    direct_messages: Mapped[list["DirectMessage"]] = relationship(
-        "DirectMessage",
-        back_populates="organization",
-        cascade="all, delete-orphan",
-    )
 
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification",
@@ -369,7 +365,10 @@ Organization Invite model.
 
 Design principles:
 - An invite strictly belongs to an organization.
-- branch_id is optional; if set, accepting the invite auto-assigns the user to that branch.
+- branch_id is REQUIRED — every invite targets a specific branch;
+  accepting the invite always assigns the user to it. There is no
+  branch-less invite anymore (mirrors the removal of the org-wide
+  scope tier elsewhere in the schema).
 - invited_department_id is NOT NULL — a department must exist before an invite can be sent.
   Enforced at both DB level (NOT NULL FK) and service layer (validated before insert).
 - invited_role_id is NOT NULL — the inviter pre-assigns exactly one role when creating
@@ -394,10 +393,15 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
 
-    branch_id: Mapped[str | None] = mapped_column(
+    # NOT NULL now — every invite must target a branch, no exceptions.
+    # Matches invited_department_id and invited_role_id, which were
+    # already required. send_invite()'s branch_id: str parameter (already
+    # non-optional) was ahead of the schema here — this closes that gap.
+    branch_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("branches.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
+        index=True,
     )
 
     # NOT NULL — a department must exist before sending an invite.
@@ -454,7 +458,7 @@ class OrganizationInvite(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[organization_id],
     )
 
-    branch: Mapped[Optional["Branch"]] = relationship(
+    branch: Mapped["Branch"] = relationship(
         "Branch",
         back_populates="invites",
         foreign_keys=[branch_id],

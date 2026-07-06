@@ -132,22 +132,25 @@ async def setup_org(
     )
     return user, org
 
-
-async def make_member(db_session: AsyncSession, organization_id: str, **overrides) -> User:
+async def make_member(
+    db_session: AsyncSession, organization_id: str, branch_id: str, **overrides
+) -> User:
     """A non-owner member of an existing org. organization_id must
-    already exist (i.e. come from a setup_org() call)."""
+    already exist (i.e. come from a setup_org() call). branch_id is
+    now REQUIRED (User.branch_id is NOT NULL) — pass the org's home
+    branch (e.g. owner.branch_id from setup_org())."""
     overrides.setdefault("email", "member@example.com")
     role_name = overrides.pop("role_name", "employee")
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,
+        branch_id=branch_id,
         role_name=role_name,
         **overrides,
     )
     db_session.add(user)
     await db_session.flush()
     return user
-
 
 # ── WellbeingDimension ─────────────────────────────────────────────────────────
 
@@ -284,13 +287,13 @@ async def test_score_supports_decimal_precision(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_score_org_fk_must_exist(db_session: AsyncSession):
-    _, org = await setup_org(db_session, email="placeholder@example.com")
+    owner, org = await setup_org(db_session, email="placeholder@example.com")
 
     dimension = make_dimension()
     db_session.add(dimension)
     await db_session.flush()
 
-    member = await make_member(db_session, org.id, email="scope-test@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="scope-test@example.com")
 
     score = make_score(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -449,7 +452,7 @@ async def test_user_delete_cascades_to_scores(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
 
     # Create a separate member user who is NOT the organization owner
-    member = await make_member(db_session, org.id, email="member@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="member@example.com")
 
     dimension = make_dimension()
     db_session.add(dimension)
@@ -894,8 +897,8 @@ async def test_baseline_reason_is_optional(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_baseline_org_fk_must_exist(db_session: AsyncSession):
-    _, org = await setup_org(db_session, email="placeholder2@example.com")
-    member = await make_member(db_session, org.id, email="baseline-fk-test@example.com")
+    owner, org = await setup_org(db_session, email="placeholder2@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="baseline-fk-test@example.com")
 
     baseline = make_baseline(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -943,7 +946,7 @@ async def test_user_delete_cascades_to_baselines(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
 
     # Create a separate member user who is NOT the organization owner
-    member = await make_member(db_session, org.id, email="member@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="member@example.com")
 
     baseline = make_baseline(org.id, member.id)
     db_session.add(baseline)
@@ -1156,8 +1159,8 @@ async def test_health_assessment_cross_tenant_isolation(db_session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_health_assessment_org_fk_must_exist(db_session: AsyncSession):
-    _, org = await setup_org(db_session, email="placeholder3@example.com")
-    member = await make_member(db_session, org.id, email="health-fk-test@example.com")
+    owner, org = await setup_org(db_session, email="placeholder3@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="health-fk-test@example.com")
 
     assessment = make_health_assessment(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -1219,7 +1222,7 @@ async def test_user_delete_cascades_to_health_assessments(db_session: AsyncSessi
     owner, org = await setup_org(db_session)
 
     # Create a separate member user who is NOT the organization owner
-    member = await make_member(db_session, org.id, email="member@example.com")
+    member = await make_member(db_session, org.id, owner.branch_id, email="member@example.com")
 
     assessment = make_health_assessment(org.id, member.id)
     db_session.add(assessment)

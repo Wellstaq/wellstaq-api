@@ -1,8 +1,16 @@
+
 """
 GroupChatMessage model tests.
 
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
+
+Key fix vs prior version:
+  User.branch_id is NOT NULL — every make_user() call now passes
+  branch_id=owner.branch_id (the HQ branch auto-created by
+  make_org_with_owner). make_user_with_role() calls pass it too.
+  setup_org() now returns (org, owner) so branch_id is available
+  at every call site without a separate query.
 """
 
 import pytest
@@ -11,11 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import GroupChatMessage, Club, Branch
+from app.models import GroupChatMessage, Club
+from app.models.branch import Branch
 from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
 
-# ── Chat-specific factories ───────────────────────────────────────────────────
+# ── Factories ─────────────────────────────────────────────────────────────────
 
 def make_group_chat_message(
     organization_id: str,
@@ -33,24 +42,21 @@ def make_group_chat_message(
         **{**defaults, **overrides},
     )
 
+
 async def setup_club(
     db_session: AsyncSession,
     org_id: str,
+    branch_id: str,
     *,
-    branch_id: str | None = None,
+    name: str = "Running Club",
     **overrides,
 ) -> Club:
-    # clubs.branch_id is NOT NULL — create a branch if one isn't provided
-    if branch_id is None:
-        branch = Branch(organization_id=org_id, name=f"Branch-{overrides.get('name', 'default')}")
-        db_session.add(branch)
-        await db_session.flush()
-        branch_id = branch.id
-
-    defaults = dict(name="Running Club", privacy="public")
+    """branch_id is required — Club.branch_id is NOT NULL."""
+    defaults = dict(privacy="public")
     club = Club(
         organization_id=org_id,
         branch_id=branch_id,
+        name=name,
         **{**defaults, **overrides},
     )
     db_session.add(club)
@@ -58,16 +64,24 @@ async def setup_club(
     return club
 
 
-# ════════════════════════════════════════════════
-# GroupChatMessage — basic persistence
-# ════════════════════════════════════════════════
+async def setup_org(db_session: AsyncSession, *, slug: str = "acme-corp"):
+    """Returns (org, owner) — owner.branch_id is the HQ branch."""
+    org, owner = await make_org_with_owner(
+        db_session,
+        org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email="owner@example.com", role_name="overall_manager"),
+    )
+    return org, owner
+
+
+# ── Basic persistence ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_group_chat_message_persists(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -88,10 +102,10 @@ async def test_group_chat_message_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_group_chat_message_id_is_uuid_format(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -106,11 +120,10 @@ async def test_group_chat_message_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_group_chat_message_organization_id_required(db_session: AsyncSession):
-    """organization_id is NOT NULL — every group chat message is org-scoped."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -128,11 +141,10 @@ async def test_group_chat_message_organization_id_required(db_session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_group_chat_message_can_be_media_only(db_session: AsyncSession):
-    """content is nullable — a message can carry only media."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -151,11 +163,10 @@ async def test_group_chat_message_can_be_media_only(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_group_chat_message_requires_content_or_media(db_session: AsyncSession):
-    """A message can't have both content and media_url null."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -167,11 +178,10 @@ async def test_group_chat_message_requires_content_or_media(db_session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_group_chat_message_invalid_conversation_type_raises(db_session: AsyncSession):
-    """conversation_type is constrained to a known set of values."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -183,9 +193,9 @@ async def test_group_chat_message_invalid_conversation_type_raises(db_session: A
 
 @pytest.mark.asyncio
 async def test_group_chat_message_supports_event_conversation_type(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, owner = await setup_org(db_session)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -199,17 +209,18 @@ async def test_group_chat_message_supports_event_conversation_type(db_session: A
     assert message.organization_id == org.id
 
 
-# ════════════════════════════════════════════════
-# GroupChatMessage — pinning
-# ════════════════════════════════════════════════
+# ── Pinning ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_group_chat_message_can_be_pinned(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    manager = await make_user_with_role(
+        db_session, organization_id=org.id, email="manager@example.com",
+        role_name="branch_manager", branch_id=owner.branch_id,
+    )
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add_all([manager, sender])
     await db_session.flush()
 
@@ -231,11 +242,14 @@ async def test_group_chat_message_can_be_pinned(db_session: AsyncSession):
 async def test_group_chat_message_only_one_pinned_per_conversation(db_session: AsyncSession):
     """Pinning a second message in the same conversation must fail —
     enforced by a partial unique index, not application logic."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    manager = await make_user_with_role(
+        db_session, organization_id=org.id, email="manager@example.com",
+        role_name="branch_manager", branch_id=owner.branch_id,
+    )
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add_all([manager, sender])
     await db_session.flush()
 
@@ -256,20 +270,22 @@ async def test_group_chat_message_only_one_pinned_per_conversation(db_session: A
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
+
 @pytest.mark.asyncio
-async def test_group_chat_message_different_conversations_can_each_have_a_pin(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+async def test_group_chat_message_different_conversations_can_each_have_a_pin(
+    db_session: AsyncSession,
+):
+    org, owner = await setup_org(db_session)
 
-    # create one shared branch — both clubs live in it
-    branch = Branch(organization_id=org.id, name="Shared Branch")
-    db_session.add(branch)
-    await db_session.flush()
+    # Two clubs on the same branch — each gets its own pin slot
+    club_a = await setup_club(db_session, org.id, owner.branch_id, name="Running Club")
+    club_b = await setup_club(db_session, org.id, owner.branch_id, name="Book Club")
 
-    club_a = await setup_club(db_session, org.id, branch_id=branch.id, name="Running Club")
-    club_b = await setup_club(db_session, org.id, branch_id=branch.id, name="Book Club")
-
-    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    manager = await make_user_with_role(
+        db_session, organization_id=org.id, email="manager@example.com",
+        role_name="branch_manager", branch_id=owner.branch_id,
+    )
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add_all([manager, sender])
     await db_session.flush()
 
@@ -293,15 +309,19 @@ async def test_group_chat_message_different_conversations_can_each_have_a_pin(db
         select(GroupChatMessage).where(GroupChatMessage.is_pinned == True)  # noqa: E712
     )
     assert len(result.scalars().all()) == 2
-    
+
+
 @pytest.mark.asyncio
 async def test_group_chat_message_can_be_unpinned_then_repinned(db_session: AsyncSession):
-    """Unpinning frees up the slot — another message can then be pinned."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    """Unpinning frees the slot — a different message can then be pinned."""
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    manager = await make_user_with_role(
+        db_session, organization_id=org.id, email="manager@example.com",
+        role_name="branch_manager", branch_id=owner.branch_id,
+    )
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add_all([manager, sender])
     await db_session.flush()
 
@@ -331,12 +351,12 @@ async def test_group_chat_message_can_be_unpinned_then_repinned(db_session: Asyn
 
 @pytest.mark.asyncio
 async def test_group_chat_message_pin_without_pinned_by_raises(db_session: AsyncSession):
-    """is_pinned=true with null audit fields is rejected by the pin
-    consistency constraint."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    """is_pinned=true with null audit fields is rejected by the
+    pin consistency constraint."""
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -352,14 +372,19 @@ async def test_group_chat_message_pin_without_pinned_by_raises(db_session: Async
 
 
 @pytest.mark.asyncio
-async def test_group_chat_message_ghost_pin_fields_without_is_pinned_raises(db_session: AsyncSession):
-    """pinned_by set while is_pinned=false is ghost state — rejected by the
-    pin consistency constraint."""
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+async def test_group_chat_message_ghost_pin_fields_without_is_pinned_raises(
+    db_session: AsyncSession,
+):
+    """pinned_by set while is_pinned=false is ghost state — rejected by
+    the pin consistency constraint."""
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    manager = await make_user_with_role(db_session, organization_id=org.id, email="manager@example.com", role_name="branch_manager")
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    manager = await make_user_with_role(
+        db_session, organization_id=org.id, email="manager@example.com",
+        role_name="branch_manager", branch_id=owner.branch_id,
+    )
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add_all([manager, sender])
     await db_session.flush()
 
@@ -374,16 +399,14 @@ async def test_group_chat_message_ghost_pin_fields_without_is_pinned_raises(db_s
         await db_session.flush()
 
 
-# ════════════════════════════════════════════════
-# GroupChatMessage — relationships & cascade
-# ════════════════════════════════════════════════
+# ── Relationships & cascade ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_group_chat_message_organization_relationship(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 
@@ -398,10 +421,10 @@ async def test_group_chat_message_organization_relationship(db_session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_organization_delete_cascades_to_group_chat_messages(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
-    club = await setup_club(db_session, org.id)
+    org, owner = await setup_org(db_session)
+    club = await setup_club(db_session, org.id, owner.branch_id)
 
-    sender = make_user(organization_id=org.id, email="sender@example.com")
+    sender = make_user(organization_id=org.id, email="sender@example.com", branch_id=owner.branch_id)
     db_session.add(sender)
     await db_session.flush()
 

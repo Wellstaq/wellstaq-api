@@ -83,7 +83,9 @@ class ReferenceType(StrEnum):
     ORGANIZATION = "organization"
     USER = "user"
 
-
+SUPER_ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset({
+    "org.deactivate",
+})
 
 
 # ── OTP ───────────────────────────────────────────────────────────────────────

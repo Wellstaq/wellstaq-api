@@ -46,18 +46,15 @@ async def get_department(
     session: AsyncSession,
     organization_id: str,
     department_id: str,
-    user_id: str,
 ) -> Department:
     """
     Fetch a single department by ID.
 
     Access rules:
-      - User holds department.create org-wide → always allowed.
-      - Otherwise → user must be a member of the department.
-
+      - Open to all organization member
+    
     Raises:
       404 — department not found or belongs to a different org.
-      403 — user has no permission and is not a member.
     """
     result = await session.execute(
         select(Department).where(
@@ -72,20 +69,5 @@ async def get_department(
             detail="Department not found.",
         )
 
-    
-    return department
-
-    # Check membership
-    membership = await session.execute(
-        select(DepartmentMember).where(
-            DepartmentMember.department_id == department_id,
-            DepartmentMember.user_id == user_id,
-        )
-    )
-    if membership.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to view this department.",
-        )
-
+        
     return department

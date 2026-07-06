@@ -4,8 +4,16 @@ app/services/department/delete_department.py
 Delete a department, transferring members atomically if needed.
 
 Business rules:
-  - If the department has members and no transfer_to_department_id is
-    provided, raise 409.
+  - If the department has members, deletion requires one of two things
+    from the caller:
+      1. Provide transfer_to_department_id, so all members are moved
+         to that department atomically as part of the delete, or
+      2. Reassign every member to another department beforehand
+         (outside this call), so member_count is already 0 by the
+         time delete is invoked.
+    If neither has happened, raise 409. A member without a department
+    is an invalid state the app cannot tolerate (downstream code
+    assumes every member has one), so we never allow it implicitly.
   - If transfer_to_department_id is provided, move all DepartmentMember
     rows to the target department in the same transaction, adjusting
     member_count on both departments.
@@ -53,8 +61,10 @@ async def delete_department(
 
     if member_count > 0 and not transfer_to_department_id:
         raise AppError(
-            f"Department has {member_count} member(s). "
-            "Provide transfer_to_department_id to move them before deletion.",
+            f"Department has {member_count} member(s). Either provide "
+            "transfer_to_department_id to move them to another department "
+            "as part of this delete, or reassign them to another "
+            "department first and retry.",
             status.HTTP_409_CONFLICT,
         )
 

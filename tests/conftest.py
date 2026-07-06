@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.main import app
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import Organization, Role, User
+from app.models import Branch, Organization, Role, User
 
 # ── In-memory SQLite for tests — never touches app.db ────
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -81,51 +81,41 @@ async def client(db_session: AsyncSession) -> AsyncClient:
 
 # ── Shared model factories ────────────────────────────────────────────────────
 #
-# User.organization_id is NOT NULL, and Organization.owner_id requires a
-# User to exist first — a circular FK by design (see Organization model
-# docstring). Every test that creates a User must resolve this the same
-# way the real signup transaction does:
-#   1. create Organization with owner_id deferred (None) -> flush to
-#      obtain org.id without committing
-#   2. create the owner User with that organization_id (now satisfiable)
-#   3. patch org.owner_id = user.id -> flush
+# User.organization_id is NOT NULL, User.branch_id is NOT NULL, and
+# Organization.owner_id requires a User to exist first — a circular FK
+# by design (see Organization model docstring). Every test that creates
+# a User must resolve this the same way the real signup transaction does:
+#   1. Create Organization with owner_id deferred (None) → flush to
+#      obtain org.id without committing.
+#   2. Create the Headquarters Branch with that organization_id → flush
+#      to obtain hq_branch.id. Every org has exactly one HQ branch;
+#      "org-wide" positions like super_admin are simply members of HQ.
+#   3. Create the owner User with organization_id + branch_id=hq.id → flush.
+#   4. Patch org.owner_id = user.id → flush.
 #
-# This used to be copy-pasted per test file (test_organization.py,
-# test_user.py, test_wellbeings.py each had their own slightly different
-# version) which is exactly how test_wellbeings.py's setup_org() was left
-# behind when User.organization_id changed from nullable to NOT NULL.
-# Centralizing it here means a future constraint change only needs to be
-# fixed in one place.
-#
-# make_user() is exposed separately (not just as part of
-# make_org_with_owner) because tests frequently need additional,
-# non-owner members of an already-created org.
+# make_user() is exposed separately for tests that need additional,
+# non-owner members of an already-created org. Callers must supply
+# branch_id explicitly — there is no sensible default branch for a
+# generic member (any branch in the org is valid).
 
 # ── Role resolution ────────────────────────────────────────────────────────
 #
-# User.role_name (a free string) has been replaced by User.role_id, a FK
-# to roles.id (see Permission/Role model docstring). Role is no longer a
-# string on the user — it's a real row, and system roles in particular
-# are platform-seeded, read-only, and shared across all orgs
-# (is_system=True, organization_id=NULL, branch_id=NULL).
+# User.role_id is a FK to roles.id. System roles are platform-seeded,
+# read-only, and shared across all orgs (is_system=True,
+# organization_id=NULL, branch_id=NULL).
 #
 # The test DB has no seed data loaded, so get_or_create_system_role()
-# fetches a system Role by name if it already exists in this test's
-# session, or creates it on first use. This keeps test call-sites able to
-# say role_name="employee" (as before) while actually resolving a real
-# role_id underneath — tests don't need to know or care whether the role
+# fetches a system Role by name if it already exists in this session,
+# or creates it on first use. Tests don't need to know whether the role
 # row already existed.
 #
-# This only ever creates/reuses SYSTEM roles (org_id=NULL, branch_id=NULL).
-# Tests that specifically need an org-wide or branch-scoped custom Role
-# (the other two scope tiers) should construct that Role explicitly
-# rather than going through this helper.
+# This only ever creates/reuses SYSTEM roles. Tests that need a
+# branch-scoped custom Role should construct it explicitly.
 
 async def get_or_create_system_role(db_session: AsyncSession, name: str) -> Role:
     """Fetch a system Role by name, creating it if this test session
     hasn't needed it yet. System roles are org-agnostic
-    (organization_id=NULL, branch_id=NULL, is_system=True) and are
-    meant to be shared/reused, never duplicated per-test."""
+    (organization_id=NULL, branch_id=NULL, is_system=True)."""
     result = await db_session.execute(
         select(Role).where(
             Role.name == name,
@@ -135,23 +125,44 @@ async def get_or_create_system_role(db_session: AsyncSession, name: str) -> Role
     )
     role = result.scalar_one_or_none()
     if role is None:
-        role = Role(name=name, organization_id=None, branch_id=None, is_system=True)
+        role = Role(
+            name=name,
+            organization_id=None,
+            branch_id=None,
+            is_system=True,
+            # is_unique and unique_scope use model defaults (False / None).
+            # Tests that need specific uniqueness semantics should set them
+            # explicitly on the role after creation.
+        )
         db_session.add(role)
         await db_session.flush()
     return role
 
 
+def make_branch(organization_id: str, name: str = "Headquarters", **overrides) -> Branch:
+    """Build a Branch instance (not yet persisted) belonging to the given
+    organization. Defaults to name="Headquarters" — the auto-created branch
+    every org gets at signup. Pass a different name for additional branches."""
+    return Branch(organization_id=organization_id, name=name, **overrides)
+
+
 def make_user(organization_id: str, **overrides) -> User:
     """Build a User instance (not yet persisted) belonging to the given
-    organization. Use for any user other than an org's first/owner user
-    — for the owner, use make_org_with_owner() instead, since the owner
-    and the org must be created together to resolve the circular FK.
+    organization.
 
-    NOTE: this is a thin sync constructor — it does NOT resolve a role.
-    Callers that need a default role should use make_user_with_role()
-    below, which awaits get_or_create_system_role() first. make_user()
-    is kept available for callers that already have a role_id in hand
-    (e.g. via overrides) and don't need the lookup/creation step."""
+    branch_id is required (User.branch_id is NOT NULL). Callers must
+    always supply it via overrides — there is no sensible default.
+    Omitting it will produce a User with branch_id=None that fails at
+    flush time with IntegrityError, which is the correct outcome.
+
+    For the owner user of a new org, use make_org_with_owner() instead,
+    since owner + org + HQ branch must be created together to resolve
+    the circular FK.
+
+    For non-owner members, obtain the branch_id from the context:
+        org, owner = await make_org_with_owner(db_session, ...)
+        member = make_user(org.id, email="...", branch_id=owner.branch_id)
+    """
     defaults = dict(
         first_name="Ada",
         last_name="Lovelace",
@@ -168,14 +179,13 @@ async def make_user_with_role(
     role_name: str = "employee",
     **overrides,
 ) -> User:
-    """Like make_user(), but resolves role_name -> a real system Role's
+    """Like make_user(), but resolves role_name → a real system Role's
     id via get_or_create_system_role(), then sets role_id accordingly.
 
-    This is async (unlike make_user()) because resolving/creating the
-    Role row requires a DB round-trip. If overrides already includes an
-    explicit role_id, that takes precedence and role_name is ignored —
-    this lets tests pass a specific (e.g. org-scoped custom) Role
-    directly when the default system-role lookup isn't what they want.
+    branch_id must still be supplied via overrides.
+
+    If overrides already includes an explicit role_id, that takes
+    precedence and role_name is ignored.
     """
     if "role_id" not in overrides:
         role = await get_or_create_system_role(db_session, role_name)
@@ -189,36 +199,59 @@ async def make_org_with_owner(
     org_kwargs: dict | None = None,
     user_kwargs: dict | None = None,
 ) -> tuple[Organization, User]:
-    """Creates an Organization + its owner User, resolving the circular
-    FK the same way the real signup transaction does. Returns
-    (organization, owner_user).
+    """Creates an Organization + Headquarters Branch + owner User,
+    resolving the circular FK the same way the real signup transaction
+    does. Returns (organization, owner_user).
 
-    org_kwargs: overrides for Organization (business_name, slug, etc.)
+    The owner's branch_id is always set to the HQ branch. Tests that
+    need to create additional members of the same org can retrieve the
+    HQ branch id via owner.branch_id:
+
+        org, owner = await make_org_with_owner(db_session)
+        member = make_user(org.id, email="...", branch_id=owner.branch_id)
+
+    org_kwargs:  overrides for Organization (business_name, slug, etc.)
     user_kwargs: overrides for the owner User (email, role_name, etc.)
-        role_name here is resolved to a system Role's id via
-        make_user_with_role() — pass role_id directly instead if the
-        owner needs a non-system (org/branch-scoped) Role.
+        role_name is resolved to a system Role's id via
+        make_user_with_role(). Pass role_id directly if the owner needs
+        a non-system Role.
     """
     org_kwargs = dict(org_kwargs or {})
     user_kwargs = dict(user_kwargs or {})
 
+    # ── Step 1: org (owner_id deferred) ──────────────────────────────────────
     org_defaults = dict(business_name="Acme Corp", slug="acme-corp")
     org = Organization(owner_id=None, **{**org_defaults, **org_kwargs})
     db_session.add(org)
-    await db_session.flush()  # org.id now exists; owner_id still None
+    await db_session.flush()  # org.id available; owner_id still None
 
+    # ── Step 2: HQ branch ─────────────────────────────────────────────────────
+    # Every org gets exactly one Headquarters branch at creation. There is no
+    # "org-wide / no branch" state for users — org-level roles like super_admin
+    # simply live in HQ.
+    hq_branch = make_branch(organization_id=org.id, name="Headquarters")
+    db_session.add(hq_branch)
+    await db_session.flush()  # hq_branch.id available
+
+    # ── Step 3: owner user ─────────────────────────────────────────────────────
     owner_defaults = dict(role_name="overall_manager", email="owner@example.com")
-    owner_kwargs = {**owner_defaults, **user_kwargs}
-    role_name = owner_kwargs.pop("role_name", "overall_manager")
+    merged = {**owner_defaults, **user_kwargs}
+    role_name = merged.pop("role_name", "overall_manager")
+
+    # branch_id defaults to HQ; tests may override by passing branch_id in
+    # user_kwargs (e.g. to assign the owner to a different pre-existing branch).
+    kwargs = {"branch_id": hq_branch.id, **merged}
+
     owner = await make_user_with_role(
         db_session,
         organization_id=org.id,
         role_name=role_name,
-        **owner_kwargs,
+        **kwargs,
     )
     db_session.add(owner)
     await db_session.flush()
 
+    # ── Step 4: patch circular FK ─────────────────────────────────────────────
     org.owner_id = owner.id
     await db_session.flush()
 

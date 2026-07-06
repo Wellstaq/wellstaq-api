@@ -266,7 +266,7 @@ async def require_scoped_permission(
         return
 
     query = (
-        select(UserPermission)
+        select(UserPermission.id)          # only need existence, not the row
         .join(Permission, Permission.id == UserPermission.permission_id)
         .where(
             UserPermission.user_id == current_user.user_id,
@@ -276,7 +276,6 @@ async def require_scoped_permission(
     )
 
     if target_branch_id is not None:
-        # Branch-level action: org-wide grant OR grant scoped to this branch.
         query = query.where(
             or_(
                 UserPermission.branch_id.is_(None),
@@ -284,8 +283,9 @@ async def require_scoped_permission(
             )
         )
     else:
-        # Org-level action: only an org-wide grant qualifies.
         query = query.where(UserPermission.branch_id.is_(None))
+
+    query = query.limit(1)  # ← only ever need to know "at least one exists"
 
     result = await db.execute(query)
     if result.scalar_one_or_none() is None:
@@ -298,7 +298,6 @@ async def require_scoped_permission(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Missing required permission: '{permission}' {scope_detail}.",
         )
-
 
 def require_same_organization(
     target_organization_id: str,

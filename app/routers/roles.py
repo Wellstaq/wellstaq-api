@@ -52,6 +52,8 @@ class PermissionItem(BaseModel):
 class SystemRolesResponse(BaseModel):
     items: list[RoleItem]
     total: int
+    model_config = {"from_attributes": True}
+
 
 
 class PermissionsResponse(BaseModel):
@@ -79,7 +81,7 @@ async def list_system_roles(
             .order_by(Role.name)
         )
         roles = result.scalars().all()
-
+        print(f"roles are here with me  { ([r.is_system for r in roles])}")
         items = [
             RoleItem(
                 id=str(r.id),

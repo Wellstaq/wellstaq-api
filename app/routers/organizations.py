@@ -7,6 +7,17 @@ Routes:
   POST  /organizations/{org_id}/invites                       — send an invite
   GET   /organizations/{org_id}/invites                       — list invites
   POST  /organizations/{org_id}/invites/{invite_code}/accept  — accept an invite (no auth)
+  GET   /organizations/{org_id}/members                       — list all org members
+  GET   /organizations/{org_id}/clubs                         — list all org clubs
+
+Note on branches/departments:
+  There is intentionally NO GET /organizations/{org_id}/branches or
+  GET /organizations/{org_id}/departments here — those already exist in
+  app/routers/branches.py and app/routers/departments.py respectively.
+  Adding them again in this file would register two routers against the
+  same path template, which is ambiguous and risks two different
+  permission checks silently guarding what looks like "one" endpoint.
+  Use the existing endpoints for those two resources.
 """
 
 from __future__ import annotations
@@ -20,8 +31,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
     CurrentUser,
+    get_current_user,
     require_permission,
     require_same_organization,
+    require_scoped_permission,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -29,11 +42,17 @@ from app.models import OrganizationInvite
 from app.schemas.organization import (
     InviteItem,
     InviteListResponse,
+    OrganizationClubInfo,
+    OrganizationClubsListResponse,
+    OrganizationMemberInfo,
+    OrganizationMembersListResponse,
     SendInviteRequest,
     SendInviteResponse,
 )
-from app.services.organization.invite_service import (
-    send_invite,
+from app.services.organization.invite_service import send_invite
+from app.services.organization.org_directory import (
+    get_organization_clubs,
+    get_organization_members,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +73,7 @@ router = APIRouter(
     description=(
         "Invite a new user to join the organization. "
         "The invitee receives an email with a secure invite link valid for 7 days. "
-        "Requires `member.invite` permission."
+        "Requires `member.invite` permission either on org scope or branch scope."
     ),
 )
 async def send_invite_route(
@@ -66,6 +85,13 @@ async def send_invite_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/invites"):
+        
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.invite",
+            target_branch_id=body.branch_id,
+        )
         invite = await send_invite(
             db,
             org_id=org_id,
@@ -160,3 +186,70 @@ async def list_invites_route(
             limit=limit,
         )
 
+
+# ── Members ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/members",
+    response_model=OrganizationMembersListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List all members of the organization",
+    description=(
+        "Returns every user belonging to the organization, across all "
+        "branches and departments. Accessible to any authenticated "
+        "member of the organization."
+    ),
+)
+async def list_organization_members_route(
+    org_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OrganizationMembersListResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/members"):
+        members, total = await get_organization_members(
+            session=db, organization_id=org_id, offset=offset, limit=limit,
+        )
+        return OrganizationMembersListResponse(
+            items=[OrganizationMemberInfo.model_validate(m) for m in members],
+            total=total,
+            offset=offset,
+            limit=limit,
+        )
+
+
+# ── Clubs ────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/clubs",
+    response_model=OrganizationClubsListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List all clubs in the organization",
+    description=(
+        "Returns every club belonging to the organization, across all "
+        "branches. Accessible to any authenticated member of the "
+        "organization."
+    ),
+)
+async def list_organization_clubs_route(
+    org_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OrganizationClubsListResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/clubs"):
+        clubs, total = await get_organization_clubs(
+            session=db, organization_id=org_id, offset=offset, limit=limit,
+        )
+        return OrganizationClubsListResponse(
+            items=[OrganizationClubInfo.model_validate(c) for c in clubs],
+            total=total,
+            offset=offset,
+            limit=limit,
+        )

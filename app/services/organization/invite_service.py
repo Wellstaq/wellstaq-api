@@ -3,29 +3,65 @@ app/services/organization/invite_service.py
 
 Organization invite management.
 
-Responsibilities:
-  - Validate the inviter has authority to invite to the target branch/org
-  - Validate the invited email is not already a member
-  - Validate the department and role belong to the org
-  - Generate a secure invite code
-  - Create the OrganizationInvite row
-  - Send the invite email
-
-Services never commit — the router owns the transaction boundary.
-
 Invite flow (send side):
   POST /organizations/{org_id}/invites
     → send_invite()
       1. Org active check
       2. Email not already registered check
       3. Duplicate pending invite check
-      4. Department belongs to org check
-      5. Role belongs to org (or is system role) check
-      6. Branch belongs to org check (if branch_id provided)
-      7. Scope guard — inviter can only invite into their own branch
-         unless they hold member.invite org-wide
-      8. Create OrganizationInvite row
-      9. Send invite email
+      4. Resolve inviter's member.invite permission scope (org-wide vs branch-scoped)
+      5. Branch must exist and belong to this org
+      6. Department belongs to org AND to the target branch
+      7. Role validity: system role, OR custom role owned by this exact branch
+      7a. Privilege escalation gate — only super_admin/admin may invite
+          someone into the admin or branch_manager role; super_admin
+          itself can never be assigned via invite.
+      8. Unique role check — against UserRoleAssignment, not User columns
+      9. Scope gate — branch-scoped inviters can only invite to permitted branches
+      10. Create OrganizationInvite row
+      11. Send invite email
+
+REVISED for the branch/role redesign:
+  - There is no more "org-wide department" (Department.branch_id is now
+    NOT NULL) — every department belongs to exactly one branch, so the
+    department must simply match the invite's target branch_id.
+  - Custom roles are now ALWAYS branch-owned (Role.branch_id is NOT
+    NULL for any non-system role) and are isolated to that branch.
+  - unique_scope='org' is REMOVED — Role.unique_scope only accepts
+    'branch'/'department' now.
+  - Unique role conflicts are checked against UserRoleAssignment, not
+    User.role_id/branch_id/department_id.
+  - Guard ordering: branch existence (Guard 5) runs before department
+    and role checks since both compare against branch_id.
+
+Permission model for member.invite:
+  - A user can hold member.invite for multiple branches simultaneously —
+    one UserPermission row per branch.
+  - An org-wide grant (branch_id=NULL) supersedes all branch-level
+    grants and allows inviting to any branch. When an org-wide grant is
+    assigned the system removes all branch-level grants for the same
+    permission automatically (enforced at assignment time, not here).
+  - Guard 4 fetches ALL grants for this permission (no .limit(1)) and
+    resolves them into either: org-wide (can invite anywhere), or a set
+    of permitted branch IDs. Guard 9 then checks membership in that set.
+
+Privilege escalation (Guard 7a):
+  - member.invite lets a user invite people into their branch(es), but
+    it must not let them hand out roles more powerful than (or equal
+    to) the roles that actually govern a branch/org.
+  - "admin" and "branch_manager" may ONLY be assigned by an inviter who
+    is themselves super_admin or admin. A branch_manager (or anyone
+    else) holding member.invite for their branch cannot invite a peer
+    or superior into those roles.
+  - "super_admin" can NEVER be assigned through the invite flow at all,
+    regardless of who sends it — it is reserved for org creation /
+    explicit platform-level promotion outside this path.
+  - This assumes RoleName.ADMIN / RoleName.BRANCH_MANAGER /
+    RoleName.SUPER_ADMIN correspond 1:1 with Role.name for system
+    roles, and that custom (branch-owned) roles never reuse those
+    reserved names. If custom roles can be named "admin" etc., this
+    check should key off role.is_system + role.name instead, or a
+    dedicated role level/rank field.
 """
 
 from __future__ import annotations
@@ -39,22 +75,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import InviteStatus, RoleName
-from app.models import Organization, OrganizationInvite, Role, User
+from app.models import Organization, OrganizationInvite, Permission, Role, User, UserPermission
+from app.models.branch import Branch
 from app.models.department import Department
+from app.models.permission import UserRoleAssignment
 from app.services.errors import AuthError
 
 logger = logging.getLogger(__name__)
 
-# How long an invite link stays valid
 INVITE_TTL_DAYS = 7
+
+# Roles that only a super_admin or admin inviter may hand out. Anyone
+# holding a branch-scoped member.invite grant (even a branch_manager)
+# is blocked from inviting someone into these roles.
+ESCALATION_RESTRICTED_ROLES = {RoleName.ADMIN, RoleName.BRANCH_MANAGER}
 
 
 def _generate_invite_code() -> str:
-    """
-    Cryptographically secure URL-safe invite code.
-    32 bytes → 64 hex chars — vanishingly unlikely to collide.
-    """
     return secrets.token_urlsafe(32)
+
 
 async def send_invite(
     session: AsyncSession,
@@ -67,30 +106,18 @@ async def send_invite(
     invited_email: str,
     invited_department_id: str,
     invited_role_id: str,
-    branch_id: str,  # ── now required, not Optional ────────────────────────────
+    branch_id: str,
 ) -> OrganizationInvite:
     """
     Create and send an organization invite.
 
-    Parameters
-    ──────────
-    org_id                  — the organization the invite belongs to
-    invited_by_user_id      — current_user.user_id
-    invited_by_role         — current_user.role (for scope checks)
-    invited_by_branch_id    — current_user.branch_id (for scope checks)
-    invited_by_permissions  — current_user.permissions (for scope checks)
-    invited_email           — recipient email (lowercased + stripped here)
-    invited_department_id   — department the invitee will join
-    invited_role_id         — role the invitee will receive on joining
-    branch_id               — REQUIRED. Every invite must assign the invitee
-                               to a branch — there is no org-level-only invite.
-
-    Returns the created OrganizationInvite (unflushed — caller flushes).
-
+    Returns the created OrganizationInvite (flushed — caller commits).
     Raises AuthError on any validation failure.
     """
     email = invited_email.lower().strip()
     now = datetime.now(timezone.utc)
+    is_super_admin = invited_by_role == RoleName.SUPER_ADMIN
+    is_admin = invited_by_role == RoleName.ADMIN
 
     # ── Guard 1: org must exist and be active ──────────────────────────────────
     org_result = await session.execute(
@@ -130,36 +157,53 @@ async def send_invite(
             status.HTTP_409_CONFLICT,
         )
 
-    # ── Guard 4: department must exist and belong to this org ──────────────────
-    dept_result = await session.execute(
-        select(Department).where(
-            Department.id == invited_department_id,
-            Department.organization_id == org_id,
-        )
-    )
-    department = dept_result.scalar_one_or_none()
-    if department is None:
-        raise AuthError(
-            "Department not found or does not belong to this organization.",
-            status.HTTP_404_NOT_FOUND,
-        )
+    # ── Guard 4: resolve inviter's member.invite permission scope ──────────────
+    #
+    # A user may hold member.invite for multiple branches simultaneously —
+    # one UserPermission row per branch. We fetch ALL rows (no .limit(1))
+    # and resolve them as follows:
+    #
+    #   • Any row with branch_id=NULL → org-wide grant → can invite to any
+    #     branch. invite_is_org_wide=True, permitted_branch_ids unused.
+    #
+    #   • All rows branch-scoped → collect branch IDs into a set.
+    #     Guard 9 checks that the target branch_id is in this set.
+    #
+    # The previous .limit(1) bug: if a user had grants for Branch A and
+    # Branch B, the query returned whichever came first. Guard 9 then
+    # blocked the user from inviting to the other branch even though they
+    # had a legitimate grant for it.
+    invite_is_org_wide: bool = False
+    permitted_branch_ids: set[str] = set()
 
-    # ── Guard 5: role must be a system role or belong to this org ─────────────
-    role_result = await session.execute(
-        select(Role).where(Role.id == invited_role_id)
-    )
-    role = role_result.scalar_one_or_none()
-    if role is None:
-        raise AuthError("Role not found.", status.HTTP_404_NOT_FOUND)
-
-    if not role.is_system and role.organization_id != org_id:
-        raise AuthError(
-            "Role does not belong to this organization.",
-            status.HTTP_400_BAD_REQUEST,
+    if not is_super_admin:
+        grant_result = await session.execute(
+            select(UserPermission)
+            .join(Permission, UserPermission.permission_id == Permission.id)
+            .where(
+                UserPermission.user_id == invited_by_user_id,
+                UserPermission.organization_id == org_id,
+                Permission.name == "member.invite",
+            )
         )
+        grants = grant_result.scalars().all()
 
-    # ── Guard 6: branch must exist and belong to this org ──────────────────────
-    from app.models.branch import Branch  # local import avoids circular
+        if not grants:
+            raise AuthError(
+                "You do not have permission to send invites.",
+                status.HTTP_403_FORBIDDEN,
+            )
+
+        # Org-wide grant (branch_id=NULL) supersedes all branch-level grants.
+        if any(g.branch_id is None for g in grants):
+            invite_is_org_wide = True
+        else:
+            permitted_branch_ids = {g.branch_id for g in grants}
+
+    # ── Guard 5: branch must exist and belong to this org ─────────────────────
+    # Validated before Guards 6 and 7 because both compare against
+    # branch_id — an invalid branch_id would otherwise produce misleading
+    # "belongs to a different branch" errors instead of a clean 404.
     branch_result = await session.execute(
         select(Branch).where(
             Branch.id == branch_id,
@@ -172,28 +216,151 @@ async def send_invite(
             status.HTTP_404_NOT_FOUND,
         )
 
-    # If the role is branch-scoped, it must match the invite's branch.
-    if role.branch_id is not None and role.branch_id != branch_id:
+    # ── Guard 6: department must exist, belong to org, AND match target branch ─
+    # Department.branch_id is NOT NULL — every department belongs to exactly
+    # one branch. It must be the same branch this invite targets.
+    dept_result = await session.execute(
+        select(Department).where(
+            Department.id == invited_department_id,
+            Department.organization_id == org_id,
+        )
+    )
+    department = dept_result.scalar_one_or_none()
+
+    if department is None:
         raise AuthError(
-            "The assigned role is scoped to a different branch.",
+            "Department not found or does not belong to this organization.",
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    if department.branch_id != branch_id:
+        raise AuthError(
+            "The assigned department belongs to a different branch than "
+            "this invite targets.",
             status.HTTP_400_BAD_REQUEST,
         )
 
-    # ── Guard 7: scope check — inviter can only invite into their own branch ───
-    # super_admin bypasses this — they can invite into any branch.
-    # Everyone else must either hold member.invite org-wide, or be a
-    # member of the target branch themselves.
-    if invited_by_role != RoleName.SUPER_ADMIN:
-        has_org_wide_invite = "member.invite" in invited_by_permissions
-        if not has_org_wide_invite and invited_by_branch_id != branch_id:
+    # ── Guard 7: role validity + branch isolation ───────────────────────────────
+    role_result = await session.execute(
+        select(Role).where(Role.id == invited_role_id)
+    )
+    role = role_result.scalar_one_or_none()
+    if role is None:
+        raise AuthError("Role not found.", status.HTTP_404_NOT_FOUND)
+
+    if role.is_system:
+        # System roles are platform-shared — usable by any branch/org,
+        # never branch-owned.
+        pass
+    else:
+        if role.organization_id != org_id:
             raise AuthError(
-                "You can only invite users into your own branch.",
+                "Role does not belong to this organization.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        # Custom roles are ALWAYS branch-owned and isolated to that branch.
+        # Every custom role has a branch_id — there is no org-wide custom tier.
+        if role.branch_id != branch_id:
+            raise AuthError(
+                f'The role "{role.name}" belongs to a different branch and '
+                "cannot be used for this invite. Branches cannot share "
+                "custom roles — create an equivalent role in this branch "
+                "if needed.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+    # ── Guard 7a: privilege escalation gate ─────────────────────────────────────
+    #
+    # super_admin can never be assigned via invite, regardless of who is
+    # sending it — reserved for org creation / explicit platform-level
+    # promotion.
+    #
+    # admin and branch_manager can only be granted by an inviter who is
+    # themselves super_admin or admin. A branch-scoped inviter (e.g. a
+    # branch_manager with member.invite for their own branch) cannot use
+    # that grant to create a peer or superior role.
+    if role.name == RoleName.SUPER_ADMIN:
+        raise AuthError(
+            'The "super_admin" role cannot be assigned through an invite.',
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    if role.name in ESCALATION_RESTRICTED_ROLES and not (is_super_admin or is_admin):
+        raise AuthError(
+            f'Only super admins or admins can invite users as "{role.name}".',
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── Guard 8: unique role check — against UserRoleAssignment ────────────────
+    #
+    # unique_scope='branch':
+    #   One active holder per branch. Conflict: any UserRoleAssignment
+    #   for this role scoped to the TARGET BRANCH.
+    #
+    # unique_scope='department':
+    #   One active holder per department. Conflict: any UserRoleAssignment
+    #   for this role scoped to the TARGET DEPARTMENT.
+    #
+    # There is no 'org' scope — see module docstring.
+    if role.is_unique:
+        if role.unique_scope == "branch":
+            conflict = await session.execute(
+                select(UserRoleAssignment.id).where(
+                    UserRoleAssignment.role_id == invited_role_id,
+                    UserRoleAssignment.branch_id == branch_id,
+                )
+            )
+            if conflict.scalar_one_or_none() is not None:
+                raise AuthError(
+                    f'The role "{role.name}" is already held by someone in '
+                    "this branch.",
+                    status.HTTP_409_CONFLICT,
+                )
+
+        elif role.unique_scope == "department":
+            conflict = await session.execute(
+                select(UserRoleAssignment.id).where(
+                    UserRoleAssignment.role_id == invited_role_id,
+                    UserRoleAssignment.department_id == invited_department_id,
+                )
+            )
+            if conflict.scalar_one_or_none() is not None:
+                raise AuthError(
+                    f'The role "{role.name}" is already held by someone in '
+                    "this department.",
+                    status.HTTP_409_CONFLICT,
+                )
+
+        else:
+            # Data integrity error — the DB CheckConstraint should prevent
+            # unique_scope from being anything other than 'branch' or
+            # 'department' when is_unique=True.
+            raise AuthError(
+                f'Role "{role.name}" is marked unique but has an '
+                f'unrecognized unique_scope "{role.unique_scope}". '
+                "Contact your platform administrator.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # ── Guard 9: scope gate ───────────────────────────────────────────────────
+    #
+    # super_admin bypasses entirely.
+    # org-wide grant (invite_is_org_wide=True) bypasses entirely.
+    # branch-scoped: target branch_id must be in the set of branches
+    #   the inviter holds member.invite for. This correctly handles
+    #   users with grants for multiple branches — any permitted branch
+    #   is valid, not just the first one returned by a query.
+    if not is_super_admin and not invite_is_org_wide:
+        if branch_id not in permitted_branch_ids:
+            raise AuthError(
+                "Your invite permission does not cover this branch. "
+                "You can only invite users into branches you are authorised to manage.",
                 status.HTTP_403_FORBIDDEN,
             )
 
     # ── Create invite ──────────────────────────────────────────────────────────
     invite_code = _generate_invite_code()
-    print(f"The virtues of life if I have the choice of life  I should be able to feel everyday with pleasure {invite_code}")
+
     invite = OrganizationInvite(
         organization_id=org_id,
         branch_id=branch_id,
@@ -201,12 +368,12 @@ async def send_invite(
         invited_role_id=invited_role_id,
         invited_by=invited_by_user_id,
         invite_code=invite_code,
-        invited_email=email,          # already lowercased + stripped above
+        invited_email=email,
         status=InviteStatus.PENDING,
         expires_at=now + timedelta(days=INVITE_TTL_DAYS),
     )
     session.add(invite)
-    await session.flush()  # get invite.id before sending email
+    await session.flush()
 
     # ── Send invite email ──────────────────────────────────────────────────────
     await _send_invite_email(
@@ -245,15 +412,9 @@ async def _send_invite_email(
 ) -> None:
     """
     Send the invite email via SendGrid.
-    The invite link embeds the invite_code — the frontend uses it to
-    call POST /auth/invite/verify-otp and then POST /auth/invite/accept.
-
     Raises AuthError on delivery failure so the caller can rollback —
     an undelivered invite should leave no DB trace.
     """
-
-    #TODO
-    # Frontend invite acceptance URL — update to match your actual domain
     invite_url = f"https://app.wellstaq.com/invite?code={invite_code}"
 
     html_body = f"""
@@ -267,6 +428,7 @@ async def _send_invite_email(
         <p style="color:#555;">
           Click the button below to accept your invite and set up your account.
           This link expires in <strong>{expires_days} days</strong>.
+          Or copy this link to your browser: <strong>{invite_url}</strong>
         </p>
         <a href="{invite_url}" style="
           display:inline-block;padding:12px 28px;

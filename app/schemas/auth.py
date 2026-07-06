@@ -186,14 +186,14 @@ class UserMeResponse(BaseModel):
     email: str
     first_name: str
     last_name: str
-    role: str | None            # None when no role has been assigned
+    role: str | None
     organization_id: str
     branch_id: str | None
+    department_id: str | None   # None for super_admin, None if not in a department
     permissions: list[str]
-    avatar_url: str | None      # set for OAuth users with a profile photo
-    two_fa_enabled: bool        # mirrors UserSettings.two_fa_enabled
-    two_fa_method: str | None   # "totp" | "sms" | "email" | None
-
+    avatar_url: str | None
+    two_fa_enabled: bool
+    two_fa_method: str | None
 
 
 

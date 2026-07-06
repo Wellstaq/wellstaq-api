@@ -4,14 +4,11 @@ Post / PostHashtag / PostLike / PostComment / PostShare / PostSave model tests.
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
 
-Factory note:
-make_user() and make_org_with_owner() now live in conftest.py — shared
-across every test file that needs a User/Organization, since
-User.organization_id is NOT NULL and Organization.owner_id requires a
-User to exist first (circular FK). See conftest.py docstring for the
-exact resolution sequence. Only Post/PostHashtag/PostLike/PostComment/
-PostShare/PostSave factories, which are specific to this file, stay
-local.
+Key fix vs prior version:
+  User.branch_id is NOT NULL — setup_user() now requires branch_id and
+  every call site passes owner.branch_id (the HQ branch auto-created by
+  make_org_with_owner). make_club() also accepts branch_id for the same
+  reason if Club.branch_id is required in your schema.
 """
 
 import pytest
@@ -31,15 +28,11 @@ from app.models import (
 )
 from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
-# ── Factories ──────────────────────────────────────────────────────────────────
-#
-# Org + owner creation is handled by conftest.make_org_with_owner(),
-# which resolves the circular owner_id/organization_id FK the same way
-# the real signup transaction does. Only the Post-domain factories
-# below are specific to this file.
 
-def make_club(organization_id: str, **overrides) -> Club:
-    defaults = dict(name="Running Club", organization_id=organization_id)
+# ── Factories ──────────────────────────────────────────────────────────────────
+
+def make_club(organization_id: str, branch_id: str, **overrides) -> Club:
+    defaults = dict(name="Running Club", organization_id=organization_id, branch_id=branch_id)
     return Club(**{**defaults, **overrides})
 
 
@@ -109,10 +102,11 @@ def make_post_save(organization_id: str, post_id: str, user_id: str, **overrides
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-async def setup_org(db_session: AsyncSession, email: str = "owner@example.com", slug: str = "acme-corp"):
-    """Thin wrapper over conftest.make_org_with_owner so existing
-    call sites in this file (owner, org = await setup_org(...)) don't
-    all need rewriting — just delegates to the shared factory."""
+async def setup_org(
+    db_session: AsyncSession,
+    email: str = "owner@example.com",
+    slug: str = "acme-corp",
+):
     org, owner = await make_org_with_owner(
         db_session,
         org_kwargs=dict(slug=slug),
@@ -121,25 +115,42 @@ async def setup_org(db_session: AsyncSession, email: str = "owner@example.com", 
     return owner, org
 
 
-async def setup_post(db_session: AsyncSession, user_id: str, org_id: str, **overrides) -> Post:
+async def setup_post(
+    db_session: AsyncSession,
+    user_id: str,
+    org_id: str,
+    **overrides,
+) -> Post:
     post = make_post(user_id, org_id, **overrides)
     db_session.add(post)
     await db_session.flush()
     return post
 
 
-async def setup_user(db_session: AsyncSession, organization_id: str, **overrides):
+async def setup_user(
+    db_session: AsyncSession,
+    organization_id: str,
+    branch_id: str,
+    **overrides,
+):
+    """
+    branch_id is required — User.branch_id is NOT NULL.
+    Pass owner.branch_id (the HQ branch) at every call site unless the
+    test is specifically about branch assignment.
+    """
     overrides.setdefault("email", "member@example.com")
-    role_name = overrides.pop("role_name", "employee")  # extract before passing to make_user
+    role_name = overrides.pop("role_name", "employee")
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,
         role_name=role_name,
+        branch_id=branch_id,
         **overrides,
     )
     db_session.add(user)
     await db_session.flush()
     return user
+
 
 # ── Post model ────────────────────────────────────────────────────────────────
 
@@ -178,7 +189,7 @@ async def test_post_counters_default_to_zero(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_post_can_belong_to_club(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
-    club = make_club(org.id)
+    club = make_club(org.id, owner.branch_id)
     db_session.add(club)
     await db_session.flush()
 
@@ -233,8 +244,6 @@ async def test_post_can_have_multiple_hashtags(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_hashtag_organization_id_must_be_set(db_session: AsyncSession):
-    """organization_id is required — must be copied from the parent Post
-    at insert time, never independently chosen."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
 
@@ -254,7 +263,7 @@ async def test_post_hashtag_organization_id_must_be_set(db_session: AsyncSession
 async def test_post_like_persists(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    liker = await setup_user(db_session, org.id, email="liker@example.com")
+    liker = await setup_user(db_session, org.id, owner.branch_id, email="liker@example.com")
 
     like = make_post_like(org.id, post.id, liker.id)
     db_session.add(like)
@@ -269,12 +278,9 @@ async def test_post_like_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_like_duplicate_raises(db_session: AsyncSession):
-    """A user can only like a given post once — toggle semantics:
-    liking inserts, unliking deletes, re-liking while already liked is
-    a duplicate and must raise rather than silently succeed twice."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    liker = await setup_user(db_session, org.id, email="liker@example.com")
+    liker = await setup_user(db_session, org.id, owner.branch_id, email="liker@example.com")
 
     db_session.add(make_post_like(org.id, post.id, liker.id))
     await db_session.flush()
@@ -286,11 +292,10 @@ async def test_post_like_duplicate_raises(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_like_same_user_different_posts(db_session: AsyncSession):
-    """A user can like multiple different posts."""
     owner, org = await setup_org(db_session)
     post_a = await setup_post(db_session, owner.id, org.id, content="Post A")
     post_b = await setup_post(db_session, owner.id, org.id, content="Post B")
-    liker = await setup_user(db_session, org.id, email="liker@example.com")
+    liker = await setup_user(db_session, org.id, owner.branch_id, email="liker@example.com")
 
     db_session.add(make_post_like(org.id, post_a.id, liker.id))
     db_session.add(make_post_like(org.id, post_b.id, liker.id))
@@ -304,12 +309,9 @@ async def test_post_like_same_user_different_posts(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_like_unlike_then_relike(db_session: AsyncSession):
-    """Toggle off (delete) then toggle on again (insert) must work —
-    the unique constraint only blocks two simultaneous rows, not
-    sequential like -> unlike -> like."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    liker = await setup_user(db_session, org.id, email="liker@example.com")
+    liker = await setup_user(db_session, org.id, owner.branch_id, email="liker@example.com")
 
     like = make_post_like(org.id, post.id, liker.id)
     db_session.add(like)
@@ -329,10 +331,11 @@ async def test_post_like_unlike_then_relike(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_like_organization_id_must_be_set(db_session: AsyncSession):
-    """organization_id is required on PostLike — not nullable."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    liker = await setup_user(db_session, org.id, email="liker_required@example.com")
+    liker = await setup_user(
+        db_session, org.id, owner.branch_id, email="liker_required@example.com"
+    )
 
     like = PostLike(post_id=post.id, user_id=liker.id)
     db_session.add(like)
@@ -346,7 +349,9 @@ async def test_post_like_organization_id_must_be_set(db_session: AsyncSession):
 async def test_post_comment_persists(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    commenter = await setup_user(db_session, org.id, email="commenter@example.com")
+    commenter = await setup_user(
+        db_session, org.id, owner.branch_id, email="commenter@example.com"
+    )
 
     comment = make_post_comment(org.id, post.id, commenter.id)
     db_session.add(comment)
@@ -365,14 +370,18 @@ async def test_post_comment_persists(db_session: AsyncSession):
 async def test_post_comment_reply_links_to_parent(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    commenter = await setup_user(db_session, org.id, email="commenter@example.com")
+    commenter = await setup_user(
+        db_session, org.id, owner.branch_id, email="commenter@example.com"
+    )
 
     top_level = make_post_comment(org.id, post.id, commenter.id, content="First!")
     db_session.add(top_level)
     await db_session.flush()
 
     reply = make_post_comment(
-        org.id, post.id, commenter.id, content="Totally agree", parent_comment_id=top_level.id
+        org.id, post.id, commenter.id,
+        content="Totally agree",
+        parent_comment_id=top_level.id,
     )
     db_session.add(reply)
     await db_session.flush()
@@ -382,10 +391,11 @@ async def test_post_comment_reply_links_to_parent(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_comment_organization_id_must_be_set(db_session: AsyncSession):
-    """organization_id is required on PostComment — not nullable."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    commenter = await setup_user(db_session, org.id, email="commenter_required@example.com")
+    commenter = await setup_user(
+        db_session, org.id, owner.branch_id, email="commenter_required@example.com"
+    )
 
     comment = PostComment(post_id=post.id, user_id=commenter.id, content="Missing org")
     db_session.add(comment)
@@ -399,7 +409,7 @@ async def test_post_comment_organization_id_must_be_set(db_session: AsyncSession
 async def test_post_share_persists(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    sharer = await setup_user(db_session, org.id, email="sharer@example.com")
+    sharer = await setup_user(db_session, org.id, owner.branch_id, email="sharer@example.com")
 
     share = make_post_share(org.id, post.id, sharer.id)
     db_session.add(share)
@@ -414,12 +424,11 @@ async def test_post_share_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_share_same_user_can_share_repeatedly(db_session: AsyncSession):
-    """Sharing is a repeatable event, not a toggle — unlike PostLike/
-    PostSave, a user CAN share the same post more than once. No unique
-    constraint on (post_id, user_id)."""
+    """Sharing is a repeatable event — unlike PostLike/PostSave, no
+    unique constraint on (post_id, user_id)."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    sharer = await setup_user(db_session, org.id, email="sharer@example.com")
+    sharer = await setup_user(db_session, org.id, owner.branch_id, email="sharer@example.com")
 
     db_session.add(make_post_share(org.id, post.id, sharer.id))
     db_session.add(make_post_share(org.id, post.id, sharer.id))
@@ -433,11 +442,10 @@ async def test_post_share_same_user_can_share_repeatedly(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_post_share_same_user_different_posts(db_session: AsyncSession):
-    """A user can share multiple different posts."""
     owner, org = await setup_org(db_session)
     post_a = await setup_post(db_session, owner.id, org.id, content="Post A")
     post_b = await setup_post(db_session, owner.id, org.id, content="Post B")
-    sharer = await setup_user(db_session, org.id, email="sharer@example.com")
+    sharer = await setup_user(db_session, org.id, owner.branch_id, email="sharer@example.com")
 
     db_session.add(make_post_share(org.id, post_a.id, sharer.id))
     db_session.add(make_post_share(org.id, post_b.id, sharer.id))
@@ -449,13 +457,13 @@ async def test_post_share_same_user_different_posts(db_session: AsyncSession):
     assert len(result.scalars().all()) == 2
 
 
-
 @pytest.mark.asyncio
 async def test_post_share_organization_id_must_be_set(db_session: AsyncSession):
-    """organization_id is required on PostShare — not nullable."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    sharer = await setup_user(db_session, org.id, email="sharer_required@example.com")
+    sharer = await setup_user(
+        db_session, org.id, owner.branch_id, email="sharer_required@example.com"
+    )
 
     share = PostShare(post_id=post.id, user_id=sharer.id)
     db_session.add(share)
@@ -469,7 +477,7 @@ async def test_post_share_organization_id_must_be_set(db_session: AsyncSession):
 async def test_post_save_persists(db_session: AsyncSession):
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    saver = await setup_user(db_session, org.id, email="saver@example.com")
+    saver = await setup_user(db_session, org.id, owner.branch_id, email="saver@example.com")
 
     save = make_post_save(org.id, post.id, saver.id)
     db_session.add(save)
@@ -484,11 +492,9 @@ async def test_post_save_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_save_duplicate_raises(db_session: AsyncSession):
-    """Saving is a toggle, same as liking — a user can only save a
-    given post once. Re-saving while already saved must raise."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    saver = await setup_user(db_session, org.id, email="saver@example.com")
+    saver = await setup_user(db_session, org.id, owner.branch_id, email="saver@example.com")
 
     db_session.add(make_post_save(org.id, post.id, saver.id))
     await db_session.flush()
@@ -500,11 +506,10 @@ async def test_post_save_duplicate_raises(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_save_same_user_different_posts(db_session: AsyncSession):
-    """A user can save multiple different posts."""
     owner, org = await setup_org(db_session)
     post_a = await setup_post(db_session, owner.id, org.id, content="Post A")
     post_b = await setup_post(db_session, owner.id, org.id, content="Post B")
-    saver = await setup_user(db_session, org.id, email="saver@example.com")
+    saver = await setup_user(db_session, org.id, owner.branch_id, email="saver@example.com")
 
     db_session.add(make_post_save(org.id, post_a.id, saver.id))
     db_session.add(make_post_save(org.id, post_b.id, saver.id))
@@ -518,10 +523,9 @@ async def test_post_save_same_user_different_posts(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_save_unsave_then_resave(db_session: AsyncSession):
-    """Toggle off (delete) then toggle on again (insert) must work."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    saver = await setup_user(db_session, org.id, email="saver@example.com")
+    saver = await setup_user(db_session, org.id, owner.branch_id, email="saver@example.com")
 
     save = make_post_save(org.id, post.id, saver.id)
     db_session.add(save)
@@ -541,10 +545,11 @@ async def test_post_save_unsave_then_resave(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_save_organization_id_must_be_set(db_session: AsyncSession):
-    """organization_id is required on PostSave — not nullable."""
     owner, org = await setup_org(db_session)
     post = await setup_post(db_session, owner.id, org.id)
-    saver = await setup_user(db_session, org.id, email="saver_required@example.com")
+    saver = await setup_user(
+        db_session, org.id, owner.branch_id, email="saver_required@example.com"
+    )
 
     save = PostSave(post_id=post.id, user_id=saver.id)
     db_session.add(save)

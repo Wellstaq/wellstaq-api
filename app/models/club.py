@@ -44,6 +44,7 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Identity ──────────────────────────────────────────────────────────
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
 
     # public (anyone can join) | private (invite only)
     # validated at app layer, no DB enum constraint
@@ -52,6 +53,14 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     category_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # Club leader — the user who created the club. Owns it fully.
+    # SET NULL on delete so the club survives if the leader's account is removed.
+    leader_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -94,6 +103,10 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Branch",
         back_populates="clubs",
         foreign_keys=[branch_id],
+    )
+    leader: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[leader_id],
     )
     category: Mapped["Category"] = relationship(
         "Category",
@@ -174,11 +187,9 @@ class ClubMember(Base, UUIDPrimaryKeyMixin):
     )
 
     __table_args__ = (
-        # One user → one club at a time.
-        UniqueConstraint("user_id", name="uq_club_members_one_club_per_user"),
-        # Kept for a clearer violation message on the re-joining case.
+        
+        # A user can now belong to multiple clubs — only prevent joining the same club twice.
         UniqueConstraint("club_id", "user_id", name="uq_club_members_club_user"),
     )
-
     def __repr__(self) -> str:
         return f"<ClubMember club_id={self.club_id} user_id={self.user_id}>"

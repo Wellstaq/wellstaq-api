@@ -1,20 +1,26 @@
-
 """
 ClubMember model tests.
 
-All tests are async, isolated per test via rollback in conftest.
-No HTTP client needed — these are model/ORM-level tests.
+REVISED for two separate issues:
 
-Schema change this file reflects:
-- Club.branch_id is now NOT NULL — make_club() and setup_club() both
-  require a branch. A local make_branch() helper creates one.
-- test_club_member_different_clubs_same_user is REMOVED — the
-  UniqueConstraint("user_id") on ClubMember means a user can only
-  belong to ONE club at a time. That test was asserting the wrong
-  behavior. Replaced with test_one_user_cannot_join_two_clubs which
-  asserts the constraint fires correctly.
-- test_user_club_memberships_relationship is updated to test the swap
-  pattern (delete old → insert new) rather than simultaneous membership.
+1. branch_id NOT NULL (User model): every make_user() call now passes
+   branch_id — using the org's already-created test branch, since
+   these tests aren't about branch assignment specifically.
+
+2. STALE CONSTRAINT ASSUMPTION: this file previously assumed
+   ClubMember has UniqueConstraint("user_id") — i.e. a user can only
+   belong to ONE club at a time, requiring a delete-then-insert swap
+   to change clubs. That is NOT what the current Club model has.
+   ClubMember.__table_args__ only has
+   UniqueConstraint("club_id", "user_id", ...) — a user can belong to
+   MANY clubs simultaneously; only re-joining the SAME club twice is
+   blocked. This matches join_club()/leave_club()'s own docstrings
+   elsewhere in the codebase ("A user can belong to multiple clubs
+   simultaneously"). The old test_one_user_cannot_join_two_clubs,
+   test_user_can_change_club_via_delete_then_insert, and
+   test_user_club_memberships_relationship_after_swap all asserted the
+   wrong (single-club) behavior and have been replaced below with
+   tests asserting the actual (multi-club) behavior.
 """
 
 import pytest
@@ -69,7 +75,7 @@ async def test_club_member_persists(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -91,7 +97,7 @@ async def test_club_member_id_is_uuid_format(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -110,7 +116,7 @@ async def test_club_member_joined_at_auto_set(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -123,12 +129,12 @@ async def test_club_member_joined_at_auto_set(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_club_member_duplicate_raises(db_session: AsyncSession):
-    """A user can only join a given club once."""
+    """A user can only join a given club once — UniqueConstraint(club_id, user_id)."""
     org, _ = await make_org_with_owner(db_session)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -141,56 +147,58 @@ async def test_club_member_duplicate_raises(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_one_user_cannot_join_two_clubs(db_session: AsyncSession):
+async def test_one_user_can_join_multiple_clubs(db_session: AsyncSession):
     """
-    A user can only belong to ONE club at a time.
-    UniqueConstraint("user_id") on ClubMember enforces this — attempting
-    to insert a second ClubMember row for the same user raises IntegrityError
-    regardless of which club they're joining.
+    REPLACES test_one_user_cannot_join_two_clubs (which asserted the
+    wrong, now-nonexistent constraint). The current model only has
+    UniqueConstraint(club_id, user_id) — a user CAN belong to many
+    clubs at once; only re-joining the SAME club twice is blocked.
     """
     org, _ = await make_org_with_owner(db_session)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
     db_session.add(make_membership(club_a.id, member.id))
-    await db_session.flush()
-
     db_session.add(make_membership(club_b.id, member.id))
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
+    await db_session.flush()  # must NOT raise
+
+    result = await db_session.execute(
+        select(ClubMember).where(ClubMember.user_id == member.id)
+    )
+    memberships = result.scalars().all()
+    assert len(memberships) == 2
+    assert {m.club_id for m in memberships} == {club_a.id, club_b.id}
 
 
 @pytest.mark.asyncio
-async def test_user_can_change_club_via_delete_then_insert(db_session: AsyncSession):
+async def test_user_can_leave_one_club_while_staying_in_another(db_session: AsyncSession):
     """
-    Changing clubs = DELETE old membership → INSERT new one, atomically.
-    After the swap the user belongs to the new club only.
+    REPLACES test_user_can_change_club_via_delete_then_insert, which
+    described a swap workflow that only made sense under the old
+    one-club-at-a-time constraint. Under the current model, leaving
+    one club is just deleting that one ClubMember row — it has no
+    effect on the user's other memberships.
     """
     org, _ = await make_org_with_owner(db_session)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
-    old_membership = make_membership(club_a.id, member.id)
-    db_session.add(old_membership)
+    membership_a = make_membership(club_a.id, member.id)
+    membership_b = make_membership(club_b.id, member.id)
+    db_session.add_all([membership_a, membership_b])
     await db_session.flush()
 
-    # Delete old — flush releases the unique constraint on user_id
-    await db_session.delete(old_membership)
-    await db_session.flush()
-
-    # Insert new
-    new_membership = make_membership(club_b.id, member.id)
-    db_session.add(new_membership)
+    await db_session.delete(membership_a)
     await db_session.flush()
 
     result = await db_session.execute(
@@ -207,9 +215,9 @@ async def test_club_can_have_multiple_members(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    m1 = make_user(org.id, email="m1@example.com")
-    m2 = make_user(org.id, email="m2@example.com")
-    m3 = make_user(org.id, email="m3@example.com")
+    m1 = make_user(org.id, email="m1@example.com", branch_id=branch.id)
+    m2 = make_user(org.id, email="m2@example.com", branch_id=branch.id)
+    m3 = make_user(org.id, email="m3@example.com", branch_id=branch.id)
     db_session.add_all([m1, m2, m3])
     await db_session.flush()
 
@@ -228,8 +236,9 @@ async def test_club_can_have_multiple_members(db_session: AsyncSession):
 async def test_club_member_club_fk_must_exist(db_session: AsyncSession):
     """club_id must reference a real club."""
     org, _ = await make_org_with_owner(db_session)
+    branch = await make_branch(db_session, org.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -265,7 +274,7 @@ async def test_club_delete_cascades_to_memberships(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -288,7 +297,7 @@ async def test_user_delete_cascades_to_memberships(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -314,7 +323,7 @@ async def test_leaving_club_deletes_row(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -342,7 +351,7 @@ async def test_club_member_club_relationship(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -361,7 +370,7 @@ async def test_club_member_user_relationship(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
@@ -381,8 +390,8 @@ async def test_club_members_relationship(db_session: AsyncSession):
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
-    m1 = make_user(org.id, email="m1@example.com")
-    m2 = make_user(org.id, email="m2@example.com")
+    m1 = make_user(org.id, email="m1@example.com", branch_id=branch.id)
+    m2 = make_user(org.id, email="m2@example.com", branch_id=branch.id)
     db_session.add_all([m1, m2])
     await db_session.flush()
 
@@ -395,30 +404,25 @@ async def test_club_members_relationship(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_user_club_memberships_relationship_after_swap(db_session: AsyncSession):
+async def test_user_club_memberships_relationship_shows_all_clubs(db_session: AsyncSession):
     """
-    After swapping clubs (delete old → insert new), user.club_memberships
-    must contain exactly one row pointing to the new club.
+    REPLACES test_user_club_memberships_relationship_after_swap.
+    A user belonging to multiple clubs simultaneously must see ALL of
+    them via user.club_memberships — not just the most recent one.
     """
     org, _ = await make_org_with_owner(db_session)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")
 
-    member = make_user(org.id, email="member@example.com")
+    member = make_user(org.id, email="member@example.com", branch_id=branch.id)
     db_session.add(member)
     await db_session.flush()
 
-    old = make_membership(club_a.id, member.id)
-    db_session.add(old)
-    await db_session.flush()
-
-    await db_session.delete(old)
-    await db_session.flush()
-
+    db_session.add(make_membership(club_a.id, member.id))
     db_session.add(make_membership(club_b.id, member.id))
     await db_session.flush()
 
     await db_session.refresh(member, ["club_memberships"])
-    assert len(member.club_memberships) == 1
-    assert member.club_memberships[0].club_id == club_b.id
+    assert len(member.club_memberships) == 2
+    assert {m.club_id for m in member.club_memberships} == {club_a.id, club_b.id}

@@ -12,6 +12,15 @@ Routes:
   PUT    /organizations/{org_id}/departments/{dept_id}/members/{user_id}    — assign user
   PUT    /organizations/{org_id}/departments/{dept_id}/head/{user_id}       — assign head
   DELETE /organizations/{org_id}/departments/{dept_id}/head                 — remove head
+
+Branch scoping note
+────────────────────
+Departments may be org-wide (branch_id is None) or branch-scoped
+(branch_id set). For any route acting on an *existing* department, the
+branch used for the permission scope check is always the department's
+own branch_id — fetched from the DB — never a caller-supplied value.
+This prevents a caller from claiming a different branch than the one
+the department actually belongs to.
 """
 
 from __future__ import annotations
@@ -39,8 +48,8 @@ from app.schemas.department import (
     DepartmentListResponse,
     DepartmentMemberAssignResponse,
     DepartmentMembersListResponse,
-    DepartmentMemberInfo,  
-    DepartmentResponse, 
+    DepartmentMemberInfo,
+    DepartmentResponse,
     DepartmentUpdateRequest,
 )
 from app.services.department import (
@@ -53,7 +62,6 @@ from app.services.department import (
     remove_department_head,
     assign_department_head,
     delete_department,
-    
 )
 
 
@@ -82,11 +90,17 @@ async def create_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments"):
+        # body.branch_id is caller-supplied here, which is correct for
+        # create: there is no existing row to derive it from yet. A
+        # branch-scoped grant can only create within its own branch;
+        # require_scoped_permission is responsible for rejecting a
+        # mismatch (e.g. branch manager passing a different branch_id,
+        # or passing branch_id=None to try to create an org-wide dept).
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.create",
-            target_branch_id=None,
+            target_branch_id=body.branch_id,
         )
         department = await create_department(
             session=db,
@@ -95,6 +109,7 @@ async def create_department_route(
             description=body.description,
             avatar_initial=body.avatar_initial,
             created_by=current_user.user_id,
+            branch_id=body.branch_id,
         )
         await db.commit()
         return DepartmentResponse.model_validate(department)
@@ -113,17 +128,12 @@ async def list_departments_route(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.create")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DepartmentListResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="department.create",
-            target_branch_id=None,
-        )
+
         departments = await get_departments(
             session=db,
             organization_id=org_id,
@@ -160,7 +170,6 @@ async def get_department_route(
             session=db,
             organization_id=org_id,
             department_id=dept_id,
-            user_id=current_user.user_id,
         )
         return DepartmentResponse.model_validate(department)
 
@@ -183,11 +192,16 @@ async def edit_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}"):
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+        )
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.update",
-            target_branch_id=None,
+            target_branch_id=department.branch_id,
         )
         department = await edit_department(
             session=db,
@@ -212,7 +226,8 @@ async def edit_department_route(
         "Deletes a department. If it has members, "
         "`transfer_to_department_id` is required — all members are moved "
         "atomically before deletion so no user is ever left without a department. "
-        "Requires `department.delete` granted org-wide."
+        "Requires `department.delete`, scoped to the department's own branch "
+        "(or org-wide for org-level departments)."
     ),
 )
 async def delete_department_route(
@@ -225,11 +240,16 @@ async def delete_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}"):
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+        )
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.delete",
-            target_branch_id=None,
+            target_branch_id=department.branch_id,
         )
         result = await delete_department(
             session=db,
@@ -259,7 +279,8 @@ async def delete_department_route(
         "Assigns a user to the specified department. "
         "If the user already belongs to another department, "
         "they are moved atomically — never left without a department. "
-        "Requires `department.update` granted org-wide."
+        "Requires `department.update`, scoped to the department's own branch "
+        "(or org-wide for org-level departments)."
     ),
 )
 async def assign_user_to_department_route(
@@ -272,11 +293,16 @@ async def assign_user_to_department_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}/members/{user_id}"):
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+        )
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.update",
-            target_branch_id=None,
+            target_branch_id=department.branch_id,
         )
         await assign_user_to_department(
             session=db,
@@ -293,7 +319,6 @@ async def assign_user_to_department_route(
         )
 
 
-
 # ── List department members ────────────────────────────────────────────────────
 
 @router.get(
@@ -308,16 +333,15 @@ async def list_department_members_route(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.create")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DepartmentMembersListResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}/members"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="department.create",
-            target_branch_id=None,
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
         )
         members, total = await get_department_members(
             session=db,
@@ -345,7 +369,8 @@ async def list_department_members_route(
         "Designates a user as the head of this department. "
         "The user must already be a member of the department. "
         "Assigns the `team_leader` system role to them automatically. "
-        "Requires `department.update` granted org-wide."
+        "Requires `department.update`, scoped to the department's own branch "
+        "(or org-wide for org-level departments)."
     ),
 )
 async def assign_department_head_route(
@@ -358,11 +383,16 @@ async def assign_department_head_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}/head/{user_id}"):
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+        )
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.update",
-            target_branch_id=None,
+            target_branch_id=department.branch_id,
         )
         department = await assign_department_head(
             session=db,
@@ -390,7 +420,8 @@ async def assign_department_head_route(
         "Clears the department head designation. "
         "By default reverts the former head's role from `team_leader` "
         "back to `member`. "
-        "Requires `department.update` granted org-wide."
+        "Requires `department.update`, scoped to the department's own branch "
+        "(or org-wide for org-level departments)."
     ),
 )
 async def remove_department_head_route(
@@ -406,11 +437,16 @@ async def remove_department_head_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/departments/{dept_id}/head"):
+        department = await get_department(
+            session=db,
+            organization_id=org_id,
+            department_id=dept_id,
+        )
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="department.update",
-            target_branch_id=None,
+            target_branch_id=department.branch_id,
         )
         await remove_department_head(
             session=db,
