@@ -3,38 +3,11 @@ tests/services/branches/test_get_branch.py
 
 Unit tests for app/services/branch/get_branch.py
 
-Coverage:
-  get_branch()
-    - returns the correct branch by ID
-    - returns correct fields on the branch
-    - raises 404 when branch not found
-    - raises 404 when branch belongs to a different org
-    - returns correct branch when multiple exist in the same org
-
-  get_branches()
-    - returns empty list and zero total when org has no branches
-    - returns all branches belonging to the org
-    - total reflects full count regardless of limit
-    - does not return branches from a different org
-    - branches are ordered by name
-    - limit restricts returned count
-    - offset skips correct branches
-    - offset beyond total returns empty list
-    - returns Branch objects
-
-  get_branch_members()
-    - returns empty list and zero total for branch with no members
-    - returns members assigned to the branch
-    - returns correct total count
-    - members are ordered by first_name then last_name
-    - does not return members from a different branch in same org
-    - does not return members from a different org
-    - total reflects full count even when limit is applied
-    - limit restricts returned members
-    - offset skips correct members
-    - raises 404 when branch not found
-    - raises 404 when branch belongs to a different org
-    - returns User objects not Branch objects
+Note on branch counts:
+  make_org_with_owner() auto-creates a Headquarters branch for every org
+  (User.branch_id is NOT NULL, so every org needs at least one branch at
+  creation time). Tests that call get_branches() must account for this
+  HQ branch in their expected counts and lists.
 """
 
 from __future__ import annotations
@@ -69,6 +42,9 @@ async def _make_user_in_branch(
     first_name: str = "Ada",
     last_name: str = "Lovelace",
 ) -> User:
+    """
+    branch_id is passed explicitly — User.branch_id is NOT NULL.
+    """
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,
@@ -76,8 +52,8 @@ async def _make_user_in_branch(
         role_name="member",
         first_name=first_name,
         last_name=last_name,
+        branch_id=branch_id,   # ← required
     )
-    user.branch_id = branch_id
     db_session.add(user)
     await db_session.flush()
     return user
@@ -176,9 +152,13 @@ class TestGetBranch:
 class TestGetBranches:
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_and_zero_total_when_no_branches(
+    async def test_returns_only_hq_when_no_additional_branches_created(
         self, db_session: AsyncSession
     ):
+        """
+        make_org_with_owner() always creates one Headquarters branch.
+        An org with no manually added branches still has 1 (HQ).
+        """
         org, _ = await make_org_with_owner(db_session)
 
         branches, total = await get_branches(
@@ -186,11 +166,12 @@ class TestGetBranches:
             organization_id=org.id,
         )
 
-        assert branches == []
-        assert total == 0
+        assert total == 1
+        assert branches[0].name == "Headquarters"
 
     @pytest.mark.asyncio
     async def test_returns_all_branches_in_org(self, db_session: AsyncSession):
+        """HQ + 3 manually created = 4 total."""
         org, _ = await make_org_with_owner(db_session)
         await _make_branch(db_session, org.id, name="Lagos")
         await _make_branch(db_session, org.id, name="Abuja")
@@ -201,13 +182,18 @@ class TestGetBranches:
             organization_id=org.id,
         )
 
-        assert len(branches) == 3
-        assert total == 3
+        assert len(branches) == 4
+        assert total == 4
 
     @pytest.mark.asyncio
     async def test_does_not_return_branches_from_different_org(
         self, db_session: AsyncSession
     ):
+        """
+        org1 has HQ + Lagos (2 total).
+        org2 has HQ + Nairobi (2 total).
+        Querying org1 must return only org1's branches.
+        """
         org1, _ = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
@@ -226,9 +212,9 @@ class TestGetBranches:
             organization_id=org1.id,
         )
 
-        assert len(branches) == 1
-        assert total == 1
-        assert branches[0].name == "Lagos"
+        assert total == 2  # HQ + Lagos
+        assert all(b.organization_id == org1.id for b in branches)
+        assert any(b.name == "Lagos" for b in branches)
 
     @pytest.mark.asyncio
     async def test_branches_are_ordered_by_name(self, db_session: AsyncSession):
@@ -249,6 +235,7 @@ class TestGetBranches:
     async def test_total_reflects_full_count_regardless_of_limit(
         self, db_session: AsyncSession
     ):
+        """HQ + 5 manually created = 6 total; limit=2 returns 2 rows."""
         org, _ = await make_org_with_owner(db_session)
         for i in range(5):
             await _make_branch(db_session, org.id, name=f"Branch {i:02d}")
@@ -260,7 +247,7 @@ class TestGetBranches:
         )
 
         assert len(branches) == 2
-        assert total == 5
+        assert total == 6  # HQ + 5
 
     @pytest.mark.asyncio
     async def test_limit_restricts_returned_count(self, db_session: AsyncSession):
@@ -278,6 +265,11 @@ class TestGetBranches:
 
     @pytest.mark.asyncio
     async def test_offset_skips_correct_branches(self, db_session: AsyncSession):
+        """
+        HQ sorts as "Headquarters". With 3 manually added branches,
+        sorted order is: Aardvark, Baboon, Cheetah, Headquarters.
+        offset=1 skips Aardvark → returns Baboon, Cheetah, Headquarters.
+        """
         org, _ = await make_org_with_owner(db_session)
         await _make_branch(db_session, org.id, name="Aardvark Office")
         await _make_branch(db_session, org.id, name="Baboon Office")
@@ -290,14 +282,14 @@ class TestGetBranches:
             limit=10,
         )
 
-        assert len(branches) == 2
+        assert len(branches) == 3
         assert branches[0].name == "Baboon Office"
-        assert branches[1].name == "Cheetah Office"
 
     @pytest.mark.asyncio
     async def test_offset_beyond_total_returns_empty_list(
         self, db_session: AsyncSession
     ):
+        """HQ + Lagos + Abuja = 3 total. offset=100 returns empty."""
         org, _ = await make_org_with_owner(db_session)
         await _make_branch(db_session, org.id, name="Lagos")
         await _make_branch(db_session, org.id, name="Abuja")
@@ -309,7 +301,7 @@ class TestGetBranches:
         )
 
         assert branches == []
-        assert total == 2
+        assert total == 3  # HQ + Lagos + Abuja
 
     @pytest.mark.asyncio
     async def test_returns_branch_objects(self, db_session: AsyncSession):

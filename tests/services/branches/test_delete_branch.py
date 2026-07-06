@@ -10,7 +10,9 @@ Coverage:
     - raises 404 when branch not found
     - raises 404 when branch belongs to a different org
     - raises 409 when branch has an assigned manager
-    - raises 409 when branch has members and no target_branch_id provided
+    - raises 409 when branch has members and no target provided
+    - raises 409 when only target_branch_id provided (target_department_id missing)
+    - raises 409 when only target_department_id provided (target_branch_id missing)
     - error message includes member count when blocking deletion
     - raises 400 when target_branch_id equals branch_id
     - raises 404 when target_branch_id not found
@@ -19,7 +21,7 @@ Coverage:
     - transferred members have correct branch_id after transfer
     - branch row is deleted after successful member transfer
     - member transfer does not affect users from other orgs
-    - empty branch with a target_branch_id provided deletes cleanly
+    - empty branch with a target provided deletes cleanly
     - does not affect users already in the target branch
 """
 
@@ -31,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, User
+from app.models.department import Department
 from app.services.branch.delete_branch import delete_branch
 from tests.conftest import make_org_with_owner, make_user_with_role
 
@@ -53,6 +56,23 @@ async def _make_branch(
     return branch
 
 
+async def _make_department(
+    db_session: AsyncSession,
+    organization_id: str,
+    branch_id: str,
+    name: str = "General",
+) -> Department:
+    dept = Department(
+        name=name,
+        organization_id=organization_id,
+        branch_id=branch_id,
+        member_count=0,
+    )
+    db_session.add(dept)
+    await db_session.flush()
+    return dept
+
+
 async def _make_user_in_branch(
     db_session: AsyncSession,
     organization_id: str,
@@ -64,8 +84,8 @@ async def _make_user_in_branch(
         organization_id=organization_id,
         email=email,
         role_name="member",
+        branch_id=branch_id,
     )
-    user.branch_id = branch_id
     db_session.add(user)
     await db_session.flush()
     return user
@@ -76,12 +96,14 @@ async def _call(
     organization_id: str,
     branch_id: str,
     target_branch_id: str | None = None,
+    target_department_id: str | None = None,
 ) -> None:
     await delete_branch(
         session=db_session,
         organization_id=organization_id,
         branch_id=branch_id,
         target_branch_id=target_branch_id,
+        target_department_id=target_department_id,
     )
 
 
@@ -117,14 +139,21 @@ class TestDeleteEmptyBranch:
         assert result.scalar_one_or_none() is None
 
     @pytest.mark.asyncio
-    async def test_empty_branch_with_target_branch_id_deletes_cleanly(
+    async def test_empty_branch_with_targets_provided_deletes_cleanly(
         self, db_session: AsyncSession
     ):
+        """Providing targets when there are no members is harmless — the
+        service should skip the transfer step and delete cleanly."""
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
+        target_branch = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target_branch.id)
 
-        await _call(db_session, org.id, branch.id, target_branch_id=target.id)
+        await _call(
+            db_session, org.id, branch.id,
+            target_branch_id=target_branch.id,
+            target_department_id=target_dept.id,
+        )
 
         result = await db_session.execute(
             select(Branch).where(Branch.id == branch.id)
@@ -187,8 +216,8 @@ class TestDeleteBranchManagerGuard:
     async def test_manager_guard_fires_before_member_check(
         self, db_session: AsyncSession
     ):
-        """Manager check is independent and fires even when there are no members,
-        confirming it is not short-circuited by member_count == 0."""
+        """Manager check fires even when there are no members, confirming
+        it is not short-circuited by member_count == 0."""
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id, manager_id=owner.id)
 
@@ -204,15 +233,58 @@ class TestDeleteBranchManagerGuard:
 class TestDeleteBranchMemberGuard:
 
     @pytest.mark.asyncio
-    async def test_raises_409_when_branch_has_members_and_no_target(
+    async def test_raises_409_when_branch_has_members_and_no_targets(
         self, db_session: AsyncSession
     ):
+        """Both target_branch_id and target_department_id are required when
+        members exist — omitting both raises 409."""
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
 
         with pytest.raises(HTTPException) as exc_info:
             await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_raises_409_when_only_target_branch_provided(
+        self, db_session: AsyncSession
+    ):
+        """target_department_id is also required — a user transferred to a
+        new branch must be placed in a department there."""
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id, name="Source")
+        target = await _make_branch(db_session, org.id, name="Target")
+        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(
+                db_session, org.id, branch.id,
+                target_branch_id=target.id,
+                target_department_id=None,   # missing
+            )
+
+        assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_raises_409_when_only_target_department_provided(
+        self, db_session: AsyncSession
+    ):
+        """target_branch_id is also required — can't assign a department
+        without knowing the destination branch."""
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id, name="Source")
+        target = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target.id)
+        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(
+                db_session, org.id, branch.id,
+                target_branch_id=None,          # missing
+                target_department_id=target_dept.id,
+            )
 
         assert exc_info.value.status_code == 409
 
@@ -233,12 +305,18 @@ class TestDeleteBranchMemberGuard:
     async def test_raises_400_when_target_branch_id_equals_source(
         self, db_session: AsyncSession
     ):
+        """Passing a dummy target_department_id gets past the 'provide both'
+        check so the 400 (target == source) validation is reached."""
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
 
         with pytest.raises(HTTPException) as exc_info:
-            await _call(db_session, org.id, branch.id, target_branch_id=branch.id)
+            await _call(
+                db_session, org.id, branch.id,
+                target_branch_id=branch.id,
+                target_department_id="00000000-0000-0000-0000-000000000099",
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -254,6 +332,7 @@ class TestDeleteBranchMemberGuard:
             await _call(
                 db_session, org.id, branch.id,
                 target_branch_id="00000000-0000-0000-0000-000000000000",
+                target_department_id="00000000-0000-0000-0000-000000000099",
             )
 
         assert exc_info.value.status_code == 404
@@ -280,6 +359,7 @@ class TestDeleteBranchMemberGuard:
             await _call(
                 db_session, org1.id, branch.id,
                 target_branch_id=cross_org_target.id,
+                target_department_id="00000000-0000-0000-0000-000000000099",
             )
 
         assert exc_info.value.status_code == 404
@@ -296,11 +376,16 @@ class TestDeleteBranchWithTransfer:
         org, _ = await make_org_with_owner(db_session)
         source = await _make_branch(db_session, org.id, name="Source")
         target = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target.id)
 
         u1 = await _make_user_in_branch(db_session, org.id, source.id, "m1@example.com")
         u2 = await _make_user_in_branch(db_session, org.id, source.id, "m2@example.com")
 
-        await _call(db_session, org.id, source.id, target_branch_id=target.id)
+        await _call(
+            db_session, org.id, source.id,
+            target_branch_id=target.id,
+            target_department_id=target_dept.id,
+        )
 
         await db_session.refresh(u1)
         await db_session.refresh(u2)
@@ -315,13 +400,18 @@ class TestDeleteBranchWithTransfer:
         org, _ = await make_org_with_owner(db_session)
         source = await _make_branch(db_session, org.id, name="Source")
         target = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target.id)
 
         user = await _make_user_in_branch(
             db_session, org.id, source.id, "m1@example.com"
         )
         user_id = user.id
 
-        await _call(db_session, org.id, source.id, target_branch_id=target.id)
+        await _call(
+            db_session, org.id, source.id,
+            target_branch_id=target.id,
+            target_department_id=target_dept.id,
+        )
 
         result = await db_session.execute(
             select(User).where(User.id == user_id)
@@ -336,11 +426,16 @@ class TestDeleteBranchWithTransfer:
         org, _ = await make_org_with_owner(db_session)
         source = await _make_branch(db_session, org.id, name="Source")
         target = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target.id)
         source_id = source.id
 
         await _make_user_in_branch(db_session, org.id, source.id, "m1@example.com")
 
-        await _call(db_session, org.id, source_id, target_branch_id=target.id)
+        await _call(
+            db_session, org.id, source_id,
+            target_branch_id=target.id,
+            target_department_id=target_dept.id,
+        )
 
         result = await db_session.execute(
             select(Branch).where(Branch.id == source_id)
@@ -354,6 +449,7 @@ class TestDeleteBranchWithTransfer:
         org, _ = await make_org_with_owner(db_session)
         source = await _make_branch(db_session, org.id, name="Source")
         target = await _make_branch(db_session, org.id, name="Target")
+        target_dept = await _make_department(db_session, org.id, target.id)
 
         await _make_user_in_branch(db_session, org.id, source.id, "source@example.com")
         pre_existing = await _make_user_in_branch(
@@ -361,7 +457,11 @@ class TestDeleteBranchWithTransfer:
         )
         pre_existing_id = pre_existing.id
 
-        await _call(db_session, org.id, source.id, target_branch_id=target.id)
+        await _call(
+            db_session, org.id, source.id,
+            target_branch_id=target.id,
+            target_department_id=target_dept.id,
+        )
 
         result = await db_session.execute(
             select(User).where(User.id == pre_existing_id)
@@ -386,8 +486,9 @@ class TestDeleteBranchWithTransfer:
 
         source = await _make_branch(db_session, org1.id, name="Source")
         target = await _make_branch(db_session, org1.id, name="Target")
+        target_dept = await _make_department(db_session, org1.id, target.id)
 
-        # User in org2 — should never be touched
+        # User in org2 — must never be touched
         org2_branch = await _make_branch(db_session, org2.id, name="Org2 Branch")
         org2_user = await _make_user_in_branch(
             db_session, org2.id, org2_branch.id, "org2user@example.com"
@@ -397,7 +498,11 @@ class TestDeleteBranchWithTransfer:
 
         await _make_user_in_branch(db_session, org1.id, source.id, "org1user@example.com")
 
-        await _call(db_session, org1.id, source.id, target_branch_id=target.id)
+        await _call(
+            db_session, org1.id, source.id,
+            target_branch_id=target.id,
+            target_department_id=target_dept.id,
+        )
 
         result = await db_session.execute(
             select(User).where(User.id == org2_user_id)

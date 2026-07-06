@@ -60,8 +60,9 @@ async def edit_department(
         if name.lower() != department.name.lower():
             duplicate = await session.execute(
                 select(Department).where(
-                    Department.organization_id == organization_id,
-                    Department.id != department_id,
+                    Department.organization_id == organization_id, 
+                    Department.branch_id == department.branch_id,
+                    Department.id != department_id, 
                     func.lower(Department.name) == name.lower(),
                 )
             )

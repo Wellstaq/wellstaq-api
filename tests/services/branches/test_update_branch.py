@@ -3,46 +3,12 @@ tests/services/branches/test_update_branch.py
 
 Unit tests for app/services/branch/update_branch.py
 
-Coverage:
-  edit_branch()
-    - updates name successfully
-    - name is stripped of whitespace before storage
-    - allows updating name to same value (no-op, no 409)
-    - allows updating name to different casing of same name
-    - returns updated branch
-    - raises 404 when branch not found
-    - raises 404 when branch belongs to different org
-    - raises 409 when new name conflicts with existing branch (exact match)
-    - raises 409 when new name conflicts case-insensitively
-    - passing name=None changes nothing
-
-  assign_user_to_branch()
-    - assigns user to branch successfully
-    - returns updated User with correct branch_id
-    - overwrites previous branch_id implicitly
-    - raises 404 when target branch not found
-    - raises 404 when target branch belongs to different org
-    - raises 404 when user not found
-    - raises 404 when user belongs to different org
-    - raises 409 when user is already in the target branch
-
-  assign_branch_manager()
-    - assigns manager successfully
-    - sets branch.manager_id to the user
-    - returns updated branch
-    - raises 404 when branch not found
-    - raises 404 when branch belongs to different org
-    - raises 404 when manager user not found
-    - raises 404 when manager user belongs to different org
-    - raises 409 when branch already has a different manager
-    - raises 409 when assigning the same manager that is already set
-
-  unassign_branch_manager()
-    - clears manager_id successfully
-    - returns updated branch with manager_id None
-    - raises 404 when branch not found
-    - raises 404 when branch belongs to different org
-    - raises 409 when branch has no manager assigned
+Key fix vs prior version:
+  User.branch_id is NOT NULL — _make_user() now requires branch_id
+  explicitly. Every call site passes owner.branch_id (the HQ branch
+  auto-created by make_org_with_owner). Tests that call
+  make_org_with_owner() now unpack both org AND owner so branch_id
+  is always available.
 """
 
 from __future__ import annotations
@@ -83,15 +49,15 @@ async def _make_user(
     db_session: AsyncSession,
     organization_id: str,
     email: str,
-    branch_id: str | None = None,
+    branch_id: str,            # required — User.branch_id is NOT NULL
 ) -> User:
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,
         email=email,
         role_name="member",
+        branch_id=branch_id,
     )
-    user.branch_id = branch_id
     db_session.add(user)
     await db_session.flush()
     return user
@@ -269,9 +235,9 @@ class TestAssignUserToBranch:
 
     @pytest.mark.asyncio
     async def test_assigns_user_to_branch_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
+        user = await _make_user(db_session, org.id, "user@example.com", owner.branch_id)
 
         result = await assign_user_to_branch(
             session=db_session,
@@ -286,9 +252,9 @@ class TestAssignUserToBranch:
     async def test_returns_updated_user_with_correct_branch_id(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
+        user = await _make_user(db_session, org.id, "user@example.com", owner.branch_id)
 
         result = await assign_user_to_branch(
             session=db_session,
@@ -303,11 +269,11 @@ class TestAssignUserToBranch:
 
     @pytest.mark.asyncio
     async def test_overwrites_previous_branch_id(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
         old_branch = await _make_branch(db_session, org.id, name="Old Branch")
         new_branch = await _make_branch(db_session, org.id, name="New Branch")
         user = await _make_user(
-            db_session, org.id, "user@example.com", branch_id=old_branch.id
+            db_session, org.id, "user@example.com", old_branch.id
         )
 
         result = await assign_user_to_branch(
@@ -323,8 +289,8 @@ class TestAssignUserToBranch:
     async def test_raises_404_when_target_branch_not_found(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        user = await _make_user(db_session, org.id, "user@example.com")
+        org, owner = await make_org_with_owner(db_session)
+        user = await _make_user(db_session, org.id, "user@example.com", owner.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_branch(
@@ -340,18 +306,18 @@ class TestAssignUserToBranch:
     async def test_raises_404_when_target_branch_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch_org2 = await _make_branch(db_session, org2.id)
-        user = await _make_user(db_session, org1.id, "user@example.com")
+        user = await _make_user(db_session, org1.id, "user@example.com", owner1.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_branch(
@@ -382,18 +348,18 @@ class TestAssignUserToBranch:
     async def test_raises_404_when_user_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch = await _make_branch(db_session, org1.id)
-        user_org2 = await _make_user(db_session, org2.id, "user@example.com")
+        user_org2 = await _make_user(db_session, org2.id, "user@example.com", owner2.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_branch(
@@ -409,10 +375,11 @@ class TestAssignUserToBranch:
     async def test_raises_409_when_user_already_in_target_branch(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        # Create user already in the target branch
         user = await _make_user(
-            db_session, org.id, "user@example.com", branch_id=branch.id
+            db_session, org.id, "user@example.com", branch.id
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -563,9 +530,8 @@ class TestAssignBranchManager:
     ):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id, manager_id=owner.id)
-
         new_manager = await _make_user(
-            db_session, org.id, "newmanager@example.com"
+            db_session, org.id, "newmanager@example.com", owner.branch_id
         )
 
         with pytest.raises(HTTPException) as exc_info:
