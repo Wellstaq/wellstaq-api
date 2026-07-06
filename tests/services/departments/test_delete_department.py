@@ -25,12 +25,14 @@ from tests.conftest import make_org_with_owner, make_user_with_role
 async def _make_department(
     db_session: AsyncSession,
     organization_id: str,
+    branch_id: str,
     name: str = "Engineering",
     member_count: int = 0,
 ) -> Department:
     dept = Department(
         name=name,
         organization_id=organization_id,
+        branch_id=branch_id,
         member_count=member_count,
     )
     db_session.add(dept)
@@ -42,12 +44,14 @@ async def _add_member(
     db_session: AsyncSession,
     department_id: str,
     organization_id: str,
+    branch_id: str,
     email: str,
 ) -> DepartmentMember:
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,
         email=email,
+        branch_id=branch_id,
         role_name="member",
     )
     db_session.add(user)
@@ -65,8 +69,8 @@ class TestDeleteEmptyDepartment:
 
     @pytest.mark.asyncio
     async def test_deletes_empty_department_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         result = await delete_department(
             session=db_session,
@@ -81,8 +85,8 @@ class TestDeleteEmptyDepartment:
 
     @pytest.mark.asyncio
     async def test_returns_correct_dict_shape(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         result = await delete_department(
             session=db_session,
@@ -95,8 +99,8 @@ class TestDeleteEmptyDepartment:
 
     @pytest.mark.asyncio
     async def test_department_row_is_gone_after_deletion(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         dept_id = dept.id
 
         await delete_department(
@@ -115,8 +119,8 @@ class TestDeleteEmptyDepartment:
     async def test_members_transferred_is_zero_for_empty_department(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         result = await delete_department(
             session=db_session,
@@ -150,7 +154,7 @@ class TestDeleteDepartmentNotFound:
     async def test_raises_404_when_department_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -160,7 +164,7 @@ class TestDeleteDepartmentNotFound:
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
 
         # Try to delete org1's dept while claiming to be org2
         with pytest.raises(AppError) as exc_info:
@@ -182,9 +186,9 @@ class TestDeleteDepartmentWithMembersNoTransfer:
     async def test_raises_409_when_has_members_and_no_transfer(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, member_count=1)
-        await _add_member(db_session, dept.id, org.id, "member@example.com")
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, member_count=1)
+        await _add_member(db_session, dept.id, org.id, owner.branch_id, "member@example.com")
 
         with pytest.raises(AppError) as exc_info:
             await delete_department(
@@ -198,11 +202,11 @@ class TestDeleteDepartmentWithMembersNoTransfer:
 
     @pytest.mark.asyncio
     async def test_409_error_message_includes_member_count(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, member_count=3)
-        await _add_member(db_session, dept.id, org.id, "m1@example.com")
-        await _add_member(db_session, dept.id, org.id, "m2@example.com")
-        await _add_member(db_session, dept.id, org.id, "m3@example.com")
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, member_count=3)
+        await _add_member(db_session, dept.id, org.id, owner.branch_id, "m1@example.com")
+        await _add_member(db_session, dept.id, org.id, owner.branch_id, "m2@example.com")
+        await _add_member(db_session, dept.id, org.id, owner.branch_id, "m3@example.com")
 
         with pytest.raises(AppError) as exc_info:
             await delete_department(
@@ -221,12 +225,12 @@ class TestDeleteDepartmentWithTransfer:
 
     @pytest.mark.asyncio
     async def test_transfers_members_to_target_atomically(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=2)
-        target = await _make_department(db_session, org.id, name="Target", member_count=0)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=2)
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=0)
 
-        m1 = await _add_member(db_session, source.id, org.id, "m1@example.com")
-        m2 = await _add_member(db_session, source.id, org.id, "m2@example.com")
+        m1 = await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
+        m2 = await _add_member(db_session, source.id, org.id, owner.branch_id, "m2@example.com")
         user1_id = m1.user_id
         user2_id = m2.user_id
 
@@ -252,12 +256,12 @@ class TestDeleteDepartmentWithTransfer:
     async def test_adjusts_target_member_count_after_transfer(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=2)
-        target = await _make_department(db_session, org.id, name="Target", member_count=5)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=2)
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=5)
 
-        await _add_member(db_session, source.id, org.id, "m1@example.com")
-        await _add_member(db_session, source.id, org.id, "m2@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m2@example.com")
 
         await delete_department(
             session=db_session,
@@ -273,13 +277,13 @@ class TestDeleteDepartmentWithTransfer:
     async def test_returned_transferred_count_matches_actual_members(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=3)
-        target = await _make_department(db_session, org.id, name="Target", member_count=0)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=3)
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=0)
 
-        await _add_member(db_session, source.id, org.id, "m1@example.com")
-        await _add_member(db_session, source.id, org.id, "m2@example.com")
-        await _add_member(db_session, source.id, org.id, "m3@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m2@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m3@example.com")
 
         result = await delete_department(
             session=db_session,
@@ -294,12 +298,12 @@ class TestDeleteDepartmentWithTransfer:
     async def test_source_department_is_deleted_after_transfer(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=1)
-        target = await _make_department(db_session, org.id, name="Target", member_count=0)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=1)
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=0)
         source_id = source.id
 
-        await _add_member(db_session, source.id, org.id, "m1@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
 
         await delete_department(
             session=db_session,
@@ -317,13 +321,13 @@ class TestDeleteDepartmentWithTransfer:
     async def test_no_member_rows_point_to_deleted_source(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=2)
-        target = await _make_department(db_session, org.id, name="Target", member_count=0)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=2)
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=0)
         source_id = source.id
 
-        await _add_member(db_session, source.id, org.id, "m1@example.com")
-        await _add_member(db_session, source.id, org.id, "m2@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m2@example.com")
 
         await delete_department(
             session=db_session,
@@ -345,9 +349,9 @@ class TestDeleteDepartmentWithTransfer:
     ):
         """Providing transfer_to_department_id on an empty department is fine —
         nothing to transfer, still deletes cleanly."""
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source")
-        target = await _make_department(db_session, org.id, name="Target", member_count=3)
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source")
+        target = await _make_department(db_session, org.id, owner.branch_id, name="Target", member_count=3)
 
         result = await delete_department(
             session=db_session,
@@ -371,9 +375,9 @@ class TestDeleteDepartmentTransferValidation:
     async def test_raises_404_when_transfer_target_not_found(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_department(db_session, org.id, name="Source", member_count=1)
-        await _add_member(db_session, source.id, org.id, "m1@example.com")
+        org, owner = await make_org_with_owner(db_session)
+        source = await _make_department(db_session, org.id, owner.branch_id, name="Source", member_count=1)
+        await _add_member(db_session, source.id, org.id, owner.branch_id, "m1@example.com")
 
         with pytest.raises(AppError) as exc_info:
             await delete_department(
@@ -389,22 +393,22 @@ class TestDeleteDepartmentTransferValidation:
     async def test_raises_404_when_transfer_target_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
 
-        source = await _make_department(db_session, org1.id, name="Source", member_count=1)
-        await _add_member(db_session, source.id, org1.id, "m1@example.com")
+        source = await _make_department(db_session, org1.id, owner1.branch_id, name="Source", member_count=1)
+        await _add_member(db_session, source.id, org1.id, owner1.branch_id, "m1@example.com")
 
         # Target belongs to org2 — cross-org transfer must be rejected
-        cross_org_target = await _make_department(db_session, org2.id, name="Other Target")
+        cross_org_target = await _make_department(db_session, org2.id, owner2.branch_id, name="Other Target")
 
         with pytest.raises(AppError) as exc_info:
             await delete_department(
@@ -420,9 +424,9 @@ class TestDeleteDepartmentTransferValidation:
     async def test_raises_400_when_transfer_target_is_same_department(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, member_count=1)
-        await _add_member(db_session, dept.id, org.id, "m1@example.com")
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, member_count=1)
+        await _add_member(db_session, dept.id, org.id, owner.branch_id, "m1@example.com")
 
         with pytest.raises(AppError) as exc_info:
             await delete_department(

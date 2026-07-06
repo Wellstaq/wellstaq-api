@@ -171,7 +171,6 @@ def make_user(organization_id: str, **overrides) -> User:
     )
     return User(organization_id=organization_id, **{**defaults, **overrides})
 
-
 async def make_user_with_role(
     db_session: AsyncSession,
     organization_id: str,
@@ -179,20 +178,17 @@ async def make_user_with_role(
     role_name: str = "employee",
     **overrides,
 ) -> User:
-    """Like make_user(), but resolves role_name → a real system Role's
-    id via get_or_create_system_role(), then sets role_id accordingly.
-
-    branch_id must still be supplied via overrides.
-
-    If overrides already includes an explicit role_id, that takes
-    precedence and role_name is ignored.
-    """
     if "role_id" not in overrides:
         role = await get_or_create_system_role(db_session, role_name)
         overrides["role_id"] = role.id
+    if "branch_id" not in overrides:
+        raise ValueError(
+            "make_user_with_role() requires branch_id. "
+            "Use owner.branch_id from make_org_with_owner()."
+        )
     return make_user(organization_id=organization_id, **overrides)
 
-
+    
 async def make_org_with_owner(
     db_session: AsyncSession,
     *,

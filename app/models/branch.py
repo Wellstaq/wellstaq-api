@@ -181,6 +181,23 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     engagement_logs: Mapped[list["EngagementLog"]] = relationship(
         "EngagementLog", back_populates="branch", cascade="all, delete-orphan"
     )
+    leaderboard_snapshots = relationship(
+        "LeaderboardSnapshot",
+        back_populates="branch",
+        cascade="all, delete-orphan"
+    )
+    
+    targets = relationship(
+        "Target",
+        back_populates="branch",
+        cascade="all, delete-orphan"
+    )
+    
+    kpi_snapshots = relationship(
+        "KPISnapshot",
+        back_populates="branch",
+        cascade="all, delete-orphan"
+    )
 
 
     def __repr__(self) -> str:

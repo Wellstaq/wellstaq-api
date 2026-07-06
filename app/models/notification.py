@@ -12,7 +12,16 @@ Design principles:
   within and scoped to one tenant). A notification's actual tenant
   isolation is enforced by user_id (the recipient already belongs to
   exactly one org); organization_id here is denormalized context for
-  filtering/audit, not the sole isolation mechanism.
+  filtering/audit (e.g. org deletion cascading to its notifications), not
+  the sole isolation mechanism.
+
+  No branch_id here, deliberately: a notification is a message about the
+  recipient, not an event that happened at a location. "Notifications for
+  Branch X" isn't a real product query the way "activity logged at Branch
+  X" is — and if it's ever needed, it's reachable via
+  Notification.user_id -> User.branch_id without denormalizing a column
+  that would need to be kept in sync on every notification-creation call
+  site.
 - actor_id = who triggered this notification (who liked/commented/
   messaged). Nullable — system-generated notifications (e.g. scheduled
   event reminders, or any organization_id IS NULL system notification)
@@ -90,7 +99,7 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        # NOTE: no index=True here — user_id ijs the leading column of the
+        # NOTE: no index=True here — user_id is the leading column of the
         # composite index ix_notifications_user_is_read_created_at below,
         # which already covers single-column lookups on user_id. A
         # redundant standalone index would waste write overhead.
