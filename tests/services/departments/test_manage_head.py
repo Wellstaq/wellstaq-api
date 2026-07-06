@@ -29,9 +29,10 @@ from tests.conftest import make_org_with_owner, make_user_with_role, get_or_crea
 async def _make_department(
     db_session: AsyncSession,
     organization_id: str,
+    branch_id: str,
     name: str = "Engineering",
 ) -> Department:
-    dept = Department(name=name, organization_id=organization_id, member_count=0)
+    dept = Department(name=name, organization_id=organization_id, branch_id=branch_id, member_count=0)
     db_session.add(dept)
     await db_session.flush()
     return dept
@@ -41,6 +42,7 @@ async def _make_member(
     db_session: AsyncSession,
     department_id: str,
     organization_id: str,
+    branch_id: str,
     email: str,
     role_name: str = "member",
 ) -> tuple[User, DepartmentMember]:
@@ -49,6 +51,7 @@ async def _make_member(
         organization_id=organization_id,
         email=email,
         role_name=role_name,
+        branch_id=branch_id,
     )
     db_session.add(user)
     await db_session.flush()
@@ -64,14 +67,14 @@ async def _setup_with_head(
 ) -> tuple[Department, User, DepartmentMember]:
     """Creates org, dept, member, seeds team_leader role, assigns head.
     Returns (department, head_user, membership)."""
-    org, _ = await make_org_with_owner(db_session)
-    dept = await _make_department(db_session, org.id)
+    org, owner = await make_org_with_owner(db_session)
+    dept = await _make_department(db_session, org.id, owner.branch_id)
 
     # seed team_leader role so assign_department_head can find it
     await get_or_create_system_role(db_session, "team_leader")
 
     user, membership = await _make_member(
-        db_session, dept.id, org.id, "head@example.com"
+        db_session, dept.id, org.id, owner.branch_id, "head@example.com"
     )
 
     dept = await assign_department_head(
@@ -89,10 +92,10 @@ class TestAssignDepartmentHead:
 
     @pytest.mark.asyncio
     async def test_assigns_head_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
-        user, _ = await _make_member(db_session, dept.id, org.id, "head@example.com")
+        user, _ = await _make_member(db_session, dept.id, org.id, owner.branch_id, "head@example.com")
 
         result = await assign_department_head(
             session=db_session,
@@ -105,10 +108,10 @@ class TestAssignDepartmentHead:
 
     @pytest.mark.asyncio
     async def test_sets_department_head_user_id(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
-        user, _ = await _make_member(db_session, dept.id, org.id, "head@example.com")
+        user, _ = await _make_member(db_session, dept.id, org.id, owner.branch_id, "head@example.com")
 
         await assign_department_head(
             session=db_session,
@@ -122,11 +125,11 @@ class TestAssignDepartmentHead:
 
     @pytest.mark.asyncio
     async def test_sets_membership_role_to_lead(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
         user, membership = await _make_member(
-            db_session, dept.id, org.id, "head@example.com"
+            db_session, dept.id, org.id, owner.branch_id, "head@example.com"
         )
 
         await assign_department_head(
@@ -143,10 +146,10 @@ class TestAssignDepartmentHead:
     async def test_assigns_team_leader_system_role_to_user(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         team_leader_role = await get_or_create_system_role(db_session, "team_leader")
-        user, _ = await _make_member(db_session, dept.id, org.id, "head@example.com")
+        user, _ = await _make_member(db_session, dept.id, org.id, owner.branch_id, "head@example.com")
 
         await assign_department_head(
             session=db_session,
@@ -160,10 +163,10 @@ class TestAssignDepartmentHead:
 
     @pytest.mark.asyncio
     async def test_returns_updated_department(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
-        user, _ = await _make_member(db_session, dept.id, org.id, "head@example.com")
+        user, _ = await _make_member(db_session, dept.id, org.id, owner.branch_id, "head@example.com")
 
         result = await assign_department_head(
             session=db_session,
@@ -198,12 +201,12 @@ class TestAssignDepartmentHead:
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
 
         with pytest.raises(AppError) as exc_info:
             await assign_department_head(
@@ -220,7 +223,7 @@ class TestAssignDepartmentHead:
         self, db_session: AsyncSession
     ):
         org, owner = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
 
         # user exists in org but is NOT added to the department
@@ -229,6 +232,7 @@ class TestAssignDepartmentHead:
             organization_id=org.id,
             email="nonmember@example.com",
             role_name="member",
+            branch_id=owner.branch_id,
         )
         db_session.add(non_member)
         await db_session.flush()
@@ -247,8 +251,8 @@ class TestAssignDepartmentHead:
     async def test_raises_404_when_user_not_found_in_org(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
 
         # Insert a membership row pointing to a ghost user_id
@@ -284,8 +288,8 @@ class TestAssignDepartmentHead:
     async def test_raises_500_when_team_leader_role_not_seeded(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         # deliberately do NOT seed team_leader role
         user = await make_user_with_role(
@@ -293,6 +297,7 @@ class TestAssignDepartmentHead:
             organization_id=org.id,
             email="head@example.com",
             role_name="member",
+            branch_id=owner.branch_id,
         )
         db_session.add(user)
         await db_session.flush()
@@ -436,17 +441,17 @@ class TestRemoveDepartmentHead:
     async def test_raises_404_when_department_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
 
         with pytest.raises(AppError) as exc_info:
             await remove_department_head(
@@ -461,8 +466,8 @@ class TestRemoveDepartmentHead:
     async def test_raises_409_when_department_has_no_head(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         # head_user_id is None by default — no head set
         with pytest.raises(AppError) as exc_info:
@@ -481,13 +486,13 @@ class TestRemoveDepartmentHead:
         """If the head's DepartmentMember row was already deleted (e.g.
         they were removed from the department separately), remove_department_head
         should still clear head_user_id without crashing."""
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
         await get_or_create_system_role(db_session, "team_leader")
         await get_or_create_system_role(db_session, "member")
 
         user, membership = await _make_member(
-            db_session, dept.id, org.id, "head@example.com"
+            db_session, dept.id, org.id, owner.branch_id, "head@example.com"
         )
 
         await assign_department_head(

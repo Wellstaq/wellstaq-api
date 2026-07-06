@@ -15,29 +15,33 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
-from app.models import Department, User
+from app.models import Department, User, Branch
 from app.models.department import DepartmentMember
 from app.services.department.department_member import get_department_members
 from tests.conftest import make_org_with_owner, make_user_with_role
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
 async def _make_department(
     db_session: AsyncSession,
     organization_id: str,
     name: str = "Engineering",
-) -> Department:
-    dept = Department(name=name, organization_id=organization_id, member_count=0)
+) -> tuple[Department, str]:  # Return dept and branch_id
+    branch = Branch(name=f"Branch for {name}", organization_id=organization_id)
+    db_session.add(branch)
+    await db_session.flush()
+
+    dept = Department(name=name, organization_id=organization_id, branch_id=branch.id, member_count=0)
     db_session.add(dept)
     await db_session.flush()
-    return dept
+    return dept, branch.id  # Return both
 
 
 async def _add_member(
     db_session: AsyncSession,
     department_id: str,
     organization_id: str,
+    branch_id: str,  # Now required
     email: str,
     first_name: str = "Ada",
     last_name: str = "Lovelace",
@@ -49,6 +53,7 @@ async def _add_member(
         role_name="member",
         first_name=first_name,
         last_name=last_name,
+        branch_id=branch_id,  # Proper branch_id
     )
     db_session.add(user)
     await db_session.flush()
@@ -57,7 +62,7 @@ async def _add_member(
     await db_session.flush()
     return user
 
-
+    
 async def _call(
     db_session: AsyncSession,
     organization_id: str,
@@ -83,7 +88,7 @@ class TestGetDepartmentMembersEmpty:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, _ = await _make_department(db_session, org.id)  # Unpack both
 
         members, total = await _call(db_session, org.id, dept.id)
 
@@ -95,7 +100,7 @@ class TestGetDepartmentMembersEmpty:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, _ = await _make_department(db_session, org.id)
 
         _, total = await _call(db_session, org.id, dept.id)
 
@@ -111,8 +116,8 @@ class TestGetDepartmentMembersBasic:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        user = await _add_member(db_session, dept.id, org.id, "m1@example.com")
+        dept, branch_id = await _make_department(db_session, org.id)
+        user = await _add_member(db_session, dept.id, org.id, branch_id, "m1@example.com")
 
         members, _ = await _call(db_session, org.id, dept.id)
 
@@ -122,10 +127,10 @@ class TestGetDepartmentMembersBasic:
     @pytest.mark.asyncio
     async def test_returns_correct_total_count(self, db_session: AsyncSession):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        await _add_member(db_session, dept.id, org.id, "m1@example.com")
-        await _add_member(db_session, dept.id, org.id, "m2@example.com")
-        await _add_member(db_session, dept.id, org.id, "m3@example.com")
+        dept, branch_id = await _make_department(db_session, org.id)
+        await _add_member(db_session, dept.id, org.id, branch_id, "m1@example.com")
+        await _add_member(db_session, dept.id, org.id, branch_id, "m2@example.com")
+        await _add_member(db_session, dept.id, org.id, branch_id, "m3@example.com")
 
         _, total = await _call(db_session, org.id, dept.id)
 
@@ -136,8 +141,8 @@ class TestGetDepartmentMembersBasic:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        await _add_member(db_session, dept.id, org.id, "m1@example.com")
+        dept, branch_id = await _make_department(db_session, org.id)
+        await _add_member(db_session, dept.id, org.id, branch_id, "m1@example.com")
 
         members, _ = await _call(db_session, org.id, dept.id)
 
@@ -148,18 +153,18 @@ class TestGetDepartmentMembersBasic:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
         await _add_member(
-            db_session, dept.id, org.id, "zara@example.com",
+            db_session, dept.id, org.id, branch_id, "zara@example.com",
             first_name="Zara", last_name="Ahmed",
         )
         await _add_member(
-            db_session, dept.id, org.id, "ada@example.com",
+            db_session, dept.id, org.id, branch_id, "ada@example.com",
             first_name="Ada", last_name="Lovelace",
         )
         await _add_member(
-            db_session, dept.id, org.id, "bisi@example.com",
+            db_session, dept.id, org.id, branch_id, "bisi@example.com",
             first_name="Bisi", last_name="Okafor",
         )
 
@@ -172,14 +177,14 @@ class TestGetDepartmentMembersBasic:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
         await _add_member(
-            db_session, dept.id, org.id, "chidi_z@example.com",
+            db_session, dept.id, org.id, branch_id, "chidi_z@example.com",
             first_name="Chidi", last_name="Zuma",
         )
         await _add_member(
-            db_session, dept.id, org.id, "chidi_a@example.com",
+            db_session, dept.id, org.id, branch_id, "chidi_a@example.com",
             first_name="Chidi", last_name="Ake",
         )
 
@@ -198,11 +203,11 @@ class TestGetDepartmentMembersIsolation:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept_a = await _make_department(db_session, org.id, name="Engineering")
-        dept_b = await _make_department(db_session, org.id, name="Marketing")
+        dept_a, branch_id_a = await _make_department(db_session, org.id, name="Engineering")
+        dept_b, branch_id_b = await _make_department(db_session, org.id, name="Marketing")
 
-        await _add_member(db_session, dept_a.id, org.id, "eng@example.com")
-        await _add_member(db_session, dept_b.id, org.id, "mkt@example.com")
+        await _add_member(db_session, dept_a.id, org.id, branch_id_a, "eng@example.com")
+        await _add_member(db_session, dept_b.id, org.id, branch_id_b, "mkt@example.com")
 
         members, total = await _call(db_session, org.id, dept_a.id)
 
@@ -225,11 +230,11 @@ class TestGetDepartmentMembersIsolation:
             user_kwargs=dict(email="owner2@example.com"),
         )
 
-        dept1 = await _make_department(db_session, org1.id)
-        dept2 = await _make_department(db_session, org2.id)
+        dept1, branch_id1 = await _make_department(db_session, org1.id)
+        dept2, branch_id2 = await _make_department(db_session, org2.id)
 
-        await _add_member(db_session, dept1.id, org1.id, "org1member@example.com")
-        await _add_member(db_session, dept2.id, org2.id, "org2member@example.com")
+        await _add_member(db_session, dept1.id, org1.id, branch_id1, "org1member@example.com")
+        await _add_member(db_session, dept2.id, org2.id, branch_id2, "org2member@example.com")
 
         members, total = await _call(db_session, org1.id, dept1.id)
 
@@ -245,10 +250,10 @@ class TestGetDepartmentMembersPagination:
     @pytest.mark.asyncio
     async def test_limit_restricts_returned_members(self, db_session: AsyncSession):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
         for i in range(5):
-            await _add_member(db_session, dept.id, org.id, f"m{i}@example.com")
+            await _add_member(db_session, dept.id, org.id, branch_id, f"m{i}@example.com")
 
         members, _ = await _call(db_session, org.id, dept.id, limit=2)
 
@@ -259,10 +264,10 @@ class TestGetDepartmentMembersPagination:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
         for i in range(5):
-            await _add_member(db_session, dept.id, org.id, f"m{i}@example.com")
+            await _add_member(db_session, dept.id, org.id, branch_id, f"m{i}@example.com")
 
         _, total = await _call(db_session, org.id, dept.id, limit=2)
 
@@ -273,19 +278,19 @@ class TestGetDepartmentMembersPagination:
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
         # Add in alphabetical order so ordering is predictable
         await _add_member(
-            db_session, dept.id, org.id, "aaa@example.com",
+            db_session, dept.id, org.id, branch_id, "aaa@example.com",
             first_name="Aaa", last_name="User",
         )
         await _add_member(
-            db_session, dept.id, org.id, "bbb@example.com",
+            db_session, dept.id, org.id, branch_id, "bbb@example.com",
             first_name="Bbb", last_name="User",
         )
         await _add_member(
-            db_session, dept.id, org.id, "ccc@example.com",
+            db_session, dept.id, org.id, branch_id, "ccc@example.com",
             first_name="Ccc", last_name="User",
         )
 
@@ -298,10 +303,10 @@ class TestGetDepartmentMembersPagination:
     @pytest.mark.asyncio
     async def test_offset_beyond_total_returns_empty(self, db_session: AsyncSession):
         org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        dept, branch_id = await _make_department(db_session, org.id)
 
-        await _add_member(db_session, dept.id, org.id, "m1@example.com")
-        await _add_member(db_session, dept.id, org.id, "m2@example.com")
+        await _add_member(db_session, dept.id, org.id, branch_id, "m1@example.com")
+        await _add_member(db_session, dept.id, org.id, branch_id, "m2@example.com")
 
         members, total = await _call(db_session, org.id, dept.id, offset=100)
 
@@ -341,7 +346,7 @@ class TestGetDepartmentMembersNotFound:
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept, _ = await _make_department(db_session, org1.id)
 
         with pytest.raises(HTTPException) as exc_info:
             await _call(db_session, org2.id, dept.id)

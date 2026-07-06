@@ -1,51 +1,31 @@
 """
-tests/services/departments/test_update_department.py
+tests/services/department/test_update_department.py
 
 Unit tests for app/services/department/update_department.py
 
 Coverage:
   edit_department()
-    ✓ updates name successfully
-    ✓ updates description successfully
-    ✓ updates avatar_initial successfully
-    ✓ updates all fields at once
-    ✓ name is stripped of whitespace before storage
-    ✓ only provided fields are updated — unprovided fields unchanged
-    ✓ allows updating name to the same value (case-insensitive no-op)
-    ✓ allows updating name to different casing of same name
-    ✓ raises 404 when department not found
-    ✓ raises 404 when department belongs to different org
-    ✓ raises 409 when new name conflicts with existing department (case-insensitive)
-    ✓ does not raise 409 when name is unchanged
-    ✓ returns updated department
-
   assign_user_to_department()
-    ✓ assigns a user to a department with no prior membership
-    ✓ returns the new DepartmentMember row
-    ✓ new membership row has correct department_id and user_id
-    ✓ moves user from old department to new one atomically
-    ✓ old membership row is deleted after reassignment
-    ✓ raises 404 when target department not found
-    ✓ raises 404 when target department belongs to different org
-    ✓ raises 404 when user not found
-    ✓ raises 404 when user belongs to different org
-    ✓ raises 409 when user is already in the target department
 """
 
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Department, User
-from app.models.department import DepartmentMember
+from app.models import User
+from app.models.department import Department, DepartmentMember
 from app.services.department.update_department import (
     assign_user_to_department,
     edit_department,
 )
-from tests.conftest import make_org_with_owner, make_user_with_role
+from tests.conftest import (
+    make_branch,
+    make_org_with_owner,
+    make_user_with_role,
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -53,15 +33,20 @@ from tests.conftest import make_org_with_owner, make_user_with_role
 async def _make_department(
     db_session: AsyncSession,
     organization_id: str,
+    branch_id: str,                    # required — branch_id is NOT NULL on Department
     name: str = "Engineering",
     description: str | None = None,
-    avatar_initial: str | None = None,
+    avatar_initial: str | None = "E",
 ) -> Department:
+    """Create a department scoped to a branch. branch_id is required
+    because Department.branch_id is NOT NULL — there are no org-wide
+    floating departments anymore."""
     dept = Department(
         name=name,
         description=description,
         avatar_initial=avatar_initial,
         organization_id=organization_id,
+        branch_id=branch_id,
         member_count=0,
     )
     db_session.add(dept)
@@ -69,28 +54,16 @@ async def _make_department(
     return dept
 
 
-async def _make_user(
-    db_session: AsyncSession,
-    organization_id: str,
-    email: str,
-) -> User:
-    user = await make_user_with_role(
-        db_session,
-        organization_id=organization_id,
-        email=email,
-        role_name="member",
-    )
-    db_session.add(user)
-    await db_session.flush()
-    return user
-
-
-async def _add_membership(
+async def _make_membership(
     db_session: AsyncSession,
     department_id: str,
     user_id: str,
 ) -> DepartmentMember:
-    membership = DepartmentMember(department_id=department_id, user_id=user_id)
+    """Create a department membership."""
+    membership = DepartmentMember(
+        department_id=department_id,
+        user_id=user_id,
+    )
     db_session.add(membership)
     await db_session.flush()
     return membership
@@ -101,41 +74,49 @@ async def _add_membership(
 class TestEditDepartment:
 
     @pytest.mark.asyncio
-    async def test_updates_name_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, name="Old Name")
+    async def test_edits_name_successfully(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
 
         result = await edit_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
-            name="New Name",
+            name="Product Engineering",
             description=None,
             avatar_initial=None,
         )
 
-        assert result.name == "New Name"
+        assert result.name == "Product Engineering"
+        assert result.description == dept.description
+        assert result.avatar_initial == dept.avatar_initial
 
     @pytest.mark.asyncio
-    async def test_updates_description_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+    async def test_edits_description_successfully(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(
+            db_session, org.id, owner.branch_id, name="Engineering", description="Old description"
+        )
 
         result = await edit_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
             name=None,
-            description="Builds the product",
+            description="New description",
             avatar_initial=None,
         )
 
-        assert result.description == "Builds the product"
+        assert result.name == dept.name
+        assert result.description == "New description"
+        assert result.avatar_initial == dept.avatar_initial
 
     @pytest.mark.asyncio
-    async def test_updates_avatar_initial_successfully(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+    async def test_edits_avatar_initial_successfully(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(
+            db_session, org.id, owner.branch_id, name="Engineering", avatar_initial="E"
+        )
 
         result = await edit_department(
             session=db_session,
@@ -143,128 +124,74 @@ class TestEditDepartment:
             department_id=dept.id,
             name=None,
             description=None,
-            avatar_initial="EN",
+            avatar_initial="PE",
         )
 
-        assert result.avatar_initial == "EN"
+        assert result.name == dept.name
+        assert result.description == dept.description
+        assert result.avatar_initial == "PE"
 
     @pytest.mark.asyncio
-    async def test_updates_all_fields_at_once(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, name="Old")
+    async def test_edits_all_fields_at_once(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(
+            db_session, org.id, owner.branch_id,
+            name="Engineering", description="Old", avatar_initial="E",
+        )
 
         result = await edit_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
-            name="New",
-            description="Updated desc",
-            avatar_initial="NW",
-        )
-
-        assert result.name == "New"
-        assert result.description == "Updated desc"
-        assert result.avatar_initial == "NW"
-
-    @pytest.mark.asyncio
-    async def test_name_stripped_of_whitespace(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-
-        result = await edit_department(
-            session=db_session,
-            organization_id=org.id,
-            department_id=dept.id,
-            name="  Product  ",
-            description=None,
-            avatar_initial=None,
+            name="Product",
+            description="New desc",
+            avatar_initial="P",
         )
 
         assert result.name == "Product"
+        assert result.description == "New desc"
+        assert result.avatar_initial == "P"
 
     @pytest.mark.asyncio
-    async def test_unprovided_fields_are_not_changed(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+    async def test_no_change_when_all_fields_none(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
         dept = await _make_department(
-            db_session, org.id,
-            name="Engineering",
-            description="Original desc",
-            avatar_initial="EN",
+            db_session, org.id, owner.branch_id,
+            name="Engineering", description="Desc", avatar_initial="E",
         )
 
         result = await edit_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
-            name="Updated Name",
-            description=None,
-            avatar_initial=None,
-        )
-
-        assert result.name == "Updated Name"
-        assert result.description == "Original desc"
-        assert result.avatar_initial == "EN"
-
-    @pytest.mark.asyncio
-    async def test_does_not_raise_when_name_is_unchanged(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, name="Engineering")
-
-        result = await edit_department(
-            session=db_session,
-            organization_id=org.id,
-            department_id=dept.id,
-            name="Engineering",
+            name=None,
             description=None,
             avatar_initial=None,
         )
 
         assert result.name == "Engineering"
+        assert result.description == "Desc"
+        assert result.avatar_initial == "E"
 
     @pytest.mark.asyncio
-    async def test_does_not_raise_for_different_casing_of_same_name(
-        self, db_session: AsyncSession
-    ):
-        """Changing 'engineering' to 'Engineering' is a casing update on
-        the same department — should not trigger the uniqueness check."""
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, name="engineering")
+    async def test_strips_whitespace_from_name(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
 
         result = await edit_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
-            name="Engineering",
+            name="  Product Engineering  ",
             description=None,
             avatar_initial=None,
         )
 
-        assert result.name == "Engineering"
+        assert result.name == "Product Engineering"
 
     @pytest.mark.asyncio
-    async def test_returns_updated_department(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-
-        result = await edit_department(
-            session=db_session,
-            organization_id=org.id,
-            department_id=dept.id,
-            name="Updated",
-            description=None,
-            avatar_initial=None,
-        )
-
-        assert isinstance(result, Department)
-        assert result.id == dept.id
-
-    @pytest.mark.asyncio
-    async def test_raises_404_when_department_not_found(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
+    async def test_raises_404_when_department_not_found(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
 
         with pytest.raises(HTTPException) as exc_info:
             await edit_department(
@@ -276,23 +203,24 @@ class TestEditDepartment:
                 avatar_initial=None,
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert "Department not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_404_when_department_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept = await _make_department(db_session, org1.id, owner1.branch_id, name="Engineering")
 
         with pytest.raises(HTTPException) as exc_info:
             await edit_department(
@@ -304,221 +232,257 @@ class TestEditDepartment:
                 avatar_initial=None,
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     @pytest.mark.asyncio
-    async def test_raises_409_when_name_conflicts_with_existing(
+    async def test_raises_409_when_name_conflicts_within_same_branch(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Marketing")
-        dept = await _make_department(db_session, org.id, name="Engineering")
+        """Name uniqueness is scoped per branch — two departments in the
+        same branch cannot share a name."""
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+        product_dept = await _make_department(db_session, org.id, owner.branch_id, name="Product")
 
         with pytest.raises(HTTPException) as exc_info:
             await edit_department(
                 session=db_session,
                 organization_id=org.id,
-                department_id=dept.id,
-                name="Marketing",
+                department_id=product_dept.id,
+                name="Engineering",
                 description=None,
                 avatar_initial=None,
             )
 
-        assert exc_info.value.status_code == 409
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+        assert "already exists" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_raises_409_for_case_insensitive_name_conflict(
+    async def test_allows_same_name_case_insensitive_no_conflict(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Marketing")
-        dept = await _make_department(db_session, org.id, name="Engineering")
+        """Renaming a department to a different casing of its own name
+        must not raise a conflict — it's the same row."""
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+
+        result = await edit_department(
+            session=db_session,
+            organization_id=org.id,
+            department_id=dept.id,
+            name="engineering",
+            description=None,
+            avatar_initial=None,
+        )
+
+        assert result.name == "engineering"
+
+    @pytest.mark.asyncio
+    async def test_raises_409_when_name_conflicts_case_insensitive(
+        self, db_session: AsyncSession
+    ):
+        """Name conflict check is case-insensitive within the same branch."""
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+        product_dept = await _make_department(db_session, org.id, owner.branch_id, name="Product")
 
         with pytest.raises(HTTPException) as exc_info:
             await edit_department(
                 session=db_session,
                 organization_id=org.id,
-                department_id=dept.id,
-                name="MARKETING",
+                department_id=product_dept.id,
+                name="ENGINEERING",
                 description=None,
                 avatar_initial=None,
             )
 
-        assert exc_info.value.status_code == 409
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+
+    @pytest.mark.asyncio
+    async def test_no_conflict_when_same_name_in_different_branch(
+        self, db_session: AsyncSession
+    ):
+        """Same department name is allowed across different branches of
+        the same org — uniqueness is branch-scoped, not org-scoped."""
+        org, owner = await make_org_with_owner(db_session)
+
+        branch_b = make_branch(org.id, name="Downtown")
+        db_session.add(branch_b)
+        await db_session.flush()
+
+        # "Engineering" already exists in branch_b
+        await _make_department(db_session, org.id, branch_b.id, name="Engineering")
+        # Renaming a dept in HQ to "Engineering" should be fine — different branch
+        hq_dept = await _make_department(db_session, org.id, owner.branch_id, name="Product")
+
+        result = await edit_department(
+            session=db_session,
+            organization_id=org.id,
+            department_id=hq_dept.id,
+            name="Engineering",
+            description=None,
+            avatar_initial=None,
+        )
+
+        assert result.name == "Engineering"
+
+    @pytest.mark.asyncio
+    async def test_no_conflict_when_same_name_in_different_org(
+        self, db_session: AsyncSession
+    ):
+        """Same name in a completely different org is always allowed."""
+        org1, owner1 = await make_org_with_owner(
+            db_session,
+            org_kwargs=dict(slug="org-one"),
+            user_kwargs=dict(email="owner1@example.com"),
+        )
+        org2, owner2 = await make_org_with_owner(
+            db_session,
+            org_kwargs=dict(slug="org-two"),
+            user_kwargs=dict(email="owner2@example.com"),
+        )
+        await _make_department(db_session, org1.id, owner1.branch_id, name="Engineering")
+        product_dept = await _make_department(db_session, org2.id, owner2.branch_id, name="Product")
+
+        result = await edit_department(
+            session=db_session,
+            organization_id=org2.id,
+            department_id=product_dept.id,
+            name="Engineering",
+            description=None,
+            avatar_initial=None,
+        )
+
+        assert result.name == "Engineering"
 
 
-# ── assign_user_to_department ──────────────────────────────────────────────────
+# ── assign_user_to_department ─────────────────────────────────────────────────
 
 class TestAssignUserToDepartment:
 
     @pytest.mark.asyncio
-    async def test_assigns_user_with_no_prior_membership(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
+    async def test_assigns_user_to_department_successfully(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
+        member = await make_user_with_role(
+            db_session,
+            organization_id=org.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner.branch_id,
+        )
+        db_session.add(member)
+        await db_session.flush()
 
         result = await assign_user_to_department(
             session=db_session,
             organization_id=org.id,
             department_id=dept.id,
-            user_id=user.id,
+            user_id=member.id,
         )
 
         assert result.department_id == dept.id
-        assert result.user_id == user.id
+        assert result.user_id == member.id
 
     @pytest.mark.asyncio
-    async def test_returns_department_member_row(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
-
-        result = await assign_user_to_department(
-            session=db_session,
+    async def test_moves_user_from_old_department_to_new(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        old_dept = await _make_department(db_session, org.id, owner.branch_id, name="Old Dept")
+        new_dept = await _make_department(db_session, org.id, owner.branch_id, name="New Dept")
+        member = await make_user_with_role(
+            db_session,
             organization_id=org.id,
-            department_id=dept.id,
-            user_id=user.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner.branch_id,
         )
+        db_session.add(member)
+        await db_session.flush()
 
-        assert isinstance(result, DepartmentMember)
-        assert result.id is not None
-
-    @pytest.mark.asyncio
-    async def test_membership_row_has_correct_fields(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
-
-        result = await assign_user_to_department(
-            session=db_session,
-            organization_id=org.id,
-            department_id=dept.id,
-            user_id=user.id,
-        )
-
-        db_result = await db_session.execute(
-            select(DepartmentMember).where(DepartmentMember.id == result.id)
-        )
-        fetched = db_result.scalar_one()
-        assert fetched.department_id == dept.id
-        assert fetched.user_id == user.id
-
-    @pytest.mark.asyncio
-    async def test_moves_user_from_old_department_atomically(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        old_dept = await _make_department(db_session, org.id, name="Old")
-        new_dept = await _make_department(db_session, org.id, name="New")
-        user = await _make_user(db_session, org.id, "user@example.com")
-        await _add_membership(db_session, old_dept.id, user.id)
+        await _make_membership(db_session, old_dept.id, member.id)
 
         result = await assign_user_to_department(
             session=db_session,
             organization_id=org.id,
             department_id=new_dept.id,
-            user_id=user.id,
+            user_id=member.id,
         )
 
         assert result.department_id == new_dept.id
+        assert result.user_id == member.id
+
+        old_membership = await db_session.execute(
+            select(DepartmentMember).where(
+                DepartmentMember.user_id == member.id,
+                DepartmentMember.department_id == old_dept.id,
+            )
+        )
+        assert old_membership.scalar_one_or_none() is None
 
     @pytest.mark.asyncio
-    async def test_old_membership_row_is_deleted_after_reassignment(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        old_dept = await _make_department(db_session, org.id, name="Old")
-        new_dept = await _make_department(db_session, org.id, name="New")
-        user = await _make_user(db_session, org.id, "user@example.com")
-        old_membership = await _add_membership(db_session, old_dept.id, user.id)
-        old_membership_id = old_membership.id
-
-        await assign_user_to_department(
-            session=db_session,
+    async def test_raises_404_when_department_not_found(self, db_session: AsyncSession):
+        org, owner = await make_org_with_owner(db_session)
+        member = await make_user_with_role(
+            db_session,
             organization_id=org.id,
-            department_id=new_dept.id,
-            user_id=user.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner.branch_id,
         )
-
-        result = await db_session.execute(
-            select(DepartmentMember).where(DepartmentMember.id == old_membership_id)
-        )
-        assert result.scalar_one_or_none() is None
-
-    @pytest.mark.asyncio
-    async def test_only_one_membership_row_exists_after_reassignment(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        old_dept = await _make_department(db_session, org.id, name="Old")
-        new_dept = await _make_department(db_session, org.id, name="New")
-        user = await _make_user(db_session, org.id, "user@example.com")
-        await _add_membership(db_session, old_dept.id, user.id)
-
-        await assign_user_to_department(
-            session=db_session,
-            organization_id=org.id,
-            department_id=new_dept.id,
-            user_id=user.id,
-        )
-
-        result = await db_session.execute(
-            select(DepartmentMember).where(DepartmentMember.user_id == user.id)
-        )
-        memberships = result.scalars().all()
-        assert len(memberships) == 1
-        assert memberships[0].department_id == new_dept.id
-
-    @pytest.mark.asyncio
-    async def test_raises_404_when_target_department_not_found(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        user = await _make_user(db_session, org.id, "user@example.com")
+        db_session.add(member)
+        await db_session.flush()
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_department(
                 session=db_session,
                 organization_id=org.id,
                 department_id="00000000-0000-0000-0000-000000000000",
-                user_id=user.id,
+                user_id=member.id,
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert "Department not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_404_when_department_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept_org2 = await _make_department(db_session, org2.id)
-        user = await _make_user(db_session, org1.id, "user@example.com")
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
+        member = await make_user_with_role(
+            db_session,
+            organization_id=org2.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner2.branch_id,
+        )
+        db_session.add(member)
+        await db_session.flush()
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_department(
                 session=db_session,
-                organization_id=org1.id,
-                department_id=dept_org2.id,
-                user_id=user.id,
+                organization_id=org2.id,
+                department_id=dept.id,   # dept is in org1
+                user_id=member.id,
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert "Department not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_404_when_user_not_found(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_department(
@@ -528,50 +492,70 @@ class TestAssignUserToDepartment:
                 user_id="00000000-0000-0000-0000-000000000000",
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert "User not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_404_when_user_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
-        user_org2 = await _make_user(db_session, org2.id, "user@example.com")
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
+        member = await make_user_with_role(
+            db_session,
+            organization_id=org2.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner2.branch_id,
+        )
+        db_session.add(member)
+        await db_session.flush()
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_department(
                 session=db_session,
-                organization_id=org1.id,
+                organization_id=org1.id,   # asking as org1
                 department_id=dept.id,
-                user_id=user_org2.id,
+                user_id=member.id,          # user is in org2
             )
 
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert "User not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_raises_409_when_user_already_in_target_department(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id)
-        user = await _make_user(db_session, org.id, "user@example.com")
-        await _add_membership(db_session, dept.id, user.id)
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id)
+        member = await make_user_with_role(
+            db_session,
+            organization_id=org.id,
+            email="member@example.com",
+            role_name="member",
+            branch_id=owner.branch_id,
+        )
+        db_session.add(member)
+        await db_session.flush()
+
+        await _make_membership(db_session, dept.id, member.id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_department(
                 session=db_session,
                 organization_id=org.id,
                 department_id=dept.id,
-                user_id=user.id,
+                user_id=member.id,
             )
 
-        assert exc_info.value.status_code == 409
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+        assert "already a member" in exc_info.value.detail

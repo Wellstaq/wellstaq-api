@@ -26,7 +26,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Department
+from app.models import Department, Branch
 from app.services.department.get_department import get_department, get_departments
 from tests.conftest import make_org_with_owner
 
@@ -36,6 +36,7 @@ from tests.conftest import make_org_with_owner
 async def _make_department(
     db_session: AsyncSession,
     organization_id: str,
+    branch_id: str,
     name: str = "Engineering",
     description: str | None = None,
 ) -> Department:
@@ -43,6 +44,7 @@ async def _make_department(
         name=name,
         description=description,
         organization_id=organization_id,
+        branch_id=branch_id,
         member_count=0,
     )
     db_session.add(dept)
@@ -69,10 +71,10 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_returns_all_departments_in_org(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Engineering")
-        await _make_department(db_session, org.id, name="Marketing")
-        await _make_department(db_session, org.id, name="Finance")
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+        await _make_department(db_session, org.id, owner.branch_id, name="Marketing")
+        await _make_department(db_session, org.id, owner.branch_id, name="Finance")
 
         result = await get_departments(
             session=db_session,
@@ -85,19 +87,19 @@ class TestGetDepartments:
     async def test_does_not_return_departments_from_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, _ = await make_org_with_owner(
+        org2, owner2 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
 
-        await _make_department(db_session, org1.id, name="Engineering")
-        await _make_department(db_session, org2.id, name="Marketing")
+        await _make_department(db_session, org1.id, owner1.branch_id, name="Engineering")
+        await _make_department(db_session, org2.id, owner2.branch_id, name="Marketing")
 
         result = await get_departments(
             session=db_session,
@@ -110,10 +112,10 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_departments_ordered_by_name(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Zebra Team")
-        await _make_department(db_session, org.id, name="Alpha Team")
-        await _make_department(db_session, org.id, name="Mango Team")
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Zebra Team")
+        await _make_department(db_session, org.id, owner.branch_id, name="Alpha Team")
+        await _make_department(db_session, org.id, owner.branch_id, name="Mango Team")
 
         result = await get_departments(
             session=db_session,
@@ -125,9 +127,9 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_limit_restricts_returned_count(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
         for i in range(5):
-            await _make_department(db_session, org.id, name=f"Dept {i:02d}")
+            await _make_department(db_session, org.id, owner.branch_id, name=f"Dept {i:02d}")
 
         result = await get_departments(
             session=db_session,
@@ -139,10 +141,10 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_offset_skips_correct_departments(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Aardvark")
-        await _make_department(db_session, org.id, name="Baboon")
-        await _make_department(db_session, org.id, name="Cheetah")
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Aardvark")
+        await _make_department(db_session, org.id, owner.branch_id, name="Baboon")
+        await _make_department(db_session, org.id, owner.branch_id, name="Cheetah")
 
         result = await get_departments(
             session=db_session,
@@ -157,9 +159,9 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_offset_beyond_total_returns_empty(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id, name="Engineering")
-        await _make_department(db_session, org.id, name="Marketing")
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+        await _make_department(db_session, org.id, owner.branch_id, name="Marketing")
 
         result = await get_departments(
             session=db_session,
@@ -171,8 +173,8 @@ class TestGetDepartments:
 
     @pytest.mark.asyncio
     async def test_returns_department_objects(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        await _make_department(db_session, org.id)
+        org, owner = await make_org_with_owner(db_session)
+        await _make_department(db_session, org.id, owner.branch_id)
 
         result = await get_departments(
             session=db_session,
@@ -188,8 +190,8 @@ class TestGetDepartment:
 
     @pytest.mark.asyncio
     async def test_returns_correct_department_by_id(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
-        dept = await _make_department(db_session, org.id, name="Engineering")
+        org, owner = await make_org_with_owner(db_session)
+        dept = await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
 
         result = await get_department(
             session=db_session,
@@ -204,7 +206,7 @@ class TestGetDepartment:
     async def test_returns_correct_fields(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         dept = await _make_department(
-            db_session, org.id,
+            db_session, org.id, owner.branch_id,
             name="Product",
             description="Builds the product",
         )
@@ -223,9 +225,9 @@ class TestGetDepartment:
     async def test_returns_correct_department_when_multiple_exist(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
-        dept_a = await _make_department(db_session, org.id, name="Engineering")
-        dept_b = await _make_department(db_session, org.id, name="Marketing")
+        org, owner = await make_org_with_owner(db_session)
+        dept_a = await _make_department(db_session, org.id, owner.branch_id, name="Engineering")
+        dept_b = await _make_department(db_session, org.id, owner.branch_id, name="Marketing")
 
         result = await get_department(
             session=db_session,
@@ -255,7 +257,7 @@ class TestGetDepartment:
     async def test_raises_404_when_department_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, _ = await make_org_with_owner(
+        org1, owner1 = await make_org_with_owner(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -265,7 +267,7 @@ class TestGetDepartment:
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
-        dept = await _make_department(db_session, org1.id)
+        dept = await _make_department(db_session, org1.id, owner1.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
             await get_department(
