@@ -130,6 +130,7 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "OrganizationInvite",
         back_populates="invited_department",
         foreign_keys="OrganizationInvite.invited_department_id",
+        passive_deletes= True,
     )
     rank_snapshots: Mapped[list["DepartmentRankSnapshot"]] = relationship(
         "DepartmentRankSnapshot",

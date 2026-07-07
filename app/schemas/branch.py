@@ -58,7 +58,9 @@ class BranchMembersListResponse(BaseModel):
     offset: int
     limit: int
 
-
+class BranchMemberAssignRequest(BaseModel):
+    department_id: str = Field(..., min_length=1)
+    
 class BranchMemberAssignResponse(BaseModel):
     user_id: str
     branch_id: str

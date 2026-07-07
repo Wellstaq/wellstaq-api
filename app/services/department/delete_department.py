@@ -32,14 +32,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.department import Department, DepartmentMember
 from app.services.errors import AppError
 
-
 async def delete_department(
     session: AsyncSession,
     organization_id: str,
     department_id: str,
     transfer_to_department_id: str | None,
 ) -> dict:
-    # Load the department
+    from app.core.constants import InviteStatus
+    from app.models import OrganizationInvite
+
     result = await session.execute(
         select(Department).where(
             Department.id == department_id,
@@ -50,7 +51,6 @@ async def delete_department(
     if not department:
         raise AppError("Department not found.", status.HTTP_404_NOT_FOUND)
 
-    # Load current members
     members_result = await session.execute(
         select(DepartmentMember).where(
             DepartmentMember.department_id == department_id,
@@ -70,7 +70,6 @@ async def delete_department(
 
     transferred = 0
     if transfer_to_department_id and members:
-        # Validate target department
         target_result = await session.execute(
             select(Department).where(
                 Department.id == transfer_to_department_id,
@@ -89,12 +88,28 @@ async def delete_department(
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        # Move all members to target department atomically
         for member in members:
             member.department_id = transfer_to_department_id
 
         target.member_count += member_count
         transferred = member_count
+
+    # Guard: pending invites reference this department via a RESTRICT FK —
+    # deleting while they exist violates the constraint. Surface this as a
+    # clean 409 rather than letting an IntegrityError bubble up.
+    pending_invites_result = await session.execute(
+        select(OrganizationInvite).where(
+            OrganizationInvite.invited_department_id == department_id,
+            OrganizationInvite.status == InviteStatus.PENDING,
+        )
+    )
+    pending_invites = pending_invites_result.scalars().all()
+    if pending_invites:
+        raise AppError(
+            f"Department has {len(pending_invites)} pending invite(s) targeting it. "
+            "Revoke or expire those invites before deleting this department.",
+            status.HTTP_409_CONFLICT,
+        )
 
     await session.flush()
     await session.delete(department)

@@ -11,13 +11,15 @@ Permission model mirrors departments.py:
   4. Service call.
 
 Routes:
-  POST   /organizations/{org_id}/branches                          — create
-  GET    /organizations/{org_id}/branches                          — list
-  GET    /organizations/{org_id}/branches/{branch_id}               — get one
-  PATCH  /organizations/{org_id}/branches/{branch_id}               — edit
-  DELETE /organizations/{org_id}/branches/{branch_id}               — delete (requires transfer if non-empty)
-  GET    /organizations/{org_id}/branches/{branch_id}/members        — list members
+  POST   /organizations/{org_id}/branches                              — create
+  GET    /organizations/{org_id}/branches                              — list
+  GET    /organizations/{org_id}/branches/{branch_id}                  — get one
+  PATCH  /organizations/{org_id}/branches/{branch_id}                  — edit
+  DELETE /organizations/{org_id}/branches/{branch_id}                  — delete (must be empty)
+  GET    /organizations/{org_id}/branches/{branch_id}/members           — list members
   PUT    /organizations/{org_id}/branches/{branch_id}/members/{user_id} — assign/transfer user
+  PUT    /organizations/{org_id}/branches/{branch_id}/manager           — assign manager
+  DELETE /organizations/{org_id}/branches/{branch_id}/manager           — unassign manager
 """
 
 from __future__ import annotations
@@ -38,7 +40,6 @@ from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.branch import (
     BranchCreateRequest,
-    BranchDeleteRequest,
     BranchListResponse,
     BranchManagerAssignRequest,
     BranchManagerResponse,
@@ -59,6 +60,7 @@ from app.services.branch import (
     get_branches,
     unassign_branch_manager,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -105,7 +107,8 @@ async def create_branch_route(
         )
         await db.commit()
         return BranchResponse.model_validate(branch)
-        
+
+
 # ── List ─────────────────────────────────────────────────────────────────────
 
 @router.get(
@@ -113,7 +116,7 @@ async def create_branch_route(
     response_model=BranchListResponse,
     status_code=status.HTTP_200_OK,
     summary="List branches in an organization",
-    description="Requires `branch.create` granted org-wide (same read-scope as create).",
+    description="Accessible to any authenticated member of the organization.",
 )
 async def list_branches_route(
     org_id: str,
@@ -125,7 +128,6 @@ async def list_branches_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches"):
-
         branches, total = await get_branches(
             session=db, organization_id=org_id, offset=offset, limit=limit,
         )
@@ -160,6 +162,7 @@ async def get_branch_route(
 
 
 # ── Edit ─────────────────────────────────────────────────────────────────────
+
 @router.patch(
     "/{branch_id}",
     response_model=BranchResponse,
@@ -185,7 +188,7 @@ async def edit_branch_route(
             db=db,
             current_user=current_user,
             permission="branch.update",
-            target_branch_id=branch_id, 
+            target_branch_id=branch_id,
         )
 
         branch = await edit_branch(
@@ -199,23 +202,31 @@ async def edit_branch_route(
 
 
 # ── Delete ───────────────────────────────────────────────────────────────────
+
 @router.delete(
     "/{branch_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a branch",
     description=(
-        "Deletes a branch. If it has members, `target_branch_id` must be "
-        "provided in the request body — all members are transferred there "
-        "first. Requires `branch.delete` granted org-wide."
+        "Deletes a branch. The branch must be fully empty before deletion "
+        "is allowed:\n\n"
+        "1. Unassign the manager first (DELETE /branches/{branch_id}/manager).\n"
+        "2. Delete every department in this branch first via DELETE "
+        "/departments/{dept_id} — pass `transfer_to_department_id` on each "
+        "call to move that department's members to a department in another "
+        "branch atomically.\n"
+        "3. Once the branch has no manager, no departments, and no members, "
+        "this call succeeds.\n\n"
+        "The Headquarters branch cannot be deleted. "
+        "Requires `branch.delete` granted org-wide."
     ),
 )
 async def delete_branch_route(
     org_id: str,
     branch_id: str,
-    body: BranchDeleteRequest,
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("branch.delete")),
-):  # ← no `-> None` here
+):
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}"):
@@ -230,9 +241,10 @@ async def delete_branch_route(
             session=db,
             organization_id=org_id,
             branch_id=branch_id,
-            target_branch_id=body.target_branch_id,
         )
         await db.commit()
+
+
 # ── Members ──────────────────────────────────────────────────────────────────
 
 @router.get(
@@ -240,7 +252,7 @@ async def delete_branch_route(
     response_model=BranchMembersListResponse,
     status_code=status.HTTP_200_OK,
     summary="List members of a branch",
-    description="Requires `branch.create` granted org-wide (same read-scope as listing branches).",
+    description="Accessible to any authenticated member of the organization.",
 )
 async def list_branch_members_route(
     org_id: str,
@@ -253,9 +265,9 @@ async def list_branch_members_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/members"):
-
         members, total = await get_branch_members(
-            session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
+            session=db, organization_id=org_id, branch_id=branch_id,
+            offset=offset, limit=limit,
         )
         return BranchMembersListResponse(
             items=[BranchMemberInfo.model_validate(m) for m in members],
@@ -285,7 +297,9 @@ async def assign_user_to_branch_route(
 ) -> BranchMemberAssignResponse:
     require_same_organization(org_id, current_user)
 
-    async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/members/{user_id}"):
+    async with request_guard(
+        db, "/organizations/{org_id}/branches/{branch_id}/members/{user_id}"
+    ):
         await require_scoped_permission(
             db=db,
             current_user=current_user,
@@ -304,6 +318,8 @@ async def assign_user_to_branch_route(
             organization_id=org_id,
             message="User successfully assigned to branch.",
         )
+
+
 # ── Manager ──────────────────────────────────────────────────────────────────
 
 @router.put(
@@ -313,8 +329,8 @@ async def assign_user_to_branch_route(
     summary="Assign a branch manager",
     description=(
         "Assigns a user as manager of this branch. Fails if the branch "
-        "already has a manager — unassign first. Requires `branch.update` "
-        "granted org-wide."
+        "already has a manager — unassign first. Requires "
+        "`branch.manager.assign` granted org-wide."
     ),
 )
 async def assign_branch_manager_route(
@@ -325,11 +341,15 @@ async def assign_branch_manager_route(
     current_user: CurrentUser = Depends(require_permission("branch.manager.assign")),
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
-    async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/manager"):
+
+    async with request_guard(
+        db, "/organizations/{org_id}/branches/{branch_id}/manager"
+    ):
         await require_scoped_permission(
-            db=db, current_user=current_user,
+            db=db,
+            current_user=current_user,
             permission="branch.manager.assign",
-            target_branch_id=None,   # scope="org" — always org-wide only
+            target_branch_id=None,
         )
 
         branch = await assign_branch_manager(
@@ -355,7 +375,8 @@ async def assign_branch_manager_route(
     summary="Unassign the branch manager",
     description=(
         "Removes the current manager from this branch. Required before "
-        "the branch can be deleted. Requires `branch.update` granted org-wide."
+        "the branch can be deleted. Requires `branch.manager.assign` "
+        "granted org-wide."
     ),
 )
 async def unassign_branch_manager_route(
@@ -366,7 +387,9 @@ async def unassign_branch_manager_route(
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
 
-    async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/manager"):
+    async with request_guard(
+        db, "/organizations/{org_id}/branches/{branch_id}/manager"
+    ):
         await require_scoped_permission(
             db=db,
             current_user=current_user,
@@ -384,6 +407,6 @@ async def unassign_branch_manager_route(
         return BranchManagerResponse(
             branch_id=branch.id,
             organization_id=org_id,
-            manager_id=branch.manager_id,  # will be None
+            manager_id=branch.manager_id,  # None after unassign
             message="Manager unassigned successfully.",
         )

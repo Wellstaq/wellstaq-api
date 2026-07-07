@@ -229,17 +229,24 @@ async def assign_user_to_branch(
     organization_id: str,
     branch_id: str,
     user_id: str,
+    department_id: str,          # required — user must land in a dept in the new branch
 ) -> User:
     """
-    Assign a user to a branch, transferring them out of their previous
-    branch automatically (User.branch_id is a single FK — overwriting
-    it IS the transfer).
+    Transfer a user to a new branch AND move them into a department
+    within that branch in the same transaction.
+
+    A user's department must always belong to their home branch — these
+    two updates are never allowed to happen independently. Providing
+    department_id is mandatory, not optional.
 
     Raises:
       404 — target branch not found or belongs to a different org.
+      400 — target branch is the same as the user's current branch.
       404 — user not found or belongs to a different org.
       409 — user is already assigned to this branch.
+      404 — department not found, not in this org, or not in the target branch.
     """
+    # ── Validate target branch ─────────────────────────────────────────────
     branch_result = await session.execute(
         select(Branch).where(
             Branch.id == branch_id,
@@ -252,6 +259,7 @@ async def assign_user_to_branch(
             detail="Branch not found or does not belong to this organization.",
         )
 
+    # ── Validate user ──────────────────────────────────────────────────────
     user_result = await session.execute(
         select(User).where(
             User.id == user_id,
@@ -271,22 +279,72 @@ async def assign_user_to_branch(
             detail="User is already assigned to this branch.",
         )
 
+    # ── Validate department belongs to the TARGET branch ──────────────────
+    # Must be checked against branch_id, not just organization_id — a dept
+    # from another branch in the same org would leave branch/dept mismatched.
+    from app.models.department import Department, DepartmentMember
+
+    dept_result = await session.execute(
+        select(Department).where(
+            Department.id == department_id,
+            Department.organization_id == organization_id,
+            Department.branch_id == branch_id,
+        )
+    )
+    new_department = dept_result.scalar_one_or_none()
+    if new_department is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Department not found, does not belong to this organization, "
+                "or does not belong to the target branch."
+            ),
+        )
+
+    # ── Move branch ────────────────────────────────────────────────────────
     old_branch_id = user.branch_id
     user.branch_id = branch_id
+
+    # ── Move department membership ─────────────────────────────────────────
+    # Find and update existing DepartmentMember row. UniqueConstraint on
+    # user_id means at most one row. If missing (edge case), create it.
+    membership_result = await session.execute(
+        select(DepartmentMember).where(DepartmentMember.user_id == user_id)
+    )
+    membership = membership_result.scalar_one_or_none()
+
+    if membership:
+        old_dept_id = membership.department_id
+
+        # Decrement old department's member_count
+        old_dept_result = await session.execute(
+            select(Department).where(Department.id == old_dept_id)
+        )
+        old_department = old_dept_result.scalar_one_or_none()
+        if old_department and old_department.member_count > 0:
+            old_department.member_count -= 1
+
+        membership.department_id = department_id
+    else:
+        session.add(DepartmentMember(department_id=department_id, user_id=user_id))
+
+    # Increment new department's member_count
+    new_department.member_count += 1
+
     await session.flush()
     await session.refresh(user)
 
     logger.info(
-        "User transferred to branch",
+        "User transferred to branch and department",
         extra={
             "user_id": user_id,
             "old_branch_id": old_branch_id,
             "new_branch_id": branch_id,
+            "new_department_id": department_id,
             "org_id": organization_id,
         },
     )
     return user
-
 
 async def assign_branch_manager(
     *,
