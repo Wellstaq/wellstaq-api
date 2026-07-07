@@ -2,9 +2,9 @@
 app/schemas/event.py
 """
 
-from __future__ import annotations
 
-from datetime import date, time
+
+from datetime import date, time as time_type
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,7 +17,7 @@ class EventCreateRequest(BaseModel):
     start_date: date
     end_date: date | None = None
     recurrence_rule: str | None = None
-    time: time
+    time: time_type
 
 
 class EventUpdateRequest(BaseModel):
@@ -27,7 +27,7 @@ class EventUpdateRequest(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     recurrence_rule: str | None = None
-    time: time | None = None
+    time: time_type | None = None
     status: str | None = None  # scheduled | ongoing | completed | cancelled
 
 
@@ -41,7 +41,7 @@ class EventResponse(BaseModel):
     start_date: date
     end_date: date | None
     recurrence_rule: str | None
-    time: time
+    time: time_type
     status: str
     organization_id: str
     branch_id: str

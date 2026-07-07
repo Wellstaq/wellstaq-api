@@ -2,7 +2,7 @@ from .create_event import create_event
 from .get_event import get_event, get_events, get_event_participants
 from .update_event import edit_event, cancel_event
 from .delete_event import delete_event
-from .participants import (
+from .participant import (
     join_event,
     update_participant_status,
     mark_attendance,

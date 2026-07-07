@@ -25,6 +25,7 @@ from app.routers import (
     branches,
     clubs,
     permissions,
+    events,
 )
 
 
@@ -64,6 +65,7 @@ app.include_router(roles.router)
 app.include_router(branches.router)
 app.include_router(clubs.router)
 app.include_router(permissions.router)
+app.include_router(events.router)
 
 @app.get("/")
 async def root():

@@ -56,7 +56,7 @@ from app.schemas.event import (
     ParticipantJoinRequest,
     ParticipantStatusUpdateRequest,
 )
-from app.services.events import (
+from app.services.event import (
     cancel_event,
     create_event,
     delete_event,
