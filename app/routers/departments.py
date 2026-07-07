@@ -6,6 +6,7 @@ Department management routes.
 Routes:
   POST   /organizations/{org_id}/departments                                — create
   GET    /organizations/{org_id}/departments                                — list all
+  GET    /organizations/{org_id}/branches/{branch_id}/departments           — list by branch
   GET    /organizations/{org_id}/departments/{dept_id}                      — get one
   PATCH  /organizations/{org_id}/departments/{dept_id}                      — edit
   DELETE /organizations/{org_id}/departments/{dept_id}                      — delete
@@ -21,6 +22,16 @@ branch used for the permission scope check is always the department's
 own branch_id — fetched from the DB — never a caller-supplied value.
 This prevents a caller from claiming a different branch than the one
 the department actually belongs to.
+
+No router prefix
+─────────────────
+This router carries no prefix — every route spells out its full path,
+the same pattern app/routers/clubs.py uses. That's what lets one router
+serve both "/organizations/{org_id}/departments/..." routes AND
+"/organizations/{org_id}/branches/{branch_id}/departments" (which
+doesn't nest under the departments prefix) from a single file, with a
+single app.include_router(router) call — no second router to remember
+to register.
 """
 
 from __future__ import annotations
@@ -56,6 +67,7 @@ from app.services.department import (
     assign_user_to_department,
     create_department,
     edit_department,
+    get_branch_departments,
     get_department,
     get_department_members,
     get_departments,
@@ -67,16 +79,13 @@ from app.services.department import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    prefix="/organizations/{org_id}/departments",
-    tags=["departments"],
-)
+router = APIRouter(tags=["departments"])
 
 
 # ── Create ─────────────────────────────────────────────────────────────────────
 
 @router.post(
-    "",
+    "/organizations/{org_id}/departments",
     response_model=DepartmentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create a department",
@@ -118,7 +127,7 @@ async def create_department_route(
 # ── List ───────────────────────────────────────────────────────────────────────
 
 @router.get(
-    "",
+    "/organizations/{org_id}/departments",
     response_model=DepartmentListResponse,
     status_code=status.HTTP_200_OK,
     summary="List departments in an organization",
@@ -149,10 +158,50 @@ async def list_departments_route(
         )
 
 
+# ── List by branch ─────────────────────────────────────────────────────────────
+
+@router.get(
+    "/organizations/{org_id}/branches/{branch_id}/departments",
+    response_model=DepartmentListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List departments in a branch",
+    description=(
+        "Lists every department belonging to this branch. "
+        "Department.branch_id is required, so this is the complete set "
+        "for the branch — there's no separate org-level bucket to also "
+        "check. Accessible to any authenticated member of the organization."
+    ),
+)
+async def list_branch_departments_route(
+    org_id: str,
+    branch_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> DepartmentListResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/departments"):
+        departments, total = await get_branch_departments(
+            session=db,
+            organization_id=org_id,
+            branch_id=branch_id,
+            offset=offset,
+            limit=limit,
+        )
+        return DepartmentListResponse(
+            items=[DepartmentResponse.model_validate(d) for d in departments],
+            total=total,
+            offset=offset,
+            limit=limit,
+        )
+
+
 # ── Get single ─────────────────────────────────────────────────────────────────
 
 @router.get(
-    "/{dept_id}",
+    "/organizations/{org_id}/departments/{dept_id}",
     response_model=DepartmentResponse,
     status_code=status.HTTP_200_OK,
     summary="Get a department by ID",
@@ -177,7 +226,7 @@ async def get_department_route(
 # ── Edit ───────────────────────────────────────────────────────────────────────
 
 @router.patch(
-    "/{dept_id}",
+    "/organizations/{org_id}/departments/{dept_id}",
     response_model=DepartmentResponse,
     status_code=status.HTTP_200_OK,
     summary="Update a department",
@@ -218,7 +267,7 @@ async def edit_department_route(
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
 @router.delete(
-    "/{dept_id}",
+    "/organizations/{org_id}/departments/{dept_id}",
     response_model=DepartmentDeleteResponse,
     status_code=status.HTTP_200_OK,
     summary="Delete a department",
@@ -271,7 +320,7 @@ async def delete_department_route(
 # ── Assign user to department ──────────────────────────────────────────────────
 
 @router.put(
-    "/{dept_id}/members/{user_id}",
+    "/organizations/{org_id}/departments/{dept_id}/members/{user_id}",
     response_model=DepartmentMemberAssignResponse,
     status_code=status.HTTP_200_OK,
     summary="Assign a user to a department",
@@ -322,7 +371,7 @@ async def assign_user_to_department_route(
 # ── List department members ────────────────────────────────────────────────────
 
 @router.get(
-    "/{dept_id}/members",
+    "/organizations/{org_id}/departments/{dept_id}/members",
     response_model=DepartmentMembersListResponse,
     status_code=status.HTTP_200_OK,
     summary="List members of a department",
@@ -361,7 +410,7 @@ async def list_department_members_route(
 # ── Assign department head ─────────────────────────────────────────────────────
 
 @router.put(
-    "/{dept_id}/head/{user_id}",
+    "/organizations/{org_id}/departments/{dept_id}/head/{user_id}",
     response_model=DepartmentHeadAssignResponse,
     status_code=status.HTTP_200_OK,
     summary="Assign a department head",
@@ -412,7 +461,7 @@ async def assign_department_head_route(
 # ── Remove department head ─────────────────────────────────────────────────────
 
 @router.delete(
-    "/{dept_id}/head",
+    "/organizations/{org_id}/departments/{dept_id}/head",
     response_model=DepartmentHeadRemoveResponse,
     status_code=status.HTTP_200_OK,
     summary="Remove the department head",

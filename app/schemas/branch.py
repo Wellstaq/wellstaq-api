@@ -58,14 +58,18 @@ class BranchMembersListResponse(BaseModel):
     offset: int
     limit: int
 
-class BranchMemberAssignRequest(BaseModel):
-    department_id: str = Field(..., min_length=1)
-    
 class BranchMemberAssignResponse(BaseModel):
     user_id: str
     branch_id: str
     organization_id: str
     message: str
+
+class BranchMemberAssignRequest(BaseModel):
+    department_id: str = Field(
+        ...,
+        min_length=1,
+        description="Department in the destination branch the user will be placed into.",
+    )
 
 
 # ── Delete ───────────────────────────────────────────────────────────────────

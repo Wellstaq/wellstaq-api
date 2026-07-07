@@ -7,6 +7,7 @@ from app.services.department.update_department import (edit_department,
 from app.services.department.department_member import get_department_members
 from app.services.department.delete_department import delete_department
 from app.services.department.department_manage_head import assign_department_head, remove_department_head
+from app.services.department.get_branch_department import get_branch_departments
 
 __all__ = [
     "create_department",
