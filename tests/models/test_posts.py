@@ -164,8 +164,7 @@ async def test_post_persists(db_session: AsyncSession):
     assert fetched.content == "Just hit a new PR!"
     assert fetched.organization_id == org.id
     assert fetched.branch_id is None
-    assert fetched.club_id is None
-
+   
 
 @pytest.mark.asyncio
 async def test_post_id_is_uuid_format(db_session: AsyncSession):
@@ -184,18 +183,6 @@ async def test_post_counters_default_to_zero(db_session: AsyncSession):
 
     assert post.like_count == 0
     assert post.comment_count == 0
-
-
-@pytest.mark.asyncio
-async def test_post_can_belong_to_club(db_session: AsyncSession):
-    owner, org = await setup_org(db_session)
-    club = make_club(org.id, owner.branch_id)
-    db_session.add(club)
-    await db_session.flush()
-
-    post = await setup_post(db_session, owner.id, org.id, club_id=club.id)
-
-    assert post.club_id == club.id
 
 
 # ── PostHashtag model ─────────────────────────────────────────────────────────

@@ -85,23 +85,18 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
     )
 
-    # Nullable — null means this is a general feed post, not club-specific.
-    club_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("clubs.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-
     # Content
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+
     # Denormalized counters
     # Increment on like/comment insert, decrement on unlike/delete — avoids
     # counting rows live when rendering the feed.
-    like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     comment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    share_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  
 
     # Relationships
     user: Mapped["User"] = relationship(
@@ -122,11 +117,6 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys=[branch_id],
     )
 
-    club: Mapped["Club"] = relationship(
-        "Club",
-        back_populates="posts",
-        foreign_keys=[club_id],
-    )
 
     post_hashtags: Mapped[list["PostHashtag"]] = relationship(
         "PostHashtag",
@@ -160,7 +150,6 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         Index("ix_posts_org_created_at", "organization_id", "created_at"),
-        Index("ix_posts_club_created_at", "club_id", "created_at"),
         Index("ix_posts_branch_created_at", "branch_id", "created_at"),
         Index("ix_posts_user_created_at", "user_id", "created_at"),
     )

@@ -13,3 +13,5 @@ pillow==11.0.0
 google-auth==2.55.0
 PyJWT==2.13.0
 sendgrid==6.12.5
+aiosqlite>=0.20.0
+bcrypt==5.0.0

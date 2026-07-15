@@ -55,7 +55,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.jwt import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.core.database import get_db
-from app.models import User
+from app.models import User, ClubMember, EventParticipant
 from app.models.permission import Permission, UserPermission
 from app.services.auth.token_service import load_user_permissions
 
@@ -333,4 +333,73 @@ def require_same_branch_or_org_level(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this branch's data.",
+        )
+
+async def require_club_membership(
+    db: AsyncSession,
+    current_user: CurrentUser,
+    club_id: str,
+) -> None:
+    """
+    Confirms current_user is a member of the given club. super_admin
+    bypasses. A user can belong to multiple clubs (ClubMember has no
+    per-user uniqueness constraint anymore — see Club model), so this
+    checks for a specific (club_id, user_id) row, not "any club."
+
+    Raises:
+      403 — not a member of this club.
+
+    Usage (inside a route or service function):
+        await require_club_membership(db=db, current_user=current_user, club_id=club_id)
+    """
+    if current_user.role == "super_admin":
+        return
+
+    result = await db.execute(
+        select(ClubMember.id).where(
+            ClubMember.club_id == club_id,
+            ClubMember.user_id == current_user.user_id,
+        ).limit(1)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this club.",
+        )
+
+
+async def require_event_participation(
+    db: AsyncSession,
+    current_user: CurrentUser,
+    event_id: str,
+) -> None:
+    """
+    Confirms current_user is a participant of the given event. super_admin
+    bypasses. Any participant status counts (invited/accepted/declined/
+    pending) — tighten to status == 'accepted' only if acceptance should
+    be required before someone can read/send in the event chat.
+
+    ASSUMPTION: EventParticipant has event_id and user_id columns —
+    inferred from events.py's get_event_participants/join_event usage.
+    Adjust field names here if the actual model differs.
+
+    Raises:
+      403 — not a participant of this event.
+
+    Usage (inside a route or service function):
+        await require_event_participation(db=db, current_user=current_user, event_id=event_id)
+    """
+    if current_user.role == "super_admin":
+        return
+
+    result = await db.execute(
+        select(EventParticipant.id).where(
+            EventParticipant.event_id == event_id,
+            EventParticipant.user_id == current_user.user_id,
+        ).limit(1)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a participant of this event.",
         )

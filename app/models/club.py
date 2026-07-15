@@ -118,11 +118,6 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="club",
         cascade="all, delete-orphan",
     )
-    posts: Mapped[list["Post"]] = relationship(
-        "Post",
-        back_populates="club",
-    )
-
     __table_args__ = (
         # A club name must be unique within an organization.
         # Two branches in the same org cannot have a club with the same name.
