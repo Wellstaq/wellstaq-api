@@ -12,6 +12,13 @@ Permission model:
   branch_id (None branch_id => org-level scope check only, see
   check_post_scope).
 
+  post.view_all — a user can hold this scoped to MULTIPLE branches
+  independently (e.g. manager of two branches). Resolved via
+  get_viewable_branch_ids, which returns the full set of branch_ids the
+  user holds this permission for (or None if org-wide/super_admin) — not
+  a boolean. check_post_branch_access does the equivalent per-post check
+  via a direct scoped-permission lookup. See _helpers.py.
+
   post.moderate — separate permission, used only when an admin acts on
   someone else's post/comment (delete-as-moderation). Authors deleting
   their own content don't need any permission grant — see
@@ -97,7 +104,13 @@ from app.services.post import (
     unsave_post,
 )
 
-from app.services.post._helpers import check_post_creation_membership, check_post_scope
+from app.services.post._helpers import (
+    check_branch_list_access,
+    check_post_branch_access,
+    check_post_creation_membership,
+    check_post_scope,
+    get_viewable_branch_ids,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/organizations/{org_id}/posts", tags=["posts"])
@@ -163,8 +176,18 @@ async def list_posts_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/posts"):
+        viewable_branch_ids = await get_viewable_branch_ids(
+            db=db, current_user=current_user, permission="post.view_all"
+        )
+        check_branch_list_access(
+            current_user=current_user, branch_id=branch_id, viewable_branch_ids=viewable_branch_ids
+        )
+
         posts, total = await get_posts(
-            session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
+            session=db, organization_id=org_id, branch_id=branch_id,
+            viewer_branch_id=current_user.branch_id,
+            viewable_branch_ids=viewable_branch_ids,
+            offset=offset, limit=limit,
         )
         return PostListResponse(
             items=[PostResponse.model_validate(p) for p in posts], total=total, offset=offset, limit=limit,
@@ -217,13 +240,18 @@ async def list_posts_by_user_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/posts/users/{user_id}"):
+        viewable_branch_ids = await get_viewable_branch_ids(
+            db=db, current_user=current_user, permission="post.view_all"
+        )
         posts, total = await get_posts_by_user(
-            session=db, organization_id=org_id, user_id=user_id, offset=offset, limit=limit,
+            session=db, organization_id=org_id, user_id=user_id,
+            viewer_branch_id=current_user.branch_id,
+            viewable_branch_ids=viewable_branch_ids,
+            offset=offset, limit=limit,
         )
         return PostListResponse(
             items=[PostResponse.model_validate(p) for p in posts], total=total, offset=offset, limit=limit,
         )
-
 
 # ── Get one ──────────────────────────────────────────────────────────────────
 
@@ -237,6 +265,7 @@ async def get_post_route(
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}"):
         post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         return PostResponse.model_validate(post)
 
 
@@ -306,10 +335,11 @@ async def like_post_route(
 ) -> LikeActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/like"):
+        post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         liked, count = await like_post(session=db, organization_id=org_id, post_id=post_id, current_user=current_user)
         await db.commit()
         return LikeActionResponse(post_id=post_id, user_id=current_user.user_id, liked=liked, like_count=count, message="Liked.")
-
 
 @router.delete("/{post_id}/like", response_model=LikeActionResponse, status_code=status.HTTP_200_OK)
 async def unlike_post_route(
@@ -319,6 +349,8 @@ async def unlike_post_route(
 ) -> LikeActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/like"):
+        post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         liked, count = await unlike_post(session=db, organization_id=org_id, post_id=post_id, current_user=current_user)
         await db.commit()
         return LikeActionResponse(post_id=post_id, user_id=current_user.user_id, liked=liked, like_count=count, message="Unliked.")
@@ -334,6 +366,8 @@ async def list_post_likers_route(
 ) -> PostLikersListResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/likes"):
+        post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         users, total = await get_post_likers(session=db, organization_id=org_id, post_id=post_id, offset=offset, limit=limit)
         return PostLikersListResponse(
             items=[{"user_id": u.id, "first_name": u.first_name, "last_name": u.last_name} for u in users],
@@ -353,6 +387,8 @@ async def list_comments_route(
 ) -> CommentListResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments"):
+        post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         comments, total = await get_comments(session=db, organization_id=org_id, post_id=post_id, offset=offset, limit=limit)
         return CommentListResponse(
             items=[CommentResponse.model_validate(c) for c in comments], total=total, offset=offset, limit=limit,
@@ -369,6 +405,8 @@ async def add_comment_route(
 ) -> CommentResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments"):
+        post = await get_post(session=db, organization_id=org_id, post_id=post_id)
+        await check_post_branch_access(db=db, current_user=current_user, post=post)
         comment = await add_comment(
             session=db, organization_id=org_id, post_id=post_id, current_user=current_user,
             content=body.content, parent_comment_id=body.parent_comment_id,
@@ -387,8 +425,6 @@ async def edit_comment_route(
 ) -> CommentResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments/{comment_id}"):
-        # Ownership check happens here, not inside edit_comment — since
-        # edit_comment doesn't filter by user_id, enforce it before calling.
         existing = (await db.execute(
             select(PostComment).where(PostComment.id == comment_id, PostComment.post_id == post_id)
         )).scalar_one_or_none()

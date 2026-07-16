@@ -125,7 +125,7 @@ SYSTEM_ROLES: list[dict] = [
 
 PERMISSIONS: list[dict] = [
     {"name": "member.invite", "description": "Invite new users to the organization or a branch", "category": "member", "scope": "both"},
-   {"name": "chat.moderate", "description": "Pin or unpin messages in a club or event group chat", "category": "member", "scope": "both"},
+    {"name": "chat.moderate", "description": "Pin or unpin messages in a club or event group chat", "category": "member", "scope": "both"},
     {"name": "member.remove", "description": "Remove a user from the organization or a branch", "category": "member", "scope": "both"},
     {"name": "member.suspend", "description": "Suspend a user (set status=suspended)", "category": "member", "scope": "both"},
     {"name": "member.reinstate", "description": "Lift a suspension and restore a user to active status", "category": "member", "scope": "both"},
@@ -154,6 +154,7 @@ PERMISSIONS: list[dict] = [
     {"name": "challenge.delete", "description": "Delete a challenge", "category": "challenge", "scope": "both"},
     {"name": "post.delete", "description": "Permanently delete any post within scope", "category": "content", "scope": "both"},
     {"name": "post.moderate", "description": "Pin, hide, or flag posts without deleting them", "category": "content", "scope": "both"},
+    {"name": "post.view_all", "description": "view all post across the organization including branch posts", "category": "content", "scope": "both"},
     {"name": "story.delete", "description": "Delete any story within scope", "category": "content", "scope": "both"},
     {"name": "comment.delete", "description": "Delete any comment within scope", "category": "content", "scope": "both"},
     {"name": "wellbeing.view_team", "description": "View aggregated wellbeing scores for a team or branch", "category": "wellbeing", "scope": "both"},

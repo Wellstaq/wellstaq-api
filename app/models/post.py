@@ -52,7 +52,7 @@ Tenant isolation:
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -349,64 +349,59 @@ class PostComment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<PostComment id={self.id} post={self.post_id} user={self.user_id}>"
 
-
 class PostShare(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Each share is a distinct event, not a toggle — unlike PostLike
-    and PostSave, "share" represents an activity count (how many times
-    / how often this post has been shared), not a per-user state. A
-    user can share the same post more than once (e.g. again later, or
-    to a different destination). No uniqueness constraint on
-    (post_id, user_id)."""
+    """
+    destination_type/destination_id are optional — a share can be a bare
+    signal (both null: "I shared this," no visible effect beyond the
+    count) or targeted at a group chat (both set: a GroupChatMessage
+    referencing this post is created in that conversation). Mirrors
+    GroupChatMessage's own conversation_type constraint intentionally —
+    a post can only be shared INTO the same kind of conversation a
+    message can belong to.
+    """
 
     __tablename__ = "post_shares"
 
-    # Must be set by the service layer as a copy of the parent Post's
-    # organization_id at insert time — never independently chosen.
     organization_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
     )
-
-    # Single-column indexes — neither is the leading column of a unique
-    # or composite index here, since shares are not deduplicated.
     post_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("posts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("posts.id", ondelete="CASCADE"), nullable=False, index=True,
     )
-
     user_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
     )
 
-    # Relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization",
-        foreign_keys=[organization_id],
+    # Optional targeted destination. Both null = signal-only share.
+    destination_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    destination_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # Set only when destination_type/id are set — points at the resulting
+    # GroupChatMessage, so a share's chat message can be traced back.
+    group_chat_message_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("group_chat_messages.id", ondelete="SET NULL"), nullable=True,
     )
 
-    post: Mapped["Post"] = relationship(
-        "Post",
-        back_populates="shares",
-        foreign_keys=[post_id],
-    )
+    organization: Mapped["Organization"] = relationship("Organization", foreign_keys=[organization_id])
+    post: Mapped["Post"] = relationship("Post", back_populates="shares", foreign_keys=[post_id])
+    user: Mapped["User"] = relationship("User", back_populates="post_shares", foreign_keys=[user_id])
 
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="post_shares",
-        foreign_keys=[user_id],
+    __table_args__ = (
+        CheckConstraint(
+            "destination_type IS NULL OR destination_type IN ('club', 'event')",
+            name="ck_post_share_destination_type",
+        ),
+        CheckConstraint(
+            "(destination_type IS NULL AND destination_id IS NULL)"
+            " OR "
+            "(destination_type IS NOT NULL AND destination_id IS NOT NULL)",
+            name="ck_post_share_destination_consistency",
+        ),
     )
 
     def __repr__(self) -> str:
-        return f"<PostShare post={self.post_id} user={self.user_id}>"
-
-
+        return f"<PostShare post={self.post_id} user={self.user_id} destination={self.destination_type}>"
+        
 class PostSave(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """One save per user per post — a toggle, same pattern as PostLike.
     Saving inserts a row, unsaving deletes it. The unique constraint

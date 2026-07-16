@@ -29,4 +29,4 @@ async def delete_event(*, session: AsyncSession, organization_id: str, event_id:
 
     await session.delete(event)
     await session.flush()
-    logger.info("Event deleted", extra={"event_id": event_id, "org_id": organization_id})
+    logger.info(f"Event deleted: {event_id} (org: {organization_id})")

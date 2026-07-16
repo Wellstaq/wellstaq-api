@@ -44,7 +44,7 @@ class PostResponse(BaseModel):
     share_count: int  # new
     created_at: datetime
     updated_at: datetime
-    
+
 class PostListResponse(BaseModel):
     items: list[PostResponse]
     total: int
@@ -88,6 +88,20 @@ class CommentUpdateRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 
 
+class CommentReplyResponse(BaseModel):
+    """A reply — one level deep, no further nested replies (by design,
+    see comment_service.get_comments)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    post_id: str
+    user_id: str
+    content: str | None
+    parent_comment_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class CommentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -96,8 +110,9 @@ class CommentResponse(BaseModel):
     user_id: str
     content: str | None
     parent_comment_id: str | None
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
+    replies: list[CommentReplyResponse] = []
 
 
 class CommentListResponse(BaseModel):

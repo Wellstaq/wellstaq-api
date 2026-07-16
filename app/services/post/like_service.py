@@ -19,7 +19,7 @@ async def like_post(
     *, session: AsyncSession, organization_id: str, post_id: str, current_user: CurrentUser
 ) -> tuple[bool, int]:
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
-    check_post_branch_access(current_user=current_user, post=post)
+    await check_post_branch_access(db=session, current_user=current_user, post=post)
 
     existing = await session.execute(
         select(PostLike).where(PostLike.post_id == post_id, PostLike.user_id == current_user.user_id)
@@ -39,7 +39,7 @@ async def unlike_post(
     *, session: AsyncSession, organization_id: str, post_id: str, current_user: CurrentUser
 ) -> tuple[bool, int]:
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
-    check_post_branch_access(current_user=current_user, post=post)
+    await check_post_branch_access(db=session, current_user=current_user, post=post)
 
     result = await session.execute(
         select(PostLike).where(PostLike.post_id == post_id, PostLike.user_id == current_user.user_id)

@@ -5,13 +5,19 @@ app/services/post/edit_post.py
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException, status
 
 from app.models import Post
 from app.services.post._helpers import get_post_or_404
 from app.services.hashtag import sync_post_hashtags
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.datetime import ensure_utc
 
 logger = logging.getLogger(__name__)
+
+EDIT_WINDOW = timedelta(hours=1)
 
 
 async def edit_post(
@@ -24,6 +30,12 @@ async def edit_post(
     media_type: str | None,
 ) -> Post:
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
+
+    if datetime.now(timezone.utc) - ensure_utc(post.created_at) > EDIT_WINDOW:
+        logger.info("Post edit rejected: window expired", extra={"post_id": post.id})
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This post can no longer be edited (1 hour edit window has expired)."
+        )
 
     if content is not None:
         post.content = content.strip()

@@ -5,24 +5,21 @@ Unit tests for app/services/branch/delete_branch.py
 
 Coverage:
   delete_branch()
-    - deletes an empty branch with no manager successfully
+    - deletes an empty branch with no manager, no departments, not HQ
     - branch row is gone after deletion
     - raises 404 when branch not found
     - raises 404 when branch belongs to a different org
+    - raises 403 when branch is the Headquarters branch
+    - HQ guard fires even when branch is otherwise empty
     - raises 409 when branch has an assigned manager
-    - raises 409 when branch has members and no target provided
-    - raises 409 when only target_branch_id provided (target_department_id missing)
-    - raises 409 when only target_department_id provided (target_branch_id missing)
-    - error message includes member count when blocking deletion
-    - raises 400 when target_branch_id equals branch_id
-    - raises 404 when target_branch_id not found
-    - raises 404 when target_branch_id belongs to a different org
-    - transfers all members to target branch before deletion
-    - transferred members have correct branch_id after transfer
-    - branch row is deleted after successful member transfer
-    - member transfer does not affect users from other orgs
-    - empty branch with a target provided deletes cleanly
-    - does not affect users already in the target branch
+    - manager guard fires before department/member checks
+    - raises 409 when branch has one or more departments
+    - department guard error message includes department count
+    - department guard fires even if departments have no members
+    - raises 409 when branch has home-branch members (no departments)
+    - member guard error message includes member count
+    - member guard is a safety net independent of department count
+    - deleting a branch does not affect branches/members in other orgs
 """
 
 from __future__ import annotations
@@ -45,11 +42,13 @@ async def _make_branch(
     organization_id: str,
     name: str = "Lagos Branch",
     manager_id: str | None = None,
+    is_headquarters: bool = False,
 ) -> Branch:
     branch = Branch(
         organization_id=organization_id,
         name=name,
         manager_id=manager_id,
+        is_headquarters=is_headquarters,
     )
     db_session.add(branch)
     await db_session.flush()
@@ -95,24 +94,20 @@ async def _call(
     db_session: AsyncSession,
     organization_id: str,
     branch_id: str,
-    target_branch_id: str | None = None,
-    target_department_id: str | None = None,
 ) -> None:
     await delete_branch(
         session=db_session,
         organization_id=organization_id,
         branch_id=branch_id,
-        target_branch_id=target_branch_id,
-        target_department_id=target_department_id,
     )
 
 
-# ── Happy path: empty branch ───────────────────────────────────────────────────
+# ── Happy path ─────────────────────────────────────────────────────────────────
 
 class TestDeleteEmptyBranch:
 
     @pytest.mark.asyncio
-    async def test_deletes_empty_branch_with_no_manager(
+    async def test_deletes_empty_branch_with_no_manager_no_departments(
         self, db_session: AsyncSession
     ):
         org, _ = await make_org_with_owner(db_session)
@@ -135,28 +130,6 @@ class TestDeleteEmptyBranch:
 
         result = await db_session.execute(
             select(Branch).where(Branch.id == branch_id)
-        )
-        assert result.scalar_one_or_none() is None
-
-    @pytest.mark.asyncio
-    async def test_empty_branch_with_targets_provided_deletes_cleanly(
-        self, db_session: AsyncSession
-    ):
-        """Providing targets when there are no members is harmless — the
-        service should skip the transfer step and delete cleanly."""
-        org, _ = await make_org_with_owner(db_session)
-        branch = await _make_branch(db_session, org.id, name="Source")
-        target_branch = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target_branch.id)
-
-        await _call(
-            db_session, org.id, branch.id,
-            target_branch_id=target_branch.id,
-            target_department_id=target_dept.id,
-        )
-
-        result = await db_session.execute(
-            select(Branch).where(Branch.id == branch.id)
         )
         assert result.scalar_one_or_none() is None
 
@@ -196,6 +169,38 @@ class TestDeleteBranchNotFound:
         assert exc_info.value.status_code == 404
 
 
+# ── Headquarters guard ──────────────────────────────────────────────────────────
+
+class TestDeleteBranchHeadquartersGuard:
+
+    @pytest.mark.asyncio
+    async def test_raises_403_when_branch_is_headquarters(
+        self, db_session: AsyncSession
+    ):
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id, is_headquarters=True)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_hq_guard_fires_even_when_branch_is_otherwise_empty(
+        self, db_session: AsyncSession
+    ):
+        """HQ branch has no manager, no departments, no members — the HQ
+        check must still fire ahead of (and independent of) those guards."""
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id, is_headquarters=True)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 403
+        assert "headquarters" in exc_info.value.detail.lower()
+
+
 # ── Manager guard ──────────────────────────────────────────────────────────────
 
 class TestDeleteBranchManagerGuard:
@@ -213,11 +218,11 @@ class TestDeleteBranchManagerGuard:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_manager_guard_fires_before_member_check(
+    async def test_manager_guard_fires_before_department_and_member_checks(
         self, db_session: AsyncSession
     ):
-        """Manager check fires even when there are no members, confirming
-        it is not short-circuited by member_count == 0."""
+        """Manager check fires even when there are no departments or
+        members, confirming it isn't short-circuited by either being empty."""
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id, manager_id=owner.id)
 
@@ -228,16 +233,84 @@ class TestDeleteBranchManagerGuard:
         assert "manager" in exc_info.value.detail.lower()
 
 
-# ── Member transfer guard ──────────────────────────────────────────────────────
+# ── Department guard ────────────────────────────────────────────────────────────
+
+class TestDeleteBranchDepartmentGuard:
+
+    @pytest.mark.asyncio
+    async def test_raises_409_when_branch_has_departments(
+        self, db_session: AsyncSession
+    ):
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id)
+        await _make_department(db_session, org.id, branch.id)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_department_guard_error_message_includes_count(
+        self, db_session: AsyncSession
+    ):
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id)
+        await _make_department(db_session, org.id, branch.id, name="Sales")
+        await _make_department(db_session, org.id, branch.id, name="Support")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert "2" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_department_guard_fires_even_if_departments_have_no_members(
+        self, db_session: AsyncSession
+    ):
+        """A department with zero members still blocks branch deletion —
+        departments must be explicitly deleted via delete_department()
+        regardless of whether they currently hold members."""
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id)
+        await _make_department(db_session, org.id, branch.id)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 409
+        assert "department" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_department_guard_fires_before_member_guard(
+        self, db_session: AsyncSession
+    ):
+        """A branch with both a department and a stray home-branch member
+        should surface the department guard first, since departments must
+        be cleared (and members transferred) before the member safety
+        net is even relevant."""
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id)
+        await _make_department(db_session, org.id, branch.id)
+        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _call(db_session, org.id, branch.id)
+
+        assert exc_info.value.status_code == 409
+        assert "department" in exc_info.value.detail.lower()
+
+
+# ── Member guard (safety net) ────────────────────────────────────────────────────
 
 class TestDeleteBranchMemberGuard:
 
     @pytest.mark.asyncio
-    async def test_raises_409_when_branch_has_members_and_no_targets(
+    async def test_raises_409_when_branch_has_home_branch_members(
         self, db_session: AsyncSession
     ):
-        """Both target_branch_id and target_department_id are required when
-        members exist — omitting both raises 409."""
+        """No departments present, but a user's home branch_id still
+        points here — the safety-net guard must catch this."""
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
@@ -248,48 +321,9 @@ class TestDeleteBranchMemberGuard:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_raises_409_when_only_target_branch_provided(
+    async def test_member_guard_error_message_includes_member_count(
         self, db_session: AsyncSession
     ):
-        """target_department_id is also required — a user transferred to a
-        new branch must be placed in a department there."""
-        org, _ = await make_org_with_owner(db_session)
-        branch = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await _call(
-                db_session, org.id, branch.id,
-                target_branch_id=target.id,
-                target_department_id=None,   # missing
-            )
-
-        assert exc_info.value.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_raises_409_when_only_target_department_provided(
-        self, db_session: AsyncSession
-    ):
-        """target_branch_id is also required — can't assign a department
-        without knowing the destination branch."""
-        org, _ = await make_org_with_owner(db_session)
-        branch = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target.id)
-        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await _call(
-                db_session, org.id, branch.id,
-                target_branch_id=None,          # missing
-                target_department_id=target_dept.id,
-            )
-
-        assert exc_info.value.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_error_message_includes_member_count(self, db_session: AsyncSession):
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
@@ -302,175 +336,34 @@ class TestDeleteBranchMemberGuard:
         assert "3" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_raises_400_when_target_branch_id_equals_source(
+    async def test_member_guard_fires_independent_of_department_count(
         self, db_session: AsyncSession
     ):
-        """Passing a dummy target_department_id gets past the 'provide both'
-        check so the 400 (target == source) validation is reached."""
+        """Zero departments but nonzero home-branch members — this is the
+        exact edge case the guard's docstring calls out: a member whose
+        branch_id was reassigned independently of department membership."""
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
 
-        with pytest.raises(HTTPException) as exc_info:
-            await _call(
-                db_session, org.id, branch.id,
-                target_branch_id=branch.id,
-                target_department_id="00000000-0000-0000-0000-000000000099",
-            )
-
-        assert exc_info.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_raises_404_when_target_branch_not_found(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        branch = await _make_branch(db_session, org.id)
-        await _make_user_in_branch(db_session, org.id, branch.id, "m1@example.com")
+        dept_check = await db_session.execute(
+            select(Department).where(Department.branch_id == branch.id)
+        )
+        assert dept_check.scalar_one_or_none() is None
 
         with pytest.raises(HTTPException) as exc_info:
-            await _call(
-                db_session, org.id, branch.id,
-                target_branch_id="00000000-0000-0000-0000-000000000000",
-                target_department_id="00000000-0000-0000-0000-000000000099",
-            )
+            await _call(db_session, org.id, branch.id)
 
-        assert exc_info.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_raises_404_when_target_branch_belongs_to_different_org(
-        self, db_session: AsyncSession
-    ):
-        org1, _ = await make_org_with_owner(
-            db_session,
-            org_kwargs=dict(slug="org-one"),
-            user_kwargs=dict(email="owner1@example.com"),
-        )
-        org2, _ = await make_org_with_owner(
-            db_session,
-            org_kwargs=dict(slug="org-two"),
-            user_kwargs=dict(email="owner2@example.com"),
-        )
-        branch = await _make_branch(db_session, org1.id, name="Source")
-        await _make_user_in_branch(db_session, org1.id, branch.id, "m1@example.com")
-        cross_org_target = await _make_branch(db_session, org2.id, name="Other")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await _call(
-                db_session, org1.id, branch.id,
-                target_branch_id=cross_org_target.id,
-                target_department_id="00000000-0000-0000-0000-000000000099",
-            )
-
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == 409
+        assert "member" in exc_info.value.detail.lower()
 
 
-# ── Member transfer ────────────────────────────────────────────────────────────
+# ── Cross-org isolation ──────────────────────────────────────────────────────────
 
-class TestDeleteBranchWithTransfer:
+class TestDeleteBranchCrossOrgIsolation:
 
     @pytest.mark.asyncio
-    async def test_transfers_all_members_to_target_branch(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target.id)
-
-        u1 = await _make_user_in_branch(db_session, org.id, source.id, "m1@example.com")
-        u2 = await _make_user_in_branch(db_session, org.id, source.id, "m2@example.com")
-
-        await _call(
-            db_session, org.id, source.id,
-            target_branch_id=target.id,
-            target_department_id=target_dept.id,
-        )
-
-        await db_session.refresh(u1)
-        await db_session.refresh(u2)
-
-        assert u1.branch_id == target.id
-        assert u2.branch_id == target.id
-
-    @pytest.mark.asyncio
-    async def test_transferred_members_have_correct_branch_id(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target.id)
-
-        user = await _make_user_in_branch(
-            db_session, org.id, source.id, "m1@example.com"
-        )
-        user_id = user.id
-
-        await _call(
-            db_session, org.id, source.id,
-            target_branch_id=target.id,
-            target_department_id=target_dept.id,
-        )
-
-        result = await db_session.execute(
-            select(User).where(User.id == user_id)
-        )
-        fetched = result.scalar_one()
-        assert fetched.branch_id == target.id
-
-    @pytest.mark.asyncio
-    async def test_source_branch_is_deleted_after_transfer(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target.id)
-        source_id = source.id
-
-        await _make_user_in_branch(db_session, org.id, source.id, "m1@example.com")
-
-        await _call(
-            db_session, org.id, source_id,
-            target_branch_id=target.id,
-            target_department_id=target_dept.id,
-        )
-
-        result = await db_session.execute(
-            select(Branch).where(Branch.id == source_id)
-        )
-        assert result.scalar_one_or_none() is None
-
-    @pytest.mark.asyncio
-    async def test_does_not_affect_users_already_in_target_branch(
-        self, db_session: AsyncSession
-    ):
-        org, _ = await make_org_with_owner(db_session)
-        source = await _make_branch(db_session, org.id, name="Source")
-        target = await _make_branch(db_session, org.id, name="Target")
-        target_dept = await _make_department(db_session, org.id, target.id)
-
-        await _make_user_in_branch(db_session, org.id, source.id, "source@example.com")
-        pre_existing = await _make_user_in_branch(
-            db_session, org.id, target.id, "target@example.com"
-        )
-        pre_existing_id = pre_existing.id
-
-        await _call(
-            db_session, org.id, source.id,
-            target_branch_id=target.id,
-            target_department_id=target_dept.id,
-        )
-
-        result = await db_session.execute(
-            select(User).where(User.id == pre_existing_id)
-        )
-        fetched = result.scalar_one()
-        assert fetched.branch_id == target.id
-
-    @pytest.mark.asyncio
-    async def test_transfer_does_not_affect_users_from_other_orgs(
+    async def test_deleting_branch_does_not_affect_other_orgs(
         self, db_session: AsyncSession
     ):
         org1, _ = await make_org_with_owner(
@@ -484,28 +377,13 @@ class TestDeleteBranchWithTransfer:
             user_kwargs=dict(email="owner2@example.com"),
         )
 
-        source = await _make_branch(db_session, org1.id, name="Source")
-        target = await _make_branch(db_session, org1.id, name="Target")
-        target_dept = await _make_department(db_session, org1.id, target.id)
+        branch1 = await _make_branch(db_session, org1.id, name="Org1 Branch")
+        branch2 = await _make_branch(db_session, org2.id, name="Org2 Branch")
+        branch2_id = branch2.id
 
-        # User in org2 — must never be touched
-        org2_branch = await _make_branch(db_session, org2.id, name="Org2 Branch")
-        org2_user = await _make_user_in_branch(
-            db_session, org2.id, org2_branch.id, "org2user@example.com"
-        )
-        org2_user_id = org2_user.id
-        original_branch_id = org2_user.branch_id
-
-        await _make_user_in_branch(db_session, org1.id, source.id, "org1user@example.com")
-
-        await _call(
-            db_session, org1.id, source.id,
-            target_branch_id=target.id,
-            target_department_id=target_dept.id,
-        )
+        await _call(db_session, org1.id, branch1.id)
 
         result = await db_session.execute(
-            select(User).where(User.id == org2_user_id)
+            select(Branch).where(Branch.id == branch2_id)
         )
-        fetched = result.scalar_one()
-        assert fetched.branch_id == original_branch_id
+        assert result.scalar_one_or_none() is not None

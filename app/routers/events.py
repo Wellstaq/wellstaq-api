@@ -1,7 +1,9 @@
 """
 app/routers/events.py
 
-Event management routes.
+Group chat routes for clubs and events. conversation_type is 'club' or
+'event' (see GroupChatMessage model). Pinning is restricted to
+`chat.moderate` — an admin/manager permission, not structural.
 
 Permission model:
   event.create / event.update / event.delete are scope="both" — the
@@ -16,17 +18,17 @@ Permission model:
   event.update, say so and I'll add the scoped check there too.
 
 Routes:
-  POST   /organizations/{org_id}/events                                  — create
-  GET    /organizations/{org_id}/events                                  — list (optional ?branch_id=)
-  GET    /organizations/{org_id}/events/{event_id}                       — get one
-  PATCH  /organizations/{org_id}/events/{event_id}                       — edit
-  POST   /organizations/{org_id}/events/{event_id}/cancel                — cancel (preserves history)
-  DELETE /organizations/{org_id}/events/{event_id}                       — hard delete
-  GET    /organizations/{org_id}/events/{event_id}/participants          — list participants
-  POST   /organizations/{org_id}/events/{event_id}/participants          — join / invite
-  PATCH  /organizations/{org_id}/events/{event_id}/participants/{user_id}/status     — RSVP
-  PATCH  /organizations/{org_id}/events/{event_id}/participants/{user_id}/attendance — attendance
-  DELETE /organizations/{org_id}/events/{event_id}/participants/{user_id}            — remove
+  POST   /organizations/{org_id}/events
+  GET    /organizations/{org_id}/events
+  GET    /organizations/{org_id}/events/{event_id}
+  PATCH  /organizations/{org_id}/events/{event_id}
+  POST   /organizations/{org_id}/events/{event_id}/cancel
+  DELETE /organizations/{org_id}/events/{event_id}
+  GET    /organizations/{org_id}/events/{event_id}/participants
+  POST   /organizations/{org_id}/events/{event_id}/participants
+  PATCH  /organizations/{org_id}/events/{event_id}/participants/{user_id}/status
+  PATCH  /organizations/{org_id}/events/{event_id}/participants/{user_id}/attendance
+  DELETE /organizations/{org_id}/events/{event_id}/participants/{user_id}
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from app.schemas.event import (
     EventListResponse,
     EventParticipantsListResponse,
     EventResponse,
+    EventParticipantInfo,
     EventUpdateRequest,
     ParticipantActionResponse,
     ParticipantAttendanceUpdateRequest,
@@ -82,7 +85,29 @@ router = APIRouter(prefix="/organizations/{org_id}/events", tags=["events"])
     response_model=EventResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create an event",
-    description="branch_id is required. Requires `event.create` for that branch (or org-wide).",
+    description="""
+Create a new event scoped to a specific branch within the organization.
+
+**Who can call this:**
+Requires the `event.create` permission, granted either org-wide or scoped
+to the target branch. Super admins always pass this check.
+
+**Request body fields:**
+| Field             | Type         | Required | Notes |
+|-------------------|--------------|----------|-------|
+| `title`           | string       | ✅       | Display name of the event. Max 255 chars. |
+| `branch_id`       | UUID string  | ✅       | The branch this event belongs to. Every event must have a branch. |
+| `start_date`      | date         | ✅       | Format: `YYYY-MM-DD`. First occurrence if recurring. |
+| `time`            | time         | ✅       | Format: `HH:MM:SS`. Start time of the event. |
+| `description`     | string       | ❌       | Optional longer text description. |
+| `image_url`       | string       | ❌       | URL to a cover image. Max 2048 chars. |
+| `end_date`        | date         | ❌       | Format: `YYYY-MM-DD`. Last occurrence if recurring; null = one-time or open-ended. |
+| `recurrence_rule` | string       | ❌       | Null = one-time event. Pattern examples: `weekly_monday`, `monthly_first`. |
+
+**Branch rule:**
+Only users whose home branch matches `branch_id` can later join this event.
+Cross-branch joins are blocked at the service layer.
+""",
 )
 async def create_event_route(
     org_id: str,
@@ -96,7 +121,6 @@ async def create_event_route(
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.create", target_branch_id=body.branch_id,
         )
-
         event = await create_event(
             session=db,
             organization_id=org_id,
@@ -121,7 +145,21 @@ async def create_event_route(
     response_model=EventListResponse,
     status_code=status.HTTP_200_OK,
     summary="List events in the organization",
-    description="Optionally filter by ?branch_id=. Accessible to any authenticated org member.",
+    description="""
+Returns a paginated list of events belonging to the organization.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission required.
+
+**Query parameters:**
+| Parameter   | Type        | Default | Notes |
+|-------------|-------------|---------|-------|
+| `branch_id` | UUID string | —       | Optional. Filter events to a specific branch. Omit to return events from all branches. |
+| `offset`    | integer     | `0`     | Pagination offset. Must be ≥ 0. |
+| `limit`     | integer     | `50`    | Number of results per page. Min `1`, max `200`. |
+
+**Tip:** To see only your branch's events, pass `?branch_id=<your_branch_id>`.
+""",
 )
 async def list_events_route(
     org_id: str,
@@ -144,7 +182,26 @@ async def list_events_route(
 
 # ── Get one ──────────────────────────────────────────────────────────────────
 
-@router.get("/{event_id}", response_model=EventResponse, status_code=status.HTTP_200_OK)
+@router.get(
+    "/{event_id}",
+    response_model=EventResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a single event",
+    description="""
+Fetch the full details of a single event by its ID.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission required.
+
+**Path parameters:**
+| Parameter  | Type        | Notes |
+|------------|-------------|-------|
+| `org_id`   | UUID string | The organization the event belongs to. |
+| `event_id` | UUID string | The event to retrieve. |
+
+Returns `404` if the event doesn't exist or doesn't belong to this organization.
+""",
+)
 async def get_event_route(
     org_id: str,
     event_id: str,
@@ -164,7 +221,28 @@ async def get_event_route(
     response_model=EventResponse,
     status_code=status.HTTP_200_OK,
     summary="Update an event",
-    description="Requires `event.update` for the event's branch (or org-wide).",
+    description="""
+Partially update an existing event. Only fields included in the request body
+are changed — all others remain untouched.
+
+**Who can call this:**
+Requires the `event.update` permission scoped to the event's branch (or org-wide).
+Super admins always pass this check.
+
+**Updatable fields:**
+| Field             | Type   | Notes |
+|-------------------|--------|-------|
+| `title`           | string | New display name. Max 255 chars. |
+| `description`     | string | New description text. |
+| `image_url`       | string | New cover image URL. Max 2048 chars. |
+| `start_date`      | date   | Format: `YYYY-MM-DD`. |
+| `end_date`        | date   | Format: `YYYY-MM-DD`. Set to `null` to remove. |
+| `recurrence_rule` | string | Set to `null` to make it a one-time event. |
+| `time`            | time   | Format: `HH:MM:SS`. |
+| `status`          | string | Allowed values: `scheduled` \| `ongoing` \| `completed` \| `cancelled`. Prefer the dedicated `/cancel` endpoint to cancel — use this only when correcting a status. |
+
+**Note:** `branch_id` and `organization_id` cannot be changed after creation.
+""",
 )
 async def edit_event_route(
     org_id: str,
@@ -180,7 +258,6 @@ async def edit_event_route(
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.update", target_branch_id=event.branch_id,
         )
-
         updated = await edit_event(
             session=db, organization_id=org_id, event_id=event_id,
             title=body.title, description=body.description, image_url=body.image_url,
@@ -198,10 +275,24 @@ async def edit_event_route(
     response_model=EventResponse,
     status_code=status.HTTP_200_OK,
     summary="Cancel an event",
-    description=(
-        "Sets status='cancelled'. Preferred over DELETE when the event has "
-        "participants/attendance worth keeping. Requires `event.update`."
-    ),
+    description="""
+Sets the event's status to `cancelled`. The event record and all participant
+history are preserved — this is a soft action, not a delete.
+
+**Who can call this:**
+Requires `event.update` scoped to the event's branch (or org-wide).
+
+**When to use this vs DELETE:**
+- Use `/cancel` when the event has participants, attendance records, or any
+  history worth keeping (e.g. it happened but was cut short, or was called
+  off last minute).
+- Use `DELETE` only when the event was created by mistake and has no
+  meaningful history to preserve.
+
+**No request body required.** The status is always set to `cancelled`.
+
+Returns the updated event object with `status: "cancelled"`.
+""",
 )
 async def cancel_event_route(
     org_id: str,
@@ -227,7 +318,21 @@ async def cancel_event_route(
     "/{event_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Permanently delete an event",
-    description="Hard delete — also removes all participant records. Requires `event.delete`.",
+    description="""
+Hard deletes the event and all associated data (participants, attendance
+records). This action is **irreversible**.
+
+**Who can call this:**
+Requires the `event.delete` permission scoped to the event's branch (or org-wide).
+Super admins always pass this check.
+
+**When to use this vs /cancel:**
+- Prefer `/cancel` if the event has any participants or attendance history
+  worth preserving.
+- Use this only when the event was created in error and has no meaningful data.
+
+Returns `204 No Content` on success. No response body.
+""",
 )
 async def delete_event_route(
     org_id: str,
@@ -246,12 +351,37 @@ async def delete_event_route(
         await db.commit()
 
 
-# ── Participants ─────────────────────────────────────────────────────────────
+# ── List participants ─────────────────────────────────────────────────────────
 
 @router.get(
     "/{event_id}/participants",
     response_model=EventParticipantsListResponse,
     status_code=status.HTTP_200_OK,
+    summary="List participants of an event",
+    description="""
+Returns a paginated list of users who have joined or been invited to this event,
+along with their RSVP status and attendance flag.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission required.
+
+**Query parameters:**
+| Parameter | Type    | Default | Notes |
+|-----------|---------|---------|-------|
+| `offset`  | integer | `0`     | Pagination offset. Must be ≥ 0. |
+| `limit`   | integer | `50`    | Results per page. Min `1`, max `200`. |
+
+**Response fields per participant:**
+| Field        | Type    | Notes |
+|--------------|---------|-------|
+| `user_id`    | string  | UUID of the participant. |
+| `first_name` | string  | |
+| `last_name`  | string  | |
+| `email`      | string  | |
+| `status`     | string  | RSVP status: `invited` \| `accepted` \| `declined` \| `pending`. |
+| `attended`   | boolean | `true` once attendance has been marked post-event. |
+| `invited_at` | string  | ISO 8601 timestamp if the user was formally invited; `null` for self-joins. |
+""",
 )
 async def list_event_participants_route(
     org_id: str,
@@ -282,11 +412,37 @@ async def list_event_participants_route(
         return EventParticipantsListResponse(items=items, total=total, offset=offset, limit=limit)
 
 
+# ── Join / invite ─────────────────────────────────────────────────────────────
+
 @router.post(
     "/{event_id}/participants",
     response_model=ParticipantActionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Join an event, or invite a user to it",
+    summary="Join an event or invite a user to it",
+    description="""
+Adds a user as a participant in this event. Supports two modes controlled
+by the `is_invite` flag in the request body.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission required
+for self-joins. Admins can use `is_invite: true` to add other users on their behalf.
+
+**Branch rule:**
+The user being added must belong to the **same branch** as the event.
+Cross-branch joins return `403 Forbidden`.
+
+**Request body:**
+| Field       | Type    | Required | Notes |
+|-------------|---------|----------|-------|
+| `user_id`   | string  | ✅       | UUID of the user to add. Pass the current user's own ID for a self-join. |
+| `is_invite` | boolean | ❌       | Default: `false`. Set to `true` when an admin is adding someone else — sets `status` to `"invited"` and records `invited_at`. Self-joins get `status: "pending"`. |
+
+**Status assigned automatically:**
+- `is_invite: false` → `status: "pending"`
+- `is_invite: true`  → `status: "invited"`, `invited_at` set to now
+
+Returns `409 Conflict` if the user is already a participant.
+""",
 )
 async def join_event_route(
     org_id: str,
@@ -306,11 +462,39 @@ async def join_event_route(
         return ParticipantActionResponse(event_id=event_id, user_id=body.user_id, message="Joined event.")
 
 
+# ── Update RSVP status ────────────────────────────────────────────────────────
+
 @router.patch(
     "/{event_id}/participants/{user_id}/status",
     response_model=ParticipantActionResponse,
     status_code=status.HTTP_200_OK,
     summary="Update a participant's RSVP status",
+    description="""
+Update the RSVP status of a participant. Typically called by the participant
+themselves in response to an invitation, or by an organizer correcting a status.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission required.
+(If you want this restricted to the participant themselves or an admin, request that.)
+
+**Path parameters:**
+| Parameter | Notes |
+|-----------|-------|
+| `user_id` | UUID of the participant whose status is being updated. |
+
+**Request body:**
+| Field    | Type   | Required | Allowed values |
+|----------|--------|----------|----------------|
+| `status` | string | ✅       | `invited` \| `accepted` \| `declined` \| `pending` |
+
+**Status meanings:**
+- `pending`  — joined but hasn't responded yet (default for self-joins)
+- `invited`  — formally invited, awaiting response
+- `accepted` — confirmed attendance
+- `declined` — declined the invitation
+
+Returns `404` if the user is not a participant in this event.
+""",
 )
 async def update_participant_status_route(
     org_id: str,
@@ -330,12 +514,39 @@ async def update_participant_status_route(
         return ParticipantActionResponse(event_id=event_id, user_id=user_id, message="RSVP status updated.")
 
 
+# ── Mark attendance ───────────────────────────────────────────────────────────
+
 @router.patch(
     "/{event_id}/participants/{user_id}/attendance",
     response_model=ParticipantActionResponse,
     status_code=status.HTTP_200_OK,
     summary="Mark a participant's attendance",
-    description="Requires `event.update` — recording attendance is an organizer action, not self-service.",
+    description="""
+Records whether a participant actually attended the event after it has taken place.
+This is a post-event organizer action — it is separate from RSVP status, which
+reflects intent *before* the event.
+
+**Who can call this:**
+Requires the `event.update` permission scoped to the event's branch (or org-wide).
+This is intentionally restricted to organizers — participants cannot mark their
+own attendance.
+
+**Path parameters:**
+| Parameter | Notes |
+|-----------|-------|
+| `user_id` | UUID of the participant to mark attendance for. |
+
+**Request body:**
+| Field      | Type    | Required | Notes |
+|------------|---------|----------|-------|
+| `attended` | boolean | ✅       | `true` = participant was present. `false` = no-show. |
+
+**Note:** The `attended` flag is independent of RSVP `status`. A participant
+can have `status: "accepted"` but `attended: false` (no-show), or
+`status: "declined"` but `attended: true` (walk-in).
+
+Returns `404` if the user is not a participant in this event.
+""",
 )
 async def mark_attendance_route(
     org_id: str,
@@ -359,10 +570,35 @@ async def mark_attendance_route(
         return ParticipantActionResponse(event_id=event_id, user_id=user_id, message="Attendance recorded.")
 
 
+# ── Remove participant ────────────────────────────────────────────────────────
+
 @router.delete(
     "/{event_id}/participants/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Remove a participant / leave the event",
+    summary="Remove a participant or leave an event",
+    description="""
+Removes a user from the event's participant list. Supports two use cases:
+
+1. **Self-removal** — a user leaving an event they joined.
+2. **Admin removal** — an organizer removing someone else.
+
+**Who can call this:**
+Any authenticated member of the organization. No special permission is currently
+required — the service layer does not yet restrict self-removal vs admin-removal.
+(If you want admin-removal gated behind `event.update`, request that.)
+
+**Path parameters:**
+| Parameter | Notes |
+|-----------|-------|
+| `user_id` | UUID of the participant to remove. |
+
+**Note:** This only removes the participation record. It does not affect the
+user's account, branch membership, or any other data. The event itself is
+unaffected.
+
+Returns `204 No Content` on success. Returns `404` if the user is not
+a participant in this event.
+""",
 )
 async def remove_participant_route(
     org_id: str,

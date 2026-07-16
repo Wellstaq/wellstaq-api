@@ -8,7 +8,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, require_club_membership, require_event_participation
+from app.auth.dependencies import (
+    CurrentUser,
+    require_club_membership,
+    require_event_participation,
+    require_scoped_permission,
+)
 from app.models import Club, Event, GroupChatMessage
 
 VALID_CONVERSATION_TYPES = {"club", "event"}
@@ -64,3 +69,58 @@ async def get_message_or_404(*, session: AsyncSession, organization_id: str, mes
     if message is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found.")
     return message
+
+async def get_conversation_branch_id(
+    *, session: AsyncSession, conversation_type: str, conversation_id: str
+) -> str:
+    """Returns the branch_id that owns this conversation — every club and
+    event is branch-scoped, so this always resolves to a real branch_id,
+    never None."""
+    if conversation_type == "club":
+        result = await session.execute(select(Club).where(Club.id == conversation_id))
+    else:  # event
+        result = await session.execute(select(Event).where(Event.id == conversation_id))
+
+    resource = result.scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{conversation_type.capitalize()} not found.")
+    return resource.branch_id
+
+
+async def require_chat_moderation_access(
+    *, session: AsyncSession, current_user: CurrentUser, message: GroupChatMessage
+) -> None:
+    """
+    Two independent paths grant moderation access to a message's
+    conversation, checked in this order:
+
+      1. Club leader override — if conversation_type == 'club' and
+         current_user is that club's leader_id, they can moderate their
+         own club's chat with NO permission grant required. This mirrors
+         a post author deleting their own post: ownership, not a
+         permission row. Does NOT apply to events (no equivalent
+         "event owner" concept confirmed yet — event moderation goes
+         through scoped chat.moderate only).
+
+      2. Scoped chat.moderate permission — checked against the branch
+         that owns the conversation (every club/event is branch-scoped,
+         so this always has a real target_branch_id, never None). A
+         branch-scoped OR org-wide grant satisfies this, same as every
+         other require_scoped_permission call. super_admin bypasses
+         inside require_scoped_permission itself.
+
+    Raises:
+      403 — neither path grants access.
+    """
+    if message.conversation_type == "club":
+        club_result = await session.execute(select(Club).where(Club.id == message.conversation_id))
+        club = club_result.scalar_one_or_none()
+        if club is not None and club.leader_id == current_user.user_id:
+            return  # club leader — no permission check needed
+
+    branch_id = await get_conversation_branch_id(
+        session=session, conversation_type=message.conversation_type, conversation_id=message.conversation_id
+    )
+    await require_scoped_permission(
+        db=session, current_user=current_user, permission="chat.moderate", target_branch_id=branch_id,
+    )

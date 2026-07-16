@@ -3,12 +3,13 @@ tests/services/branches/test_update_branch.py
 
 Unit tests for app/services/branch/update_branch.py
 
-Key fix vs prior version:
-  User.branch_id is NOT NULL — _make_user() now requires branch_id
-  explicitly. Every call site passes owner.branch_id (the HQ branch
-  auto-created by make_org_with_owner). Tests that call
-  make_org_with_owner() now unpack both org AND owner so branch_id
-  is always available.
+Key notes:
+  - assign_user_to_branch() requires department_id (mandatory since the
+    user's branch and department must always move together).
+  - edit_branch() raises 403 when branch.is_headquarters=True.
+  - User.branch_id is NOT NULL — _make_user() requires branch_id.
+  - make_org_with_owner() is unpacked as (org, owner) everywhere so
+    owner.branch_id is always available for seeding other users.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, User
+from app.models.department import Department
 from app.services.branch.update_branch import (
     assign_branch_manager,
     assign_user_to_branch,
@@ -34,15 +36,34 @@ async def _make_branch(
     organization_id: str,
     name: str = "Lagos Branch",
     manager_id: str | None = None,
+    is_headquarters: bool = False,
 ) -> Branch:
     branch = Branch(
         organization_id=organization_id,
         name=name,
         manager_id=manager_id,
+        is_headquarters=is_headquarters,
     )
     db_session.add(branch)
     await db_session.flush()
     return branch
+
+
+async def _make_department(
+    db_session: AsyncSession,
+    organization_id: str,
+    branch_id: str,
+    name: str = "General",
+) -> Department:
+    dept = Department(
+        name=name,
+        organization_id=organization_id,
+        branch_id=branch_id,
+        member_count=0,
+    )
+    db_session.add(dept)
+    await db_session.flush()
+    return dept
 
 
 async def _make_user(
@@ -193,6 +214,23 @@ class TestEditBranch:
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_raises_403_when_branch_is_headquarters(
+        self, db_session: AsyncSession
+    ):
+        org, _ = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id, is_headquarters=True)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await edit_branch(
+                session=db_session,
+                organization_id=org.id,
+                branch_id=branch.id,
+                name="New HQ Name",
+            )
+
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_raises_409_when_name_conflicts_exact_match(
         self, db_session: AsyncSession
     ):
@@ -237,6 +275,7 @@ class TestAssignUserToBranch:
     async def test_assigns_user_to_branch_successfully(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        dept = await _make_department(db_session, org.id, branch.id)
         user = await _make_user(db_session, org.id, "user@example.com", owner.branch_id)
 
         result = await assign_user_to_branch(
@@ -244,6 +283,7 @@ class TestAssignUserToBranch:
             organization_id=org.id,
             branch_id=branch.id,
             user_id=user.id,
+            department_id=dept.id,
         )
 
         assert result.branch_id == branch.id
@@ -254,6 +294,7 @@ class TestAssignUserToBranch:
     ):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        dept = await _make_department(db_session, org.id, branch.id)
         user = await _make_user(db_session, org.id, "user@example.com", owner.branch_id)
 
         result = await assign_user_to_branch(
@@ -261,6 +302,7 @@ class TestAssignUserToBranch:
             organization_id=org.id,
             branch_id=branch.id,
             user_id=user.id,
+            department_id=dept.id,
         )
 
         assert isinstance(result, User)
@@ -272,6 +314,7 @@ class TestAssignUserToBranch:
         org, owner = await make_org_with_owner(db_session)
         old_branch = await _make_branch(db_session, org.id, name="Old Branch")
         new_branch = await _make_branch(db_session, org.id, name="New Branch")
+        new_dept = await _make_department(db_session, org.id, new_branch.id)
         user = await _make_user(
             db_session, org.id, "user@example.com", old_branch.id
         )
@@ -281,6 +324,7 @@ class TestAssignUserToBranch:
             organization_id=org.id,
             branch_id=new_branch.id,
             user_id=user.id,
+            department_id=new_dept.id,
         )
 
         assert result.branch_id == new_branch.id
@@ -298,6 +342,7 @@ class TestAssignUserToBranch:
                 organization_id=org.id,
                 branch_id="00000000-0000-0000-0000-000000000000",
                 user_id=user.id,
+                department_id="00000000-0000-0000-0000-000000000000",
             )
 
         assert exc_info.value.status_code == 404
@@ -317,6 +362,7 @@ class TestAssignUserToBranch:
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch_org2 = await _make_branch(db_session, org2.id)
+        dept_org2 = await _make_department(db_session, org2.id, branch_org2.id)
         user = await _make_user(db_session, org1.id, "user@example.com", owner1.branch_id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -325,6 +371,7 @@ class TestAssignUserToBranch:
                 organization_id=org1.id,
                 branch_id=branch_org2.id,
                 user_id=user.id,
+                department_id=dept_org2.id,
             )
 
         assert exc_info.value.status_code == 404
@@ -333,6 +380,7 @@ class TestAssignUserToBranch:
     async def test_raises_404_when_user_not_found(self, db_session: AsyncSession):
         org, _ = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        dept = await _make_department(db_session, org.id, branch.id)
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_branch(
@@ -340,6 +388,7 @@ class TestAssignUserToBranch:
                 organization_id=org.id,
                 branch_id=branch.id,
                 user_id="00000000-0000-0000-0000-000000000000",
+                department_id=dept.id,
             )
 
         assert exc_info.value.status_code == 404
@@ -359,7 +408,10 @@ class TestAssignUserToBranch:
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch = await _make_branch(db_session, org1.id)
-        user_org2 = await _make_user(db_session, org2.id, "user@example.com", owner2.branch_id)
+        dept = await _make_department(db_session, org1.id, branch.id)
+        user_org2 = await _make_user(
+            db_session, org2.id, "user@example.com", owner2.branch_id
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await assign_user_to_branch(
@@ -367,6 +419,7 @@ class TestAssignUserToBranch:
                 organization_id=org1.id,
                 branch_id=branch.id,
                 user_id=user_org2.id,
+                department_id=dept.id,
             )
 
         assert exc_info.value.status_code == 404
@@ -377,6 +430,7 @@ class TestAssignUserToBranch:
     ):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        dept = await _make_department(db_session, org.id, branch.id)
         # Create user already in the target branch
         user = await _make_user(
             db_session, org.id, "user@example.com", branch.id
@@ -388,9 +442,58 @@ class TestAssignUserToBranch:
                 organization_id=org.id,
                 branch_id=branch.id,
                 user_id=user.id,
+                department_id=dept.id,
             )
 
         assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_raises_404_when_department_not_in_target_branch(
+        self, db_session: AsyncSession
+    ):
+        """Department exists in the org but belongs to a different branch —
+        must be rejected since branch/dept must always match."""
+        org, owner = await make_org_with_owner(db_session)
+        target_branch = await _make_branch(db_session, org.id, name="Target Branch")
+        other_branch = await _make_branch(db_session, org.id, name="Other Branch")
+        dept_in_other_branch = await _make_department(
+            db_session, org.id, other_branch.id
+        )
+        user = await _make_user(
+            db_session, org.id, "user@example.com", owner.branch_id
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await assign_user_to_branch(
+                session=db_session,
+                organization_id=org.id,
+                branch_id=target_branch.id,
+                user_id=user.id,
+                department_id=dept_in_other_branch.id,
+            )
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_raises_404_when_department_not_found(
+        self, db_session: AsyncSession
+    ):
+        org, owner = await make_org_with_owner(db_session)
+        branch = await _make_branch(db_session, org.id)
+        user = await _make_user(
+            db_session, org.id, "user@example.com", owner.branch_id
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await assign_user_to_branch(
+                session=db_session,
+                organization_id=org.id,
+                branch_id=branch.id,
+                user_id=user.id,
+                department_id="00000000-0000-0000-0000-000000000000",
+            )
+
+        assert exc_info.value.status_code == 404
 
 
 # ── assign_branch_manager ──────────────────────────────────────────────────────

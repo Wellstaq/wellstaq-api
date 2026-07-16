@@ -14,17 +14,17 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import CurrentUser
 from app.models import GroupChatMessage
-from app.services.chat._helpers import get_message_or_404
+from app.services.chat._helpers import get_message_or_404, require_chat_moderation_access
 
 
 async def pin_message(
-    *, session: AsyncSession, organization_id: str, message_id: str, pinned_by: str
+    *, session: AsyncSession, organization_id: str, message_id: str, current_user: CurrentUser
 ) -> GroupChatMessage:
     message = await get_message_or_404(session=session, organization_id=organization_id, message_id=message_id)
+    await require_chat_moderation_access(session=session, current_user=current_user, message=message)
 
-    # Unpin whatever's currently pinned in this conversation first — the
-    # partial unique index only allows one is_pinned=true row at a time.
     existing_pinned = await session.execute(
         select(GroupChatMessage).where(
             GroupChatMessage.conversation_type == message.conversation_type,
@@ -36,18 +36,21 @@ async def pin_message(
         other.is_pinned = False
         other.pinned_by = None
         other.pinned_at = None
-    await session.flush()  # release the old pin before setting the new one
+    await session.flush()
 
     message.is_pinned = True
-    message.pinned_by = pinned_by
+    message.pinned_by = current_user.user_id
     message.pinned_at = datetime.now(timezone.utc)
     await session.flush()
     await session.refresh(message)
     return message
 
 
-async def unpin_message(*, session: AsyncSession, organization_id: str, message_id: str) -> GroupChatMessage:
+async def unpin_message(
+    *, session: AsyncSession, organization_id: str, message_id: str, current_user: CurrentUser
+) -> GroupChatMessage:
     message = await get_message_or_404(session=session, organization_id=organization_id, message_id=message_id)
+    await require_chat_moderation_access(session=session, current_user=current_user, message=message)
 
     message.is_pinned = False
     message.pinned_by = None

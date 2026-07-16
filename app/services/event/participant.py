@@ -34,7 +34,6 @@ async def _require_event(session: AsyncSession, organization_id: str, event_id: 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found or does not belong to this organization.")
     return event
 
-
 async def join_event(
     *,
     session: AsyncSession,
@@ -44,13 +43,22 @@ async def join_event(
     is_invite: bool = False,
     initial_status: str | None = "pending",
 ) -> EventParticipant:
-    await _require_event(session, organization_id, event_id)
+    event = await _require_event(session, organization_id, event_id)
 
+    # Branch guard — event.branch_id is NOT NULL (always set).
+    # A user can only join an event that belongs to their home branch.
     user_result = await session.execute(
         select(User).where(User.id == user_id, User.organization_id == organization_id)
     )
-    if user_result.scalar_one_or_none() is None:
+    user = user_result.scalar_one_or_none()
+    if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found or does not belong to this organization.")
+
+    if user.branch_id != event.branch_id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "You can only join events that belong to your branch.",
+        )
 
     existing = await session.execute(
         select(EventParticipant).where(
@@ -71,9 +79,12 @@ async def join_event(
     await session.flush()
     await session.refresh(participant)
 
-    logger.info("User joined event", extra={"event_id": event_id, "user_id": user_id, "org_id": organization_id})
+    logger.info(
+    "User joined event event_id=%s user_id=%s",
+    event.id,
+    user.id,
+)
     return participant
-
 
 async def update_participant_status(
     *, session: AsyncSession, organization_id: str, event_id: str, user_id: str, new_status: str,

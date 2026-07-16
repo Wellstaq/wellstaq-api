@@ -1,6 +1,7 @@
 """
 app/schemas/chat.py
 """
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,8 +25,8 @@ class MessageResponse(BaseModel):
     media_type: str | None
     is_pinned: bool
     pinned_by: str | None
-    pinned_at: str | None
-    created_at: str
+    pinned_at: datetime | None   # ← was non-nullable, model says nullable
+    created_at: datetime
 
 
 class MessageListResponse(BaseModel):
@@ -38,4 +39,9 @@ class MessageListResponse(BaseModel):
 class PinActionResponse(BaseModel):
     message_id: str
     is_pinned: bool
+    message: str
+
+
+class MessageDeleteResponse(BaseModel):
+    message_id: str
     message: str
