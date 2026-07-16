@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.dependencies import CurrentUser
 from app.models import PostComment
+from app.services.notification import create_notification
 from app.services.post._helpers import check_post_branch_access, get_post_or_404
 from app.core.datetime import ensure_utc
 
@@ -34,11 +35,13 @@ async def add_comment(
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
     await check_post_branch_access(db=session, current_user=current_user, post=post)
 
+    parent_comment = None
     if parent_comment_id is not None:
         parent_result = await session.execute(
             select(PostComment).where(PostComment.id == parent_comment_id, PostComment.post_id == post_id)
         )
-        if parent_result.scalar_one_or_none() is None:
+        parent_comment = parent_result.scalar_one_or_none()
+        if parent_comment is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Parent comment not found on this post.")
 
     comment = PostComment(
@@ -51,6 +54,23 @@ async def add_comment(
     session.add(comment)
     post.comment_count += 1
     await session.flush()
+
+    # A reply notifies the parent comment's author; a top-level comment
+    # notifies the post's author. Never notify yourself.
+    notify_user_id = parent_comment.user_id if parent_comment is not None else post.user_id
+    notification_body = "Someone replied to your comment." if parent_comment is not None else "Someone commented on your post."
+
+    if notify_user_id != current_user.user_id:
+        await create_notification(
+            session=session,
+            user_id=notify_user_id,
+            organization_id=organization_id,
+            actor_id=current_user.user_id,
+            notification_type="commented_post",
+            reference_id=post.id,
+            reference_type="post",
+            body=notification_body,
+        )
 
     result = await session.execute(
         select(PostComment)

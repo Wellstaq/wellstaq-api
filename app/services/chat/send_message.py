@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser
 from app.models import GroupChatMessage
-from app.services.chat._helpers import require_conversation_membership, validate_conversation
+from app.services.chat._helpers import (
+    require_conversation_membership,
+    validate_conversation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +30,31 @@ async def send_message(
     media_url: str | None,
     media_type: str | None,
 ) -> GroupChatMessage:
-    if not content and not media_url:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A message needs content or media.")
+    # Normalize content first
+    if content is not None:
+        content = content.strip()
+        if content == "":
+            content = None
+
+    # Validate payload before any database lookups
+    if content is None and media_url is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A message needs content or media.",
+        )
 
     await validate_conversation(
-        session=session, organization_id=organization_id,
-        conversation_type=conversation_type, conversation_id=conversation_id,
+        session=session,
+        organization_id=organization_id,
+        conversation_type=conversation_type,
+        conversation_id=conversation_id,
     )
+
     await require_conversation_membership(
-        session=session, current_user=current_user,
-        conversation_type=conversation_type, conversation_id=conversation_id,
+        session=session,
+        current_user=current_user,
+        conversation_type=conversation_type,
+        conversation_id=conversation_id,
     )
 
     message = GroupChatMessage(
@@ -44,11 +62,12 @@ async def send_message(
         conversation_type=conversation_type,
         conversation_id=conversation_id,
         user_id=current_user.user_id,
-        content=content.strip() if content else None,
+        content=content,
         media_url=media_url,
         media_type=media_type,
         is_pinned=False,
     )
+
     session.add(message)
     await session.flush()
     await session.refresh(message)
@@ -57,7 +76,12 @@ async def send_message(
     # push to conversation members here once that infra exists.
 
     logger.info(
-        "Group chat message sent",
-        extra={"message_id": message.id, "conversation_type": conversation_type, "conversation_id": conversation_id},
+        "Group chat message sent "
+        "message_id=%s conversation_type=%s conversation_id=%s user_id=%s",
+        message.id,
+        message.conversation_type,
+        message.conversation_id,
+        current_user.user_id,
     )
+
     return message

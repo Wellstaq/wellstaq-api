@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.datetime import ensure_utc
 from app.auth.dependencies import CurrentUser
 from app.models import GroupChatMessage
 from app.services.chat._helpers import get_message_or_404, require_chat_moderation_access
@@ -43,6 +44,7 @@ async def pin_message(
     message.pinned_at = datetime.now(timezone.utc)
     await session.flush()
     await session.refresh(message)
+    message.pinned_at = ensure_utc(message.pinned_at)
     return message
 
 

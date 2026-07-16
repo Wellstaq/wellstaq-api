@@ -92,13 +92,14 @@ async def delete_message(
 
     await session.delete(message)
     await session.flush()
-
+    
     logger.info(
-        "Group chat message deleted",
-        extra={
-            "message_id": message_id,
-            "deleted_by": current_user.user_id,
-            "conversation_type": message.conversation_type,
-            "conversation_id": message.conversation_id,
-        },
+        "Group chat message deleted: "
+        "message_id=%s user_id=%s conversation_type=%s conversation_id=%s",
+        message.id,
+        current_user.user_id,
+        message.conversation_type,
+        message.conversation_id,
     )
+
+    

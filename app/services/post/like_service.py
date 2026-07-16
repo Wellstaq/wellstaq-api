@@ -8,6 +8,7 @@ import logging
 
 from app.auth.dependencies import CurrentUser
 from app.models import PostLike, User
+from app.services.notification import create_notification
 from app.services.post._helpers import check_post_branch_access, get_post_or_404
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,19 @@ async def like_post(
     session.add(like)
     post.like_count += 1
     await session.flush()
+
+    # Don't notify someone about liking their own post.
+    if post.user_id != current_user.user_id:
+        await create_notification(
+            session=session,
+            user_id=post.user_id,
+            organization_id=organization_id,
+            actor_id=current_user.user_id,
+            notification_type="liked_post",
+            reference_id=post.id,
+            reference_type="post",
+            body="Someone liked your post.",
+        )
 
     return True, post.like_count
 
