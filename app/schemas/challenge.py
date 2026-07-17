@@ -105,9 +105,8 @@ class ProgressSubmitRequest(BaseModel):
     value: Decimal = Field(..., ge=0)
     source: str = Field(default="mobile", max_length=30)
 
-
 class ProgressEntryResponse(BaseModel):
-    entry_date: date
+    entry_date: date | None = None
     value: Decimal
     source: str
     already_completed: bool = False

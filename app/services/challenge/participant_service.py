@@ -39,7 +39,6 @@ async def join_challenge(
     await session.refresh(participant)
     return participant
 
-
 async def leave_challenge(*, session: AsyncSession, organization_id: str, challenge_id: str, current_user: CurrentUser) -> None:
     result = await session.execute(
         select(ChallengeParticipant).where(
@@ -52,9 +51,14 @@ async def leave_challenge(*, session: AsyncSession, organization_id: str, challe
     if participant is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "You are not a participant of this challenge.")
 
+    if participant.completed_at is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot leave a challenge you have already completed — this preserves your completion record.",
+        )
+
     await session.delete(participant)
     await session.flush()
-
 
 async def get_participants(
     *, session: AsyncSession, organization_id: str, challenge_id: str, offset: int = 0, limit: int = 50

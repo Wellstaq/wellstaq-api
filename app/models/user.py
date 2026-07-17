@@ -175,6 +175,13 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="user",
         foreign_keys="ChallengeParticipant.user_id",
     )
+
+    challenge_progress_entries: Mapped[list["ChallengeProgressEntry"]] = relationship(
+        "ChallengeProgressEntry",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="ChallengeProgressEntry.user_id",
+    )
     sent_invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
         back_populates="inviter",

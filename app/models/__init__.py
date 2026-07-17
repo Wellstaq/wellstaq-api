@@ -13,7 +13,7 @@ from app.models.chat import  GroupChatMessage
 from app.models.notification import Notification
 from app.models.post import Post, PostComment, PostSave, PostLike, PostShare, PostHashtag
 from app.models.hashtag import Hashtag, HashtagTrendSnapshot
-from app.models.challenge import Challenge, ChallengeParticipant
+from app.models.challenge import Challenge, ChallengeParticipant,ChallengeProgressEntry
 from app.models.category import Category, HealthCategory
 from app.models.wellbeing import(
     WellbeingDimension,

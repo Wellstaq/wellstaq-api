@@ -1,5 +1,5 @@
 """
-tests/services/event/test_get_event.py
+tests/services/events/test_get_event.py
 
 Unit tests for app/services/event/get_event.py
 

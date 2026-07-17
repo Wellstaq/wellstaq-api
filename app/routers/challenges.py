@@ -45,12 +45,14 @@ from app.services.challenge import (
     create_challenge,
     delete_challenge,
     edit_challenge,
+    cancel_challenge,
     get_challenge,
     get_challenges,
     get_participants,
     join_challenge,
     leave_challenge,
     mark_participant_complete,
+
 )
 from app.services.challenge._helpers import check_challenge_scope, check_challenge_visibility
 from app.services.challenge.progress_service import submit_progress
@@ -59,8 +61,41 @@ router = APIRouter(prefix="/organizations/{org_id}/challenges", tags=["challenge
 
 
 # ── Create ───────────────────────────────────────────────────────────────────
-
-@router.post("", response_model=ChallengeResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ChallengeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a challenge",
+    description=(
+        "Creates an org-level or branch-scoped wellness/fitness challenge. "
+        "Requires `challenge.create`, scoped to `branch_id` (or org-wide "
+        "if `branch_id` is omitted).\n\n"
+        "**Required fields:** `name`, `target_type`.\n\n"
+        "**branch_id** — omit for an org-wide challenge visible to every "
+        "branch; set to scope the challenge to one branch only.\n\n"
+        "**target_type** — determines how completion is evaluated:\n"
+        "- `cumulative`: total value across the whole challenge window must "
+        "reach `target_value` (e.g. 50,000 steps in total). Completes the "
+        "moment the target is crossed, any time before `end_date`.\n"
+        "- `daily_minimum`: `target_value` must be independently met "
+        "**every day** within the window (e.g. 5,000 steps every day). "
+        "Requires `end_date` to be set — completion is only finalized once "
+        "the window closes.\n\n"
+        "**target_value** — the numeric goal `target_type` is evaluated "
+        "against. Optional; if omitted, the challenge has no automatic "
+        "completion and must be marked complete manually.\n\n"
+        "**metric_type** — freeform label describing what's being "
+        "measured, e.g. `steps`, `minutes_active`, `workshop_attendance`, "
+        "`water_intake_liters`. Not a fixed enum — pick a consistent label "
+        "per challenge type, since the frontend/mobile client uses this to "
+        "decide how to collect and submit progress.\n\n"
+        "**status** is not settable here — every new challenge starts as "
+        "`draft` and is activated separately.\n\n"
+        "**wellbeing_challenge_id** — optional link to a global challenge "
+        "category/theme (e.g. \"Fitness\", \"Mental Health\") for grouping "
+        "and filtering; leave null for an uncategorized challenge."
+    ),
+)
 async def create_challenge_route(
     org_id: str, body: ChallengeCreateRequest,
     db: AsyncSession = Depends(get_db),
@@ -78,8 +113,6 @@ async def create_challenge_route(
         )
         await db.commit()
         return ChallengeResponse.model_validate(challenge)
-
-
 # ── List ─────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=ChallengeListResponse, status_code=status.HTTP_200_OK)
@@ -145,7 +178,16 @@ async def edit_challenge_route(
 
 # ── Delete ───────────────────────────────────────────────────────────────────
 
-@router.delete("/{challenge_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{challenge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Permanently delete a challenge",
+    description=(
+        "Hard delete — also removes all participant and progress records. "
+        "Refuses with 409 if any participant has already completed the "
+        "challenge; use `/cancel` instead in that case. Requires `challenge.delete`."
+    ),
+)
 async def delete_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
@@ -219,8 +261,10 @@ async def submit_progress_route(
                 entry_date=None, value=body.value, source=body.source,
                 already_completed=True, message="Challenge already completed — progress not recorded.",
             )
-        return ProgressEntryResponse(entry_date=entry.entry_date, value=entry.value, source=entry.source)
-
+        return ProgressEntryResponse(
+            entry_date=entry.entry_date, value=entry.value, source=entry.source,
+            already_completed=False, message="Progress recorded.",
+        )
 
 # ── Participants ─────────────────────────────────────────────────────────────
 
@@ -272,3 +316,28 @@ async def mark_participant_complete_route(
             user_id=user.id, first_name=user.first_name, last_name=user.last_name,
             rank=participant.rank, completed_at=participant.completed_at, joined_at=participant.joined_at,
         )
+
+@router.post(
+    "/{challenge_id}/cancel",
+    response_model=ChallengeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel a challenge",
+    description=(
+        "Sets status='cancelled'. Preferred over DELETE when the "
+        "challenge has completions or active participants worth "
+        "keeping — preserves all participant and progress history. "
+        "Requires `challenge.update`."
+    ),
+)
+async def cancel_challenge_route(
+    org_id: str, challenge_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+) -> ChallengeResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/cancel"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
+        cancelled = await cancel_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await db.commit()
+        return ChallengeResponse.model_validate(cancelled)

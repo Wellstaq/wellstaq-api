@@ -1,5 +1,5 @@
 """
-app/routers/organization.py
+app/routers/organizations.py
 
 Organization management routes.
 
