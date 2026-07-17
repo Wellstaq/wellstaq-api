@@ -36,9 +36,11 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Numeric,
     Text,
     UniqueConstraint,
     func,
+   
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -82,6 +84,12 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
     metric_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False, default="cumulative")
+    # "cumulative" = sum across the whole challenge window, deadline-driven
+    # "daily_minimum" = must independently clear target_value each day
+
+    target_value: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # The number to hit — total steps for cumulative, per-day minimum for daily_minimum
 
     # ── Audit ─────────────────────────────────────────────────────────────
     created_by: Mapped[str | None] = mapped_column(
@@ -123,6 +131,13 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         primaryjoin="Challenge.id == ChallengeParticipant.challenge_id",
     )
 
+    progress_entries: Mapped[list["ChallengeProgressEntry"]] = relationship(
+        "ChallengeProgressEntry",
+        back_populates="challenge",
+        cascade="all, delete-orphan",
+        primaryjoin="Challenge.id == ChallengeProgressEntry.challenge_id",
+    )
+
     __table_args__ = (
         Index("ix_challenges_org_start_date", "organization_id", "start_date"),
         UniqueConstraint("id", "organization_id", name="uq_challenges_id_org"),
@@ -135,6 +150,7 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "status IN ('draft', 'active', 'completed', 'cancelled', 'archived')",
             name="ck_challenges_status_valid",
         ),
+        CheckConstraint("target_type IN ('cumulative', 'daily_minimum')", name="ck_challenges_target_type_valid"),
     )
 
     def __repr__(self) -> str:
@@ -211,3 +227,60 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             f"<ChallengeParticipant id={self.id} challenge={self.challenge_id} "
             f"user={self.user_id} org={self.organization_id}>"
         )
+"""
+
+Raw daily progress data submitted by the frontend (device pedometer via
+HealthKit/Health Connect, or manual entry). Challenge.target_type decides
+how these are evaluated: cumulative = SUM across all entries vs
+target_value; daily_minimum = COUNT of entries where value >=
+target_value.
+
+entry_date is the WAT (Africa/Lagos) calendar date the entry belongs to
+— computed by the backend from server time at insert, never trusted from
+the client. This keeps "which day is this" consistent across devices/
+timezones rather than trusting a client-reported date.
+"""
+
+class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "challenge_progress_entries"
+
+    challenge_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+
+    # Where this number came from — useful for audits/disputes even
+    # though only one source is supported today.
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+
+    challenge: Mapped["Challenge"] = relationship(
+        "Challenge", back_populates="progress_entries", foreign_keys=[challenge_id],
+    )
+    user: Mapped["User"] = relationship(
+        "User", back_populates="challenge_progress_entries", foreign_keys=[user_id],
+    )
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="challenge_progress_entries", foreign_keys=[organization_id],
+    )
+
+    __table_args__ = (
+        # One entry per person per day per challenge — a re-sync for the
+        # same day UPDATES this row, never duplicates it.
+        UniqueConstraint("challenge_id", "user_id", "entry_date", name="uq_challenge_progress_entry_day"),
+        ForeignKeyConstraint(
+            ["challenge_id", "organization_id"],
+            ["challenges.id", "challenges.organization_id"],
+            ondelete="CASCADE",
+            name="fk_challenge_progress_challenge_org",
+        ),
+        CheckConstraint("value >= 0", name="ck_challenge_progress_value_non_negative"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChallengeProgressEntry challenge={self.challenge_id} user={self.user_id} date={self.entry_date} value={self.value}>"

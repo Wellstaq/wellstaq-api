@@ -172,6 +172,12 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    challenge_progress_entries: Mapped[list["ChallengeProgressEntry"]] = relationship(
+        "ChallengeProgressEntry",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+        foreign_keys="ChallengeProgressEntry.organization_id",
+    )
 
     activity_feed: Mapped[list["UserActivityFeed"]] = relationship(
         "UserActivityFeed",
