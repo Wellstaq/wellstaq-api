@@ -3,49 +3,43 @@ ARQ worker configuration.
 
 Run with:
     arq app.jobs.worker.WorkerSettings
-
-This single process handles both:
-    - cron_jobs:   scheduled snapshot recomputation (leaderboard, kpi,
-                   hashtag trends, department rank)
-    - functions:   on-demand jobs enqueued from routes/services, e.g.
-                   `await redis.enqueue_job("resize_thumbnail", object_key)`
-
-The cron schedules below are starting points — tune the cron
-expressions once you know real traffic patterns. hashtag trends are
-deliberately on the tightest schedule (15 min) since trending is the
-most time-sensitive of the four snapshot types; the others run hourly
-as a reasonable default.
 """
 
 from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import settings
-from app.jobs.tasks import (
-    compute_department_rank_snapshots,
-    compute_hashtag_trend_snapshots,
-    compute_kpi_snapshots,
-    compute_leaderboard_snapshots,
-    fanout_notification,
-    resize_thumbnail,
-    send_invite_email,
+from app.jobs.analytics.hashtag_trends import compute_hashtag_trend_snapshots
+from app.jobs.analytics.department_rank import compute_department_rank_snapshots
+from app.jobs.analytics.kpi import compute_kpi_snapshots
+from app.jobs.analytics.leaderboard import (
+    compute_leaderboard_snapshots_daily,
+    compute_leaderboard_snapshots_weekly,
+    compute_leaderboard_snapshots_monthly,
 )
+from app.jobs.analytics.engagement import compute_engagement_logs
+from app.jobs.challenges.lifecycle import activate_and_close_challenges
+from app.jobs.notifications.notification import fanout_notification
+from app.jobs.notifications.email import send_invite_email
+from app.jobs.media.thumbnails import resize_thumbnail
 
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
 
-    # On-demand functions — enqueued from routes/services by name.
     functions = [
         resize_thumbnail,
         send_invite_email,
         fanout_notification,
     ]
 
-    # Scheduled functions — run automatically on the cron expression below.
     cron_jobs = [
         cron(compute_hashtag_trend_snapshots, minute={0, 15, 30, 45}),
-        cron(compute_leaderboard_snapshots, hour=set(range(24)), minute=0),
+        cron(compute_leaderboard_snapshots_daily, hour=set(range(24)), minute=0),
+        cron(compute_leaderboard_snapshots_weekly, weekday=0, hour=1, minute=0),   # Mondays
+        cron(compute_leaderboard_snapshots_monthly, day=1, hour=2, minute=0),        # 1st of month
         cron(compute_department_rank_snapshots, hour=set(range(24)), minute=5),
-        cron(compute_kpi_snapshots, hour=0, minute=10),  # once daily
+        cron(compute_kpi_snapshots, hour=0, minute=10),
+        cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
+        cron(compute_engagement_logs, hour=1, minute=0),
     ]

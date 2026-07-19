@@ -99,7 +99,14 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # Kept as a module-level tuple so the CheckConstraint and any app-layer
 # validation can both reference the same source of truth.
 CHECKIN_VOCABULARY = ("good", "bad", "stressed", "tired")
-
+PRIORITY_VOCABULARY = (
+    "reduce-stress",
+    "build-energy",
+    "improve-balance",
+    "save-better",
+    "stay-active",
+    "feel-connected",
+)
 
 class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "user_priorities"
@@ -128,6 +135,10 @@ class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__  = (
         CheckConstraint("rank > 0", name="ck_user_priorities_rank_positive"),
+        CheckConstraint(
+        f"priority IN ({', '.join(repr(p) for p in PRIORITY_VOCABULARY)})",
+        name="ck_user_priorities_priority_vocab",
+    ),
     )
 
     def __repr__(self) -> str:

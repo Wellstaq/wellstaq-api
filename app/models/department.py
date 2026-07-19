@@ -137,6 +137,7 @@ class Department(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="department",
         cascade="all, delete-orphan",
     )
+    
     category: Mapped["Category"] = relationship(
         "Category",
         back_populates="departments",
@@ -206,21 +207,39 @@ class DepartmentMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<DepartmentMember department={self.department_id} user={self.user_id}>"
  
- 
 class DepartmentRankSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Unchanged."""
- 
+    """
+    Periodic snapshot of a department's rank/activity stats, computed by
+    a background job (not live-queried) — same denormalized-for-speed
+    pattern as Department.member_count.
+
+    performance_score is a single blended 0-100 figure derived from the
+    other stats on this row (total_activities, avg_daily_steps, and
+    whatever else the job's formula weighs in) — it exists so the
+    "Department Performance" dashboard screen has one number to render
+    per period without the frontend needing to know the formula. The
+    raw component stats (total_activities, avg_daily_steps) remain
+    available alongside it for anyone who wants the breakdown, not just
+    the composite.
+
+    Nullable because a period can be snapshotted before the scoring
+    formula runs, or if a department had zero qualifying activity that
+    period — showing "no score" is more honest than defaulting to 0.
+    """
+
     __tablename__ = "department_rank_snapshots"
- 
+
     department_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("departments.id", ondelete="CASCADE"),
         nullable=False,
     )
- 
+
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_activities: Mapped[int | None] = mapped_column(Integer, nullable=True)
     avg_daily_steps: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # New — blended composite score for this period, see class docstring.
+    performance_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
     period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
@@ -228,19 +247,19 @@ class DepartmentRankSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         server_default=func.now(),
     )
- 
+
     department: Mapped["Department"] = relationship(
         "Department",
         back_populates="rank_snapshots",
         foreign_keys=[department_id],
     )
- 
+
     __table_args__ = (
         Index(
             "ix_department_rank_snapshots_dept_period_start",
             "department_id", "period_start",
         ),
     )
- 
+
     def __repr__(self) -> str:
-        return f"<DepartmentRankSnapshot department={self.department_id} rank={self.rank}>"
+        return f"<DepartmentRankSnapshot department={self.department_id} rank={self.rank} score={self.performance_score}>"

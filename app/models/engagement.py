@@ -35,7 +35,7 @@ EngagementLog design principles:
   date-range scan pattern as ActivityLog.
 """
 
-from sqlalchemy import Date, ForeignKey, Index, Numeric, String
+from sqlalchemy import Date, ForeignKey, Index, Numeric, String, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPrimaryKeyMixin
@@ -108,70 +108,63 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
             f"user_id={self.user_id} metric_type={self.metric_type} "
             f"value={self.value} date={self.date}>"
         )
-
-
 class EngagementLog(Base, UUIDPrimaryKeyMixin):
     """
-    Backend-computed engagement score for a user on a given day.
+    Backend-computed engagement score for a user on a given day,
+    windowed as a trailing-7-day metric (not a single-day snapshot) —
+    see compute_engagement_logs docstring for the exact formulas.
 
-    metric_type: participation | checkins | social | productivity
-
-    Written on a schedule by a backend job, not submitted directly by
-    the user.
+    previous_value / trend_direction let the UI show "you're improving"
+    signals (e.g. "+12 this week") without the frontend needing to fetch
+    two separate periods and diff them itself — same idea as
+    LeaderboardSnapshot.previous_rank powering its up/down arrow.
     """
 
     __tablename__ = "engagement_logs"
 
-    # ── FKs ───────────────────────────────────────────────────────────────
     organization_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     branch_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("branches.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     user_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
     )
 
-    # ── Data ──────────────────────────────────────────────────────────────
     metric_type: Mapped[str] = mapped_column(String(50), nullable=False)
     date: Mapped["date"] = mapped_column(Date, nullable=False)
     value: Mapped[float] = mapped_column(Numeric, nullable=False)
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # New — the same metric_type's value from the prior comparable
+    # window, and the resulting direction. Both nullable: the very
+    # first computation for a user/metric_type has no prior value to
+    # compare against.
+    previous_value: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    trend_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)  # up | down | flat
+
     organization: Mapped["Organization"] = relationship(
-        "Organization",
-        back_populates="engagement_logs",
-        foreign_keys=[organization_id],
+        "Organization", back_populates="engagement_logs", foreign_keys=[organization_id],
     )
     branch: Mapped["Branch"] = relationship(
-        "Branch",
-        back_populates="engagement_logs",
-        foreign_keys=[branch_id],
+        "Branch", back_populates="engagement_logs", foreign_keys=[branch_id],
     )
     user: Mapped["User"] = relationship(
-        "User",
-        back_populates="engagement_logs",
-        foreign_keys=[user_id],
+        "User", back_populates="engagement_logs", foreign_keys=[user_id],
     )
 
     __table_args__ = (
         Index("ix_engagement_logs_org_user_date", "organization_id", "user_id", "date"),
         Index("ix_engagement_logs_org_branch_date", "organization_id", "branch_id", "date"),
+        CheckConstraint(
+            "trend_direction IS NULL OR trend_direction IN ('up', 'down', 'flat')",
+            name="ck_engagement_logs_trend_direction_valid",
+        ),
     )
 
     def __repr__(self) -> str:
         return (
             f"<EngagementLog org={self.organization_id} branch={self.branch_id} "
             f"user_id={self.user_id} metric_type={self.metric_type} "
-            f"value={self.value} date={self.date}>"
+            f"value={self.value} trend={self.trend_direction}>"
         )

@@ -1,29 +1,48 @@
 """
-Background and scheduled jobs live here, using ARQ rather than
-Celery — ARQ is asyncio-native, so it fits naturally into an async
-FastAPI codebase without the sync/async impedance mismatch Celery
-introduces, and it reuses the same Redis connection already needed
-for caching (leaderboards, trending hashtags), rather than requiring
-separate broker infrastructure.
+Background and scheduled jobs live here, using ARQ rather than Celery —
+see the original rationale preserved below.
 
-Two kinds of jobs live here:
+Organized by domain, not lumped into one tasks.py:
 
-Scheduled (cron-like, run automatically — see worker.py cron_jobs):
-    leaderboard_snapshots      — recompute rankings periodically
-    kpi_snapshots              — recompute org KPIs periodically
-    hashtag_trend_snapshots     — recompute trending hashtags every 15-60 min
-    department_rank_snapshots  — recompute department rankings periodically
+  analytics/      — scheduled snapshot/score recomputation jobs
+    engagement.py       — compute_engagement_logs
+    leaderboard.py       — compute_leaderboard_snapshots
+    department_rank.py   — compute_department_rank_snapshots
+    hashtag_trends.py     — compute_hashtag_trend_snapshots
+    kpi.py                — compute_kpi_snapshots
 
-On-demand (enqueued from a route, run once, asynchronously):
-    resize_thumbnail            — Pillow-based resize after a feed image upload
-    send_invite_email           — fired when an organization_invites row is created
-    fanout_notification         — write notifications rows for many recipients at once
+  challenges/     — challenge lifecycle jobs
+    lifecycle.py          — activate_and_close_challenges
 
-Files:
-    worker.py    — ARQ WorkerSettings: registers every task + cron schedule
-    tasks.py     — the actual task functions (stubs for now)
+  notifications/  — on-demand notification jobs
+    notification.py       — fanout_notification
+    email.py               — send_invite_email
+
+  media/          — on-demand media processing jobs
+    thumbnails.py          — resize_thumbnail
+
+  helpers/        — TRUE cross-domain shared utilities only. A helper
+    lives here only once at least two different job domains actually
+    need it — not speculatively. Job-specific helpers stay next to
+    their owning task module (e.g. an engagement-only helper belongs in
+    analytics/, not here), same pattern as services/*/​_helpers.py
+    throughout the rest of the codebase.
+    queries.py     — shared bulk-query builders (e.g. windowed
+                     ActivityLog aggregation), once >1 job needs them
+    scoring.py     — shared scoring primitives (e.g. 0-100 capping,
+                     trend-direction comparison), once >1 job needs them
+    dictionaries.py — shared enum/vocabulary constants, once >1 job
+                      needs them
+
+  worker.py       — WorkerSettings only: imports every task from its
+    real location and registers it (functions list + cron_jobs). This
+    file should never contain task logic itself.
+
+  shared.py       — thin, job-system-level utilities that aren't
+    domain-specific business logic (e.g. a get_job_db_session() wrapper
+    if one's ever needed) — deliberately separate from helpers/, which
+    is for business-logic helpers, not infrastructure plumbing.
 
 Run the worker locally with:
     arq app.jobs.worker.WorkerSettings
 """
-

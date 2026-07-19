@@ -72,3 +72,52 @@ def check_participation_eligibility(*, current_user: CurrentUser, challenge: Cha
     """Self-service join/leave — same branch-membership rule as
     visibility. A user can only join a challenge they can see."""
     check_challenge_visibility(current_user=current_user, challenge=challenge)
+
+async def check_challenge_completion(*, session: AsyncSession, challenge, participant) -> None:
+    """
+    Shared by both progress_service.submit_progress (direct challenge
+    submission) and activity_log.submit_activity's fan-out — anything
+    that writes a ChallengeProgressEntry should call this afterward.
+
+    cumulative: sum ALL entries so far, complete the instant it crosses
+    target_value — doesn't wait for end_date.
+
+    daily_minimum: TODO(background-job) — see note in the function body,
+    unchanged from the original design.
+    """
+    from sqlalchemy import func, select
+    from app.models import ChallengeProgressEntry
+
+    if challenge.target_value is None:
+        return
+
+    if challenge.target_type == "cumulative":
+        total_result = await session.execute(
+            select(func.sum(ChallengeProgressEntry.value)).where(
+                ChallengeProgressEntry.challenge_id == challenge.id,
+                ChallengeProgressEntry.user_id == participant.user_id,
+            )
+        )
+        total = total_result.scalar_one() or 0
+        if total >= challenge.target_value:
+            await _mark_challenge_complete(session=session, challenge=challenge, participant=participant)
+
+    elif challenge.target_type == "daily_minimum":
+        # TODO(background-job): only the end_date job can authoritatively
+        # evaluate daily_minimum — see original note in progress_service.py.
+        pass
+
+
+async def _mark_challenge_complete(*, session: AsyncSession, challenge, participant) -> None:
+    from datetime import datetime, timezone
+    from app.services.notification import create_notification
+
+    participant.completed_at = datetime.now(timezone.utc)
+    await session.flush()
+
+    await create_notification(
+        session=session, user_id=participant.user_id, organization_id=challenge.organization_id,
+        notification_type="challenge_completed", reference_id=challenge.id, reference_type="challenge",
+        body=f"You completed the '{challenge.name}' challenge!",
+    )
+    logger.info("Challenge auto-completed", extra={"challenge_id": challenge.id, "user_id": participant.user_id})

@@ -126,6 +126,7 @@ class LeaderboardSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Period ────────────────────────────────────────────────────────────────
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    period_type: Mapped[str] = mapped_column(String(10), nullable=False)  # daily | weekly | monthly
 
     # ── Computed timestamp ────────────────────────────────────────────────────
     computed_at: Mapped[datetime] = mapped_column(
@@ -184,6 +185,11 @@ class LeaderboardSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "period_end >= period_start",
             name="ck_leaderboard_snapshots_period_range",
+        ),
+        CheckConstraint("period_type IN ('daily', 'weekly', 'monthly')", name="ck_leaderboard_snapshots_period_type_valid"),
+        UniqueConstraint(
+            "organization_id", "user_id", "metric_type", "period_type", "period_start", "period_end",
+            name="uq_leaderboard_snapshots_org_user_metric_period",
         ),
     )
 
