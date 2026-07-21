@@ -12,9 +12,9 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.engagement_log import EngagementLog
+from app.models import EngagementLog
+from app.core.constants import ENGAGEMENT_METRIC_TYPES
 
-ENGAGEMENT_METRIC_TYPES = ("participation", "checkins", "social", "productivity")
 
 
 async def get_engagement_trend(

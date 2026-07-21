@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import UserPriority
-from app.models.activity import PRIORITY_VOCABULARY
+from app.core.constants  import PRIORITY_VOCABULARY
 
 
 async def set_priorities(*, session: AsyncSession, user_id: str, priorities: list[str]) -> list[UserPriority]:

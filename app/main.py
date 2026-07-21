@@ -27,7 +27,8 @@ from app.routers import (
     permissions,
     events,
     posts,
-    hashtags, 
+    hashtags,
+    stories, 
     chats,
     notifications,
     challenges,
@@ -36,6 +37,8 @@ from app.routers import (
     leaderboards,
     wellbeings,
     categories,
+    engagement_logs,
+    engagements,
 )
 
 
@@ -78,6 +81,7 @@ app.include_router(permissions.router)
 app.include_router(events.router)
 app.include_router(posts.router)
 app.include_router(hashtags.router)
+app.include_router(stories.router)
 app.include_router(chats.router)
 app.include_router(notifications.router)
 app.include_router(challenges.router)
@@ -86,6 +90,8 @@ app.include_router(activity_logs.router)
 app.include_router(leaderboards.router)
 app.include_router(wellbeings.router)
 app.include_router(categories.router)
+app.include_router(engagements.router)
+app.include_router(engagement_logs.router)
 
 @app.get("/")
 async def root():

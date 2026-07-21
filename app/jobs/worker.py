@@ -21,7 +21,7 @@ from app.jobs.challenges.lifecycle import activate_and_close_challenges
 from app.jobs.notifications.notification import fanout_notification
 from app.jobs.notifications.email import send_invite_email
 from app.jobs.media.thumbnails import resize_thumbnail
-
+from app.jobs.media.story_purge import purge_expired_stories
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
@@ -40,4 +40,5 @@ class WorkerSettings:
         cron(compute_department_rank_snapshots, hour=set(range(24)), minute=5),
         cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
         cron(compute_engagement_logs, hour=1, minute=0),
+        cron(purge_expired_stories, minute={0, 15, 30, 45}),
     ]

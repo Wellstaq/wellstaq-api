@@ -15,8 +15,7 @@ from app.auth.dependencies import (
     require_scoped_permission,
 )
 from app.models import Club, Event, GroupChatMessage
-
-VALID_CONVERSATION_TYPES = {"club", "event"}
+from app.core.constants import VALID_CONVERSATION_TYPES
 
 
 async def validate_conversation(

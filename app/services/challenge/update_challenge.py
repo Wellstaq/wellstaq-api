@@ -10,11 +10,11 @@ from fastapi import HTTPException, status
 
 from app.services.challenge._helpers import get_challenge_or_404
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.constants import CHALLENGE_STATUSES, TARGET_TYPES
+
 
 logger = logging.getLogger(__name__)
 
-CHALLENGE_STATUSES = ("draft", "active", "completed", "cancelled", "archived")
-TARGET_TYPES = ("cumulative", "daily_minimum")
 
 
 async def edit_challenge(

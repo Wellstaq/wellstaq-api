@@ -80,15 +80,10 @@ from app.models.branch import Branch
 from app.models.department import Department
 from app.models.permission import UserRoleAssignment
 from app.services.errors import AuthError
+from app.core.constants import INVITE_TTL_DAYS, ESCALATION_RESTRICTED_ROLES
 
 logger = logging.getLogger(__name__)
 
-INVITE_TTL_DAYS = 7
-
-# Roles that only a super_admin or admin inviter may hand out. Anyone
-# holding a branch-scoped member.invite grant (even a branch_manager)
-# is blocked from inviting someone into these roles.
-ESCALATION_RESTRICTED_ROLES = {RoleName.ADMIN, RoleName.BRANCH_MANAGER}
 
 
 def _generate_invite_code() -> str:

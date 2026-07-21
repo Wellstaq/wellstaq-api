@@ -92,21 +92,10 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.constants import CHECKIN_VOCABULARY, PRIORITY_VOCABULARY
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
-# Shared vocabulary for DailyCheckin.mood / energy_level / stress_level.
-# Kept as a module-level tuple so the CheckConstraint and any app-layer
-# validation can both reference the same source of truth.
-CHECKIN_VOCABULARY = ("good", "bad", "stressed", "tired")
-PRIORITY_VOCABULARY = (
-    "reduce_stress",
-    "build_energy",
-    "improve_balance",
-    "save_better",
-    "stay_active",
-    "feel_connected",
-)
 
 class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "user_priorities"

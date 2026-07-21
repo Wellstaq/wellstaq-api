@@ -57,13 +57,13 @@ from ._helpers import (
     _log_audit,
     _validate_password_strength,
 )
+from app.core.constants import HEADQUARTERS_BRANCH_NAME
 
 logger = logging.getLogger(__name__)
 
 # The display name for the auto-created org-wide home branch.
 # create_branch.py blocks any regular branch from claiming this name
 # so it always uniquely identifies the protected HQ branch.
-HEADQUARTERS_BRANCH_NAME = "Headquarters"
 
 
 async def _get_or_self_heal_super_admin_role(session: AsyncSession) -> Role:

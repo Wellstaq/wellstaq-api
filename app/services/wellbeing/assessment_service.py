@@ -14,8 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import UserHealthAssessment
 from app.models.category import HealthCategory
-
-ASSESSMENT_STATUSES = ("pending", "completed", "reviewed")
+from app.core.constants import ASSESSMENT_STATUSES 
 
 
 async def submit_assessment(

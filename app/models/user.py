@@ -59,9 +59,10 @@ from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, St
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.core.constants import USER_STATUSES
 
 
-USER_STATUSES = ("pending", "active", "inactive", "suspended")
+
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):

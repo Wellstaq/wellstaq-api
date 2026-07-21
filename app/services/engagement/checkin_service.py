@@ -11,9 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DailyCheckin
-from app.models.activity import CHECKIN_VOCABULARY
+from app.core.constants import CHECKIN_VOCABULARY
 
-WAT_OFFSET = timedelta(hours=1)  # placeholder — see note below
+
 
 
 def _today() -> date:

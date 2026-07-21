@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, WellbeingScore
-from app.services.wellbeing._helpers import ANONYMITY_THRESHOLD
+from app.core.constants import ANONYMITY_THRESHOLD
 
 
 async def get_my_scores(*, session: AsyncSession, user_id: str, period: str | None = None) -> list[WellbeingScore]:

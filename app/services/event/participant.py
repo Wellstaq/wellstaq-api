@@ -18,11 +18,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.constants import RSVP_STATUSES
 from app.models import Event, EventParticipant, User
 from app.services.activity import log_activity
 logger = logging.getLogger(__name__)
 
-RSVP_STATUSES = ("invited", "accepted", "declined", "pending")
+
 
 
 async def _require_event(session: AsyncSession, organization_id: str, event_id: str) -> Event:

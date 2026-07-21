@@ -12,6 +12,7 @@ Import from here — never hardcode these values in service logic.
 """
 
 from enum import StrEnum
+import re
 
 
 class UserStatus(StrEnum):
@@ -78,14 +79,17 @@ class ActivityType(StrEnum):
     TWO_FA_DISABLED = "two_fa_disabled"
     PASSWORD_CHANGED = "password_changed"
 
-
 class ReferenceType(StrEnum):
     ORGANIZATION = "organization"
     USER = "user"
 
+
+#permission
 SUPER_ADMIN_ONLY_PERMISSIONS: frozenset[str] = frozenset({
     "org.deactivate",
 })
+
+SEEDED_PERMISSION_SCOPE = "both"
 
 
 # ── OTP ───────────────────────────────────────────────────────────────────────
@@ -108,12 +112,97 @@ OTP_MAX_ATTEMPTS = 5
 # Wrong guesses allowed before the code is locked.
 # After this many failures the record is marked used=True, forcing the
 
-# app/core/constants.py
 
-WELLBEING_DIMENSIONS = ("mood", "energy", "stress", "work_life_balance")
+#media
+MEDIA_TYPES = ("image", "video")
 
-WELLBEING_LEVELS = ("good", "bad", "stressed", "tired", "excited", "amazed", "infuriated")
-# expand this list as your product defines more valid levels
 
-WELLBEING_REASONS = ("work", "family", "health", "finances", "sleep", "love")
-# reason is optional but if supplied, must be from this list
+# Shared vocabulary for DailyCheckin.mood / energy_level / stress_level.
+# Kept as a module-level tuple so the CheckConstraint and any app-layer
+# validation can both reference the same source of truth.
+CHECKIN_VOCABULARY = ("good", "bad", "stressed", "tired")
+PRIORITY_VOCABULARY = (
+    "reduce_stress",
+    "build_energy",
+    "improve_balance",
+    "save_better",
+    "stay_active",
+    "feel_connected",
+)
+
+#engagement
+ENGAGEMENT_METRIC_TYPES = ("participation", "checkins", "social", "productivity")
+
+
+#Password validation
+MIN_PASSWORD_LENGTH = 8
+SPECIAL_CHAR_PATTERN = re.compile(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?]")
+UPPERCASE_PATTERN = re.compile(r"[A-Z]")
+DIGIT_PATTERN = re.compile(r"[0-9]")
+
+#branch_name
+HEADQUARTERS_BRANCH_NAME = "Headquarters"
+
+#challenge
+CHALLENGE_STATUSES = ("draft", "active", "completed", "cancelled", "archived")
+TARGET_TYPES = ("cumulative", "daily_minimum")
+
+#chat
+VALID_CONVERSATION_TYPES = {"club", "event"}
+
+#Events
+RSVP_STATUSES = ("invited", "accepted", "declined", "pending")
+EVENT_STATUSES = ("scheduled", "ongoing", "completed", "cancelled")
+
+#organization
+INVITE_TTL_DAYS = 7
+# Roles that only a super_admin or admin inviter may hand out. Anyone
+# holding a branch-scoped member.invite grant (even a branch_manager)
+# is blocked from inviting someone into these roles.
+ESCALATION_RESTRICTED_ROLES = {RoleName.ADMIN, RoleName.BRANCH_MANAGER}
+
+#wellbeings 
+ASSESSMENT_STATUSES = ("pending", "completed", "reviewed")
+BASELINE_DIMENSIONS = ("mood", "stress", "energy", "work_life_balance")
+BASELINE_LEVELS = ("amazed", "stressed", "tired", "excited", "infuriated")
+# Minimum number of distinct participants required before an aggregate
+# wellbeing score is returned. Below this, individual scores could be
+# effectively de-anonymized by process of elimination in a small
+# branch/team — so the aggregate is suppressed entirely rather than
+# shown with a misleading precision. This number is a product/privacy
+# decision, not a technical one — 5 is a reasonable starting point but
+# should be owned and revisited deliberately, not treated as settled.
+ANONYMITY_THRESHOLD = 5
+
+
+#notifications
+
+NOTIFICATION_TYPES = (
+    "liked_post",
+    "commented_post",
+    "new_message",
+    "joined_club",
+    "joined_department",
+    "event_reminder",
+    "challenge_completed",
+    "challenge_daily_goal_met", 
+    "announcement",
+)
+
+REFERENCE_TYPES = (
+    "post",
+    "comment",
+    "message",
+    "event",
+    "challenge",
+    "club",
+    "department",
+
+)
+
+#users
+USER_STATUSES = ("pending", "active", "inactive", "suspended")
+
+
+
+

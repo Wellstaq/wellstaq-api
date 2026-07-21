@@ -20,7 +20,6 @@ Contents
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-import re
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +31,10 @@ from app.core.constants import (
     InviteStatus,
     ReferenceType,
     TokenType,
+    MIN_PASSWORD_LENGTH,
+    SPECIAL_CHAR_PATTERN,
+    UPPERCASE_PATTERN,
+    DIGIT_PATTERN,
 )
 from app.core.datetime import ensure_utc
 from app.models import (
@@ -171,10 +174,6 @@ def _make_invite_verification_token(email: str, invite_code: str) -> str:
 
 
 
-MIN_PASSWORD_LENGTH = 8
-SPECIAL_CHAR_PATTERN = re.compile(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?]")
-UPPERCASE_PATTERN = re.compile(r"[A-Z]")
-DIGIT_PATTERN = re.compile(r"[0-9]")
 
 def _validate_password_strength(password: str) -> None:
     """

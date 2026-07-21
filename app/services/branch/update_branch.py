@@ -51,10 +51,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, Permission, User, UserPermission
+from app.core.constants import SEEDED_PERMISSION_SCOPE
 
 logger = logging.getLogger(__name__)
 
-SEEDED_PERMISSION_SCOPE = "both"
+
 
 
 async def seed_role_permissions_for_branch(

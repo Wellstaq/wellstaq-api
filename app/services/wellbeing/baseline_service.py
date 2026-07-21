@@ -13,9 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import UserWellbeingBaseline
-
-BASELINE_DIMENSIONS = ("mood", "stress", "energy", "work_life_balance")
-BASELINE_LEVELS = ("amazed", "stressed", "tired", "excited", "infuriated")
+from app.core.constants import BASELINE_DIMENSIONS, BASELINE_LEVELS
 
 
 async def submit_baseline(

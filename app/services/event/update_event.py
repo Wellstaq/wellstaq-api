@@ -18,10 +18,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Event
+from app.core.constants import EVENT_STATUSES
 
 logger = logging.getLogger(__name__)
 
-EVENT_STATUSES = ("scheduled", "ongoing", "completed", "cancelled")
+
 
 
 async def edit_event(

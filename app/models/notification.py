@@ -68,28 +68,8 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.core.constants import NOTIFICATION_TYPES, REFERENCE_TYPES
 
-NOTIFICATION_TYPES = (
-    "liked_post",
-    "commented_post",
-    "new_message",
-    "joined_club",
-    "joined_department",
-    "event_reminder",
-    "challenge_completed",
-    "challenge_daily_goal_met",  # new
-    "announcement",
-)
-
-REFERENCE_TYPES = (
-    "post",
-    "comment",
-    "message",
-    "event",
-    "challenge",
-    "club",
-    "department",
-)
 
 
 class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
