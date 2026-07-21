@@ -29,7 +29,12 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ActivityLog, Challenge, ChallengeParticipant
+from app.models import (
+    ActivityLog,
+    Challenge,
+    ChallengeParticipant,
+    ChallengeProgressEntry,
+)
 from app.services.activity_log._helpers import today_utc
 from app.services.challenge._helpers import check_challenge_completion
 
@@ -76,17 +81,34 @@ async def submit_activity(
 
     await session.flush()
 
-    challenges_updated = aawait check_challenge_completion(session=session, challenge=challenge, participant=participant)
+    challenges_updated = await _fanout_to_active_challenges(
+        session=session,
+        organization_id=organization_id,
+        user_id=user_id,
+        metric_type=normalized_metric_type,
+        value=value,
+    )
 
     logger.info(
         "Activity submitted",
-        extra={"user_id": user_id, "metric_type": normalized_metric_type, "value": float(value), "challenges_updated": challenges_updated},
+        extra={
+            "user_id": user_id,
+            "metric_type": normalized_metric_type,
+            "value": float(value),
+            "challenges_updated": challenges_updated,
+        },
     )
+
     return entry, challenges_updated
 
 
 async def _fanout_to_active_challenges(
-    *, session: AsyncSession, organization_id: str, user_id: str, metric_type: str, value
+    *,
+    session: AsyncSession,
+    organization_id: str,
+    user_id: str,
+    metric_type: str,
+    value,
 ) -> list[str]:
     """
     Finds every challenge this user is an active (not yet completed)
@@ -96,13 +118,13 @@ async def _fanout_to_active_challenges(
     progress_service.submit_progress, just triggered from here instead
     of a challenge-specific endpoint.
     """
-    from app.models import ChallengeProgressEntry
-    from app.services.challenge._helpers import get_challenge_or_404
-    from app.services.activity_log._helpers import today_utc
 
     result = await session.execute(
         select(Challenge, ChallengeParticipant)
-        .join(ChallengeParticipant, ChallengeParticipant.challenge_id == Challenge.id)
+        .join(
+            ChallengeParticipant,
+            ChallengeParticipant.challenge_id == Challenge.id,
+        )
         .where(
             ChallengeParticipant.user_id == user_id,
             ChallengeParticipant.completed_at.is_(None),
@@ -111,6 +133,7 @@ async def _fanout_to_active_challenges(
             Challenge.status == "active",
         )
     )
+
     rows = result.all()
     updated_ids: list[str] = []
     today = today_utc()
@@ -123,19 +146,31 @@ async def _fanout_to_active_challenges(
                 ChallengeProgressEntry.entry_date == today,
             )
         )
+
         progress_entry = existing.scalar_one_or_none()
+
         if progress_entry is not None:
             progress_entry.value = value
             progress_entry.source = "activity_log"
         else:
             progress_entry = ChallengeProgressEntry(
-                challenge_id=challenge.id, user_id=user_id, organization_id=organization_id,
-                entry_date=today, value=value, source="activity_log",
+                challenge_id=challenge.id,
+                user_id=user_id,
+                organization_id=organization_id,
+                entry_date=today,
+                value=value,
+                source="activity_log",
             )
             session.add(progress_entry)
 
         await session.flush()
-        await _check_completion(session=session, challenge=challenge, participant=participant)
+
+        await check_challenge_completion(
+            session=session,
+            challenge=challenge,
+            participant=participant,
+        )
+
         updated_ids.append(challenge.id)
 
     return updated_ids

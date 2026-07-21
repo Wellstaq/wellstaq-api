@@ -55,6 +55,7 @@ from ._helpers import (
     _create_user_settings,
     _decode_email_verification_token,
     _log_audit,
+    _validate_password_strength,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,9 @@ async def org_owner_signup(
             "This phone number is already associated with another organization.",
             status.HTTP_409_CONFLICT,
         )
+    
+      # ── Step 2a: password strength ────────────────────────────────────────────
+    _validate_password_strength(password)
 
     # ── Step 3 ─────────────────────────────────────────────────────────────────
     slug = await unique_slug(session, business_name)
@@ -193,7 +197,7 @@ async def org_owner_signup(
     )
     session.add(hq_branch)
     await session.flush()
-
+    
     # ── Step 5 ─────────────────────────────────────────────────────────────────
     user = User(
         first_name=first_name,

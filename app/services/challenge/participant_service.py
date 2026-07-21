@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import CurrentUser
 from app.models import ChallengeParticipant, User
 from app.services.challenge._helpers import check_participation_eligibility, get_challenge_or_404
+from app.services.activity import log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,11 @@ async def join_challenge(
     session.add(participant)
     await session.flush()
     await session.refresh(participant)
+        
+    await log_activity(
+        session=session, user_id=current_user.user_id, organization_id=organization_id,
+        activity_type="joined_challenge", reference_id=challenge_id, reference_type="challenge",
+    )
     return participant
 
 async def leave_challenge(*, session: AsyncSession, organization_id: str, challenge_id: str, current_user: CurrentUser) -> None:

@@ -21,6 +21,7 @@ async def get_activity_trend(
     acceptable at one user's data volume; revisit if this becomes a
     measured hot path across many users at once (e.g. an org-wide trend,
     which doesn't exist yet — this is the personal version only).
+    #TODO metric type checkconstraint or creating it's dict
     """
     normalized_metric_type = metric_type.strip().lower()
 

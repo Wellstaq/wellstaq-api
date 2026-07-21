@@ -100,3 +100,23 @@ class OrganizationClubsListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+# ── Org / branch stats ────────────────────────────────────────────────────────
+
+class OrgStatsResponse(BaseModel):
+    total_users: int
+    total_branches: int
+    total_departments: int
+    total_clubs: int
+    total_events: int
+    total_challenges: int
+    active_challenges: int
+    total_posts: int
+
+
+class BranchStatsResponse(BaseModel):
+    total_users: int
+    total_departments: int
+    total_clubs: int
+    total_events: int

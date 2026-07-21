@@ -16,6 +16,7 @@ from app.auth.dependencies import CurrentUser
 from app.models import PostComment
 from app.services.notification import create_notification
 from app.services.post._helpers import check_post_branch_access, get_post_or_404
+from app.services.activity import log_activity
 from app.core.datetime import ensure_utc
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,12 @@ async def add_comment(
     session.add(comment)
     post.comment_count += 1
     await session.flush()
+
+    #add to activity feed
+    await log_activity(
+        session=session, user_id=current_user.user_id, organization_id=organization_id,
+        activity_type="commented_post", reference_id=post_id, reference_type="post",
+    )
 
     # A reply notifies the parent comment's author; a top-level comment
     # notifies the post's author. Never notify yourself.

@@ -11,7 +11,6 @@ from arq.connections import RedisSettings
 from app.core.config import settings
 from app.jobs.analytics.hashtag_trends import compute_hashtag_trend_snapshots
 from app.jobs.analytics.department_rank import compute_department_rank_snapshots
-from app.jobs.analytics.kpi import compute_kpi_snapshots
 from app.jobs.analytics.leaderboard import (
     compute_leaderboard_snapshots_daily,
     compute_leaderboard_snapshots_weekly,
@@ -39,7 +38,6 @@ class WorkerSettings:
         cron(compute_leaderboard_snapshots_weekly, weekday=0, hour=1, minute=0),   # Mondays
         cron(compute_leaderboard_snapshots_monthly, day=1, hour=2, minute=0),        # 1st of month
         cron(compute_department_rank_snapshots, hour=set(range(24)), minute=5),
-        cron(compute_kpi_snapshots, hour=0, minute=10),
         cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
         cron(compute_engagement_logs, hour=1, minute=0),
     ]

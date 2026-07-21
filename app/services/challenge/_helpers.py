@@ -4,13 +4,16 @@ app/services/challenge/_helpers.py
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, require_scoped_permission
-from app.models import Branch, Challenge, Organization
+from app.models import Branch, Challenge, Organization, ChallengeProgressEntry
 
+logger = logging.getLogger(__name__)
 
 async def get_challenge_or_404(*, session: AsyncSession, organization_id: str, challenge_id: str) -> Challenge:
     result = await session.execute(
@@ -73,21 +76,21 @@ def check_participation_eligibility(*, current_user: CurrentUser, challenge: Cha
     visibility. A user can only join a challenge they can see."""
     check_challenge_visibility(current_user=current_user, challenge=challenge)
 
+
+ 
 async def check_challenge_completion(*, session: AsyncSession, challenge, participant) -> None:
     """
-    Shared by both progress_service.submit_progress (direct challenge
-    submission) and activity_log.submit_activity's fan-out — anything
-    that writes a ChallengeProgressEntry should call this afterward.
-
     cumulative: sum ALL entries so far, complete the instant it crosses
-    target_value — doesn't wait for end_date.
+    target_value.
 
-    daily_minimum: TODO(background-job) — see note in the function body,
-    unchanged from the original design.
+    daily_minimum: checks TODAY's entry specifically and fires
+    notify_daily_goal_met (deduped to once/day) if today's value meets
+    target_value. This is separate from the FINAL completion
+    notification, which only fires once, on the day the whole window
+    closes, and only for participants who passed every single day — see
+    _finalize_daily_minimum_challenge in
+    app/jobs/challenges/lifecycle.py.
     """
-    from sqlalchemy import func, select
-    from app.models import ChallengeProgressEntry
-
     if challenge.target_value is None:
         return
 
@@ -100,15 +103,28 @@ async def check_challenge_completion(*, session: AsyncSession, challenge, partic
         )
         total = total_result.scalar_one() or 0
         if total >= challenge.target_value:
-            await _mark_challenge_complete(session=session, challenge=challenge, participant=participant)
+            await mark_challenge_complete(session=session, challenge=challenge, participant=participant)
 
     elif challenge.target_type == "daily_minimum":
-        # TODO(background-job): only the end_date job can authoritatively
-        # evaluate daily_minimum — see original note in progress_service.py.
-        pass
+        from app.services.activity_log._helpers import today_utc
 
+        today = today_utc()
+        today_entry_result = await session.execute(
+            select(ChallengeProgressEntry.value).where(
+                ChallengeProgressEntry.challenge_id == challenge.id,
+                ChallengeProgressEntry.user_id == participant.user_id,
+                ChallengeProgressEntry.entry_date == today,
+            )
+        )
+        today_value = today_entry_result.scalar_one_or_none()
+        if today_value is not None and today_value >= challenge.target_value:
+            await notify_daily_goal_met(session=session, challenge=challenge, participant=participant, entry_date=today)
 
-async def _mark_challenge_complete(*, session: AsyncSession, challenge, participant) -> None:
+async def mark_challenge_complete(*, session: AsyncSession, challenge, participant) -> None:
+    """Sets completed_at and fires the challenge_completed notification.
+    Called from check_challenge_completion (cumulative, inline) and from
+    the daily_minimum finalization job (app/jobs/challenges/lifecycle.py)."""
+    
     from datetime import datetime, timezone
     from app.services.notification import create_notification
 
@@ -121,3 +137,42 @@ async def _mark_challenge_complete(*, session: AsyncSession, challenge, particip
         body=f"You completed the '{challenge.name}' challenge!",
     )
     logger.info("Challenge auto-completed", extra={"challenge_id": challenge.id, "user_id": participant.user_id})
+    
+async def notify_daily_goal_met(*, session: AsyncSession, challenge, participant, entry_date) -> None:
+    """
+    Fires when a single day's entry meets target_value for a
+    daily_minimum challenge — distinct from mark_challenge_complete,
+    which only fires once at the very end of the whole window.
+
+    Deduped WITHOUT a separate tracking table: checks whether a
+    'challenge_daily_goal_met' Notification already exists for this
+    user + this challenge, created TODAY, before creating a new one.
+    This relies on Notification.created_at, not entry_date, as the
+    dedup key — correct because this function is only ever called on
+    the same day the entry was submitted (never backfilled), so "today"
+    and "entry_date" are always the same day in practice.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from app.models import Notification
+    from app.services.notification import create_notification
+
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    existing = await session.execute(
+        select(Notification.id).where(
+            Notification.user_id == participant.user_id,
+            Notification.reference_id == challenge.id,
+            Notification.notification_type == "challenge_daily_goal_met",
+            Notification.created_at >= today_start,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return  # already notified today for this challenge — skip
+
+    await create_notification(
+        session=session, user_id=participant.user_id, organization_id=challenge.organization_id,
+        notification_type="challenge_daily_goal_met",
+        reference_id=challenge.id, reference_type="challenge",
+        body=f"You hit today's goal in the '{challenge.name}' challenge! Keep it up.",
+    )

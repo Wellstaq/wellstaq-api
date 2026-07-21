@@ -93,6 +93,8 @@ from ._helpers import (
     _log_audit,
     _make_invite_verification_token,
     _mask_email,
+    _validate_password_strength,
+
 )
 
 
@@ -359,6 +361,8 @@ async def invite_register(
             "An account already exists for this email.",
             status.HTTP_409_CONFLICT,
         )
+     # ── Step 4a: password strength ────────────────────────────────────────────
+    _validate_password_strength(password)
 
     # ── Step 5: create user as PENDING ────────────────────────────────────────
     user = User(
@@ -468,7 +472,7 @@ async def invite_register(
     invite.accepted_at = now
     invite.accepted_by_id = user.id
 
-    _log_audit(
+    await _log_audit(
         session,
         user=user,
         activity_type=ActivityType.JOINED_ORGANIZATION,

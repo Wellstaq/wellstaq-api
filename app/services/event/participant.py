@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Event, EventParticipant, User
-
+from app.services.activity import log_activity
 logger = logging.getLogger(__name__)
 
 RSVP_STATUSES = ("invited", "accepted", "declined", "pending")
@@ -79,6 +79,11 @@ async def join_event(
     await session.flush()
     await session.refresh(participant)
 
+    #add to activity feed
+    await log_activity(
+        session=session, user_id=user_id, organization_id=organization_id,
+        activity_type="joined_event", reference_id=event_id, reference_type="event",
+    )
     logger.info(
     "User joined event event_id=%s user_id=%s",
     event.id,

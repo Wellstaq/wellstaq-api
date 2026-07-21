@@ -161,7 +161,9 @@ PERMISSIONS: list[dict] = [
     {"name": "wellbeing.export", "description": "Export wellbeing reports to CSV or PDF", "category": "wellbeing", "scope": "both"},
     {"name": "org.settings.update", "description": "Update organization-level settings and profile", "category": "org", "scope": "org"},
     {"name": "org.billing.manage", "description": "Manage subscription, billing, and payment methods", "category": "org", "scope": "org"},
+    {"name": "org.stats", "description": "Organization statistics(total users count, total department count etc)", "category": "org", "scope": "both"},
     {"name": "org.deactivate", "description": "Deactivate the entire organization", "category": "org", "scope": "org"},
+
 ]
 
 

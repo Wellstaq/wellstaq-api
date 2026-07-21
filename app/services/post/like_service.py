@@ -12,6 +12,8 @@ from app.services.notification import create_notification
 from app.services.post._helpers import check_post_branch_access, get_post_or_404
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.activity import log_activity
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,12 @@ async def like_post(
     session.add(like)
     post.like_count += 1
     await session.flush()
+
+    #add to activity feed
+    await log_activity(
+        session=session, user_id=current_user.user_id, organization_id=organization_id,
+        activity_type="liked_post", reference_id=post_id, reference_type="post",
+    )
 
     # Don't notify someone about liking their own post.
     if post.user_id != current_user.user_id:

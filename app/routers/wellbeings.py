@@ -200,18 +200,27 @@ async def my_scores_route(
         scores = await get_my_scores(session=db, user_id=current_user.user_id, period=period)
         return WellbeingScoreListResponse(items=[WellbeingScoreResponse.model_validate(s) for s in scores])
 
-
 @router.get(
     "/organizations/{org_id}/branches/{branch_id}/wellbeing/scores/aggregate",
     response_model=WellbeingAggregateResponse, status_code=status.HTTP_200_OK,
-    description="Average only, never individual scores. Suppressed (average_score=null) if fewer than the anonymity threshold have a score for this dimension/period.",
+    description=(
+        "Average only, never individual scores. Suppressed if fewer than "
+        "the anonymity threshold have a score for this dimension/period. "
+        "Requires wellbeing.view_team scoped to this branch (or org-wide)."
+    ),
 )
 async def branch_aggregate_score_route(
     org_id: str, branch_id: str, dimension_id: str = Query(...), period: str = Query(...),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("wellbeing.view_team")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> WellbeingAggregateResponse:
     require_same_organization(org_id, current_user)
+
+    from app.auth.dependencies import require_scoped_permission
+    await require_scoped_permission(
+        db=db, current_user=current_user, permission="wellbeing.view_team", target_branch_id=branch_id,
+    )
+
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/wellbeing/scores/aggregate"):
         average, count, suppressed = await get_branch_aggregate_score(
             session=db, organization_id=org_id, branch_id=branch_id, dimension_id=dimension_id, period=period,
@@ -224,14 +233,26 @@ async def branch_aggregate_score_route(
 @router.get(
     "/organizations/{org_id}/wellbeing/scores/aggregate",
     response_model=WellbeingAggregateResponse, status_code=status.HTTP_200_OK,
-    description="Same anonymity-threshold rule as the branch aggregate, applied org-wide.",
+    description=(
+        "Same anonymity-threshold rule as the branch aggregate, applied "
+        "org-wide. Requires wellbeing.view_team held ORG-WIDE — a "
+        "branch-scoped grant is not sufficient here, since this endpoint "
+        "returns a figure blended across every branch, not just the one "
+        "the grant covers."
+    ),
 )
 async def org_aggregate_score_route(
     org_id: str, dimension_id: str = Query(...), period: str = Query(...),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("wellbeing.view_team")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> WellbeingAggregateResponse:
     require_same_organization(org_id, current_user)
+
+    from app.auth.dependencies import require_scoped_permission
+    await require_scoped_permission(
+        db=db, current_user=current_user, permission="wellbeing.view_team", target_branch_id=None,
+    )
+
     async with request_guard(db, "/organizations/{org_id}/wellbeing/scores/aggregate"):
         average, count, suppressed = await get_org_aggregate_score(
             session=db, organization_id=org_id, dimension_id=dimension_id, period=period,

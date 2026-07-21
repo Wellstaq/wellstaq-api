@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.club import Club, ClubMember
 from app.models import User
 from app.services.errors import AppError
+from app.services.activity import log_activity
 
 
 async def join_club(
@@ -85,8 +86,13 @@ async def join_club(
         )
 
     session.add(ClubMember(club_id=club_id, user_id=user_id))
-    club.member_count += 1
     await session.flush()
+    #add to activity feed
+    club.member_count += 1
+    await log_activity(
+        session=session, user_id=user_id, organization_id=organization_id,
+        activity_type="joined_club", reference_id=club_id, reference_type="club",
+    )
 
 
 async def leave_club(

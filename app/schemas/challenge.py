@@ -111,3 +111,24 @@ class ProgressEntryResponse(BaseModel):
     source: str
     already_completed: bool = False
     message: str | None = None
+
+
+
+class DailyProgressEntry(BaseModel):
+    entry_date: date
+    value: Decimal
+    met_target: bool | None  # None if challenge has no target_value to compare against
+
+
+class ParticipantProgressResponse(BaseModel):
+    challenge_id: str
+    user_id: str
+    target_type: str
+    target_value: Decimal | None
+    current_value: Decimal
+    percent_complete: Decimal | None
+    completed_at: datetime | None
+    days_remaining: int | None
+    daily_entries: list[DailyProgressEntry]  # new
+    days_met_target: int | None  # new — daily_minimum's real "progress" number
+    days_logged: int  # new — how many days have any entry at all

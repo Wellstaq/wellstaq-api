@@ -284,3 +284,4 @@ class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<ChallengeProgressEntry challenge={self.challenge_id} user={self.user_id} date={self.entry_date} value={self.value}>"
+

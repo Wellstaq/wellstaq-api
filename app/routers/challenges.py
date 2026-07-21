@@ -40,6 +40,7 @@ from app.schemas.challenge import (
     ParticipantListResponse,
     ProgressEntryResponse,
     ProgressSubmitRequest,
+    ParticipantProgressResponse,
 )
 from app.services.challenge import (
     create_challenge,
@@ -341,3 +342,50 @@ async def cancel_challenge_route(
         cancelled = await cancel_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
         await db.commit()
         return ChallengeResponse.model_validate(cancelled)
+
+@router.get(
+    "/{challenge_id}/progress/me",
+    response_model=ParticipantProgressResponse,
+    status_code=status.HTTP_200_OK,
+    summary="My progress in this challenge",
+    description=(
+        "Shows current standing: total logged so far, percent complete "
+        "(cumulative challenges only — daily_minimum returns null, see "
+        "service docstring), and days remaining."
+    ),
+)
+async def my_progress_route(
+    org_id: str, challenge_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ParticipantProgressResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/progress/me"):
+        from app.services.challenge.progress_service import get_participant_progress
+        progress = await get_participant_progress(
+            session=db, organization_id=org_id, challenge_id=challenge_id, user_id=current_user.user_id,
+        )
+        return ParticipantProgressResponse(**progress)
+
+
+@router.get(
+    "/{challenge_id}/progress/{user_id}",
+    response_model=ParticipantProgressResponse,
+    status_code=status.HTTP_200_OK,
+    description="View a specific participant's progress. Requires `challenge.update` scoped to the challenge's branch.",
+)
+async def participant_progress_route(
+    org_id: str, challenge_id: str, user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+) -> ParticipantProgressResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/progress/{user_id}"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
+
+        from app.services.challenge.progress_service import get_participant_progress
+        progress = await get_participant_progress(
+            session=db, organization_id=org_id, challenge_id=challenge_id, user_id=user_id,
+        )
+        return ParticipantProgressResponse(**progress)

@@ -69,7 +69,7 @@ async def password_login(
         # Audit failed login when user exists only — logging for a non-existent
         # email would confirm the address isn't registered (enumeration attack).
         if user is not None:
-            _log_audit(
+            await _log_audit(
                 session,
                 user=user,
                 activity_type=ActivityType.FAILED_LOGIN,
@@ -114,7 +114,7 @@ async def password_login(
             ip_address=ip_address,
         )
 
-    _log_audit(
+    await _log_audit(
         session,
         user=user,
         activity_type=ActivityType.LOGIN,

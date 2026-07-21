@@ -100,12 +100,12 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # validation can both reference the same source of truth.
 CHECKIN_VOCABULARY = ("good", "bad", "stressed", "tired")
 PRIORITY_VOCABULARY = (
-    "reduce-stress",
-    "build-energy",
-    "improve-balance",
-    "save-better",
-    "stay-active",
-    "feel-connected",
+    "reduce_stress",
+    "build_energy",
+    "improve_balance",
+    "save_better",
+    "stay_active",
+    "feel_connected",
 )
 
 class UserPriority(Base, UUIDPrimaryKeyMixin, TimestampMixin):

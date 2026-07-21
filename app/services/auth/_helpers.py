@@ -20,7 +20,7 @@ Contents
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-
+import re
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from app.models import (
     UserSettings,
 )
 from app.services.errors import AuthError
+from app.services.activity import log_activity
 
 
 def _mask_email(email: str) -> str:
@@ -60,7 +61,7 @@ def _create_user_settings(user: User) -> UserSettings:
     )
 
 
-def _log_audit(
+async def _log_audit(
     session,
     *,
     user: User,
@@ -69,15 +70,19 @@ def _log_audit(
     reference_type: ReferenceType | None = None,
     metadata: dict | None = None,
 ) -> None:
-    """Append an immutable audit event to the activity feed."""
-    session.add(UserActivityFeed(
+    """Thin auth-specific wrapper around the shared log_activity service —
+    supplies auth's own defaults (reference defaults to the user
+    themselves) but delegates the actual row creation and validation to
+    one shared implementation, not a second independent one."""
+    await log_activity(
+        session=session,
         user_id=user.id,
         organization_id=user.organization_id,
         activity_type=activity_type,
         reference_id=reference_id or user.id,
         reference_type=reference_type or ReferenceType.USER,
-        activity_metadata=metadata or {},
-    ))
+        metadata=metadata,
+    )
 
 
 async def _load_pending_invite(
@@ -163,3 +168,30 @@ def _make_invite_verification_token(email: str, invite_code: str) -> str:
             "invite_code": invite_code,
         },
     )
+
+
+
+MIN_PASSWORD_LENGTH = 8
+SPECIAL_CHAR_PATTERN = re.compile(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?]")
+UPPERCASE_PATTERN = re.compile(r"[A-Z]")
+DIGIT_PATTERN = re.compile(r"[0-9]")
+
+def _validate_password_strength(password: str) -> None:
+    """
+    Minimum requirements: at least MIN_PASSWORD_LENGTH characters, and
+    at least one special character. Kept simple deliberately — no
+    forced uppercase/digit/etc rules, which security guidance (NIST
+    800-63B) now generally discourages in favor of length + not
+    reusing breached passwords. This is a starting bar, not a full
+    password policy; revisit if a stricter standard is wanted later.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise AuthError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters long.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+    if not SPECIAL_CHAR_PATTERN.search(password):
+        raise AuthError(
+            "Password must include at least one special character.",
+            status.HTTP_400_BAD_REQUEST,
+        )

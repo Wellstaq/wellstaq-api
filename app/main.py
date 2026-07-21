@@ -31,6 +31,11 @@ from app.routers import (
     chats,
     notifications,
     challenges,
+    activities,
+    activity_logs,
+    leaderboards,
+    wellbeings,
+    categories,
 )
 
 
@@ -76,6 +81,11 @@ app.include_router(hashtags.router)
 app.include_router(chats.router)
 app.include_router(notifications.router)
 app.include_router(challenges.router)
+app.include_router(activities.router)
+app.include_router(activity_logs.router)
+app.include_router(leaderboards.router)
+app.include_router(wellbeings.router)
+app.include_router(categories.router)
 
 @app.get("/")
 async def root():

@@ -5,7 +5,7 @@ app/services/challenge/progress_service.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
@@ -71,3 +71,90 @@ async def submit_progress(
     await check_challenge_completion(session=session, challenge=challenge, participant=participant)
 
     return entry
+
+async def get_participant_progress(
+    *, session: AsyncSession, organization_id: str, challenge_id: str, user_id: str
+) -> dict:
+    """
+    Returns current standing for one participant in one challenge,
+    INCLUDING the full day-by-day breakdown (daily_entries) — essential
+    for daily_minimum challenges, where a single summed total doesn't
+    meaningfully represent progress (see target_type-specific notes
+    below). Also returned for cumulative challenges, since seeing the
+    daily contributions behind the total is useful there too.
+
+    current_value: SUM of all ChallengeProgressEntry.value — the
+    lifetime total logged so far, for either target_type.
+
+    percent_complete: only meaningful for 'cumulative' — None for
+    'daily_minimum', since "% of a target sum" doesn't represent
+    pass/fail-per-day progress. Use days_met_target /
+    (days elapsed so far) instead for daily_minimum's real completion
+    picture.
+
+    days_met_target: for 'daily_minimum' challenges, the count of days
+    where that day's entry >= target_value — this IS the real progress
+    metric for this challenge type, analogous to percent_complete for
+    cumulative. None for 'cumulative' challenges (not a meaningful
+    concept there).
+
+    days_logged: total number of distinct days with ANY entry,
+    regardless of target_type — useful for showing "you've logged N of
+    M days" even before knowing whether each day passed.
+    """
+    challenge = await get_challenge_or_404(session=session, organization_id=organization_id, challenge_id=challenge_id)
+
+    participant_result = await session.execute(
+        select(ChallengeParticipant).where(
+            ChallengeParticipant.challenge_id == challenge_id, ChallengeParticipant.user_id == user_id
+        )
+    )
+    participant = participant_result.scalar_one_or_none()
+    if participant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "You are not a participant of this challenge.")
+
+    entries_result = await session.execute(
+        select(ChallengeProgressEntry.entry_date, ChallengeProgressEntry.value)
+        .where(ChallengeProgressEntry.challenge_id == challenge_id, ChallengeProgressEntry.user_id == user_id)
+        .order_by(ChallengeProgressEntry.entry_date.asc())
+    )
+    entries = entries_result.all()
+
+    current_value = sum((value for _date, value in entries), start=0)
+    days_logged = len(entries)
+
+    daily_entries = []
+    days_met_target = None
+    if challenge.target_type == "daily_minimum" and challenge.target_value is not None:
+        days_met_target = 0
+        for entry_date, value in entries:
+            met = value >= challenge.target_value
+            if met:
+                days_met_target += 1
+            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": met})
+    else:
+        for entry_date, value in entries:
+            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": None})
+
+    percent_complete = None
+    if challenge.target_type == "cumulative" and challenge.target_value:
+        percent_complete = min(100, round((current_value / challenge.target_value) * 100, 2))
+
+    days_remaining = None
+    if challenge.end_date is not None:
+        remaining = (challenge.end_date - date.today()).days
+        days_remaining = max(0, remaining)
+
+    return {
+        "challenge_id": challenge_id,
+        "user_id": user_id,
+        "target_type": challenge.target_type,
+        "target_value": challenge.target_value,
+        "current_value": current_value,
+        "percent_complete": percent_complete,
+        "completed_at": participant.completed_at,
+        "days_remaining": days_remaining,
+        "daily_entries": daily_entries,
+        "days_met_target": days_met_target,
+        "days_logged": days_logged,
+    }

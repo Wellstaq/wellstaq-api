@@ -40,12 +40,14 @@ from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models import OrganizationInvite
 from app.schemas.organization import (
+    BranchStatsResponse,
     InviteItem,
     InviteListResponse,
     OrganizationClubInfo,
     OrganizationClubsListResponse,
     OrganizationMemberInfo,
     OrganizationMembersListResponse,
+    OrgStatsResponse,
     SendInviteRequest,
     SendInviteResponse,
 )
@@ -54,6 +56,8 @@ from app.services.organization.org_directory import (
     get_organization_clubs,
     get_organization_members,
 )
+
+from app.services.organization.org_stats import get_branch_stats, get_org_stats
 
 logger = logging.getLogger(__name__)
 
@@ -253,3 +257,65 @@ async def list_organization_clubs_route(
             offset=offset,
             limit=limit,
         )
+
+# ── Stats ────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/stats",
+    response_model=OrgStatsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get organization-wide structural stats",
+    description=(
+        "Returns live counts (total users, branches, departments, clubs, "
+        "events, challenges, posts) for the organization. Computed fresh "
+        "on every request, not snapshotted. Accessible to only the admin with org_level permissoin."
+    ),
+)
+async def org_stats_route(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OrgStatsResponse:
+    require_same_organization(org_id, current_user)
+
+    async with request_guard(db, "/organizations/{org_id}/stats"):
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="org.stats",
+            target_branch_id=None,
+        )
+        stats = await get_org_stats(session=db, organization_id=org_id)
+        return OrgStatsResponse(**stats)
+
+
+@router.get(
+    "/branches/{branch_id}/stats",
+    response_model=BranchStatsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get branch-level structural stats",
+    description=(
+        "Returns live counts (users, departments, clubs, events) scoped "
+        "to one branch. Own branch always accessible; another branch "
+        "requires super_admin."
+    ),
+)
+async def branch_stats_route(
+    org_id: str, branch_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> BranchStatsResponse:
+    require_same_organization(org_id, current_user)
+    if current_user.role != "super_admin" and current_user.branch_id != branch_id:
+        from fastapi import HTTPException
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this branch's stats.")
+
+    async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/stats"):
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="org.stats",
+            target_branch_id=branch_id,
+        )
+        stats = await get_branch_stats(session=db, organization_id=org_id, branch_id=branch_id)
+        return BranchStatsResponse(**stats)

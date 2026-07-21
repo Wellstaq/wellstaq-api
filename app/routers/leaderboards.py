@@ -77,6 +77,7 @@ async def org_leaderboard_route(
             session=db, organization_id=org_id, metric_type=metric_type.strip().lower(),
             period_type=period_type, limit=limit,
         )
+        
         if period_start is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No leaderboard data available yet for this metric/period.")
 

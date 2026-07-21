@@ -10,6 +10,7 @@ from app.models import Post
 from app.services.post._helpers import validate_org_and_branch
 from app.services.hashtag import sync_post_hashtags
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.activity import log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,12 @@ async def create_post(
     # TODO(redis): bump a trending/recent-activity counter here if you add one.
     # TODO(background-job): enqueue feed fan-out job if you move to a
     # push/fan-out-on-write feed model instead of fan-out-on-read.
+   
 
+    await log_activity(
+        session=session, user_id=user_id, organization_id=organization_id,
+        activity_type="created_post", reference_id=post.id, reference_type="post",
+    )
     logger.info(
         "Post created",
         extra={"post_id": post.id, "org_id": organization_id, "branch_id": branch_id, "user_id": user_id},

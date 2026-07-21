@@ -77,6 +77,7 @@ NOTIFICATION_TYPES = (
     "joined_department",
     "event_reminder",
     "challenge_completed",
+    "challenge_daily_goal_met",  # new
     "announcement",
 )
 
