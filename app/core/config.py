@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # same S3 API, so swapping providers is just changing
     # these values, not the code) ─────────────────────────
     STORAGE_ENDPOINT_URL: str = ""  # leave blank for AWS S3; set for R2, e.g. https://<account_id>.r2.cloudflarestorage.com
-    STORAGE_REGION: str = "auto"  # "auto" for R2; real region (e.g. us-east-1) for S3
+    STORAGE_REGION: str = "us-east-1"
     STORAGE_ACCESS_KEY_ID: str = ""
     STORAGE_SECRET_ACCESS_KEY: str = ""
     STORAGE_BUCKET_NAME: str = "wellstaq-media"
@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # on every role change makes this mostly irrelevant, but caps
     # staleness if an invalidation call is ever missed.
     PERMISSION_CACHE_TTL_SECONDS: int = 300
+
+    #payment gateway
+    PAYSTACK_SECRET_KEY: str="sk_test_297dcf2e70fb0eca803add3ad2326aa8956ae974"
+    PAYSTACK_PUBLIC_KEY: str="pk_test_11ad9587f1cbc366887884af0c2cf027e8498316"
 
 
 # Single shared settings instance — import this, never instantiate Settings() elsewhere

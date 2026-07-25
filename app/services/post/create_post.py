@@ -3,14 +3,16 @@ app/services/post/create_post.py
 """
 
 from __future__ import annotations
-
+from urllib.parse import urlparse
 import logging
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Post
 from app.services.post._helpers import validate_org_and_branch
 from app.services.hashtag import sync_post_hashtags
-from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.activity import log_activity
+from app.services.storage import confirm_upload
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +32,12 @@ async def create_post(
     Both are optional and independent of each other.
     """
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
+    
+    if media_url is not None:
+        object_key = urlparse(media_url).path.lstrip("/")
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
 
-   
     post = Post(
         user_id=user_id,
         organization_id=organization_id,

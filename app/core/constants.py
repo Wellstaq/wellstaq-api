@@ -203,6 +203,5 @@ REFERENCE_TYPES = (
 #users
 USER_STATUSES = ("pending", "active", "inactive", "suspended")
 
-
-
-
+#subscriptions
+ACTIVE_STATUSES = ("trialing", "active")

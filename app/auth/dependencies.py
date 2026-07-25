@@ -403,3 +403,40 @@ async def require_event_participation(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not a participant of this event.",
         )
+        
+async def require_active_subscription(
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """
+    Route-level dependency — blocks access with 402 Payment Required if
+    the caller's organization has no subscription, or its status isn't
+    'trialing' or 'active' (i.e. it's past_due or cancelled).
+
+    Usage: add to any route that should be paywalled, e.g.
+        current_user: CurrentUser = Depends(require_active_subscription)
+    instead of the plain get_current_user dependency.
+
+    super_admin does NOT bypass this — an org's subscription lapsing
+    should lock out everyone in that org, owner included, until it's
+    resolved. This is a deliberate difference from the permission-scope
+    bypasses elsewhere in this file, since subscription status is a
+    tenant-wide gate, not a per-user privilege check.
+    """
+    from app.models.payment import OrganizationSubscription
+    from app.services.payment._helpers import ACTIVE_STATUSES
+
+    result = await db.execute(
+        select(OrganizationSubscription.status).where(
+            OrganizationSubscription.organization_id == current_user.organization_id
+        )
+    )
+    sub_status = result.scalar_one_or_none()
+
+    if sub_status is None or sub_status not in ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Your organization has no ctive subscription. Please renew your subscription or subscribe to plan to continue.",
+        )
+
+    return current_user

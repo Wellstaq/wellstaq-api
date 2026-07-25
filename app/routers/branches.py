@@ -43,6 +43,7 @@ from app.auth.dependencies import (
     require_permission,
     require_scoped_permission,
     require_same_organization,
+    require_active_subscription,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -102,6 +103,7 @@ async def create_branch_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches"):
+        await require_active_subscription(db =db, current_user=current_user)
         await require_scoped_permission(
             db=db,
             current_user=current_user,

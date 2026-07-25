@@ -1,96 +1,66 @@
 """
-Object storage client (S3 or Cloudflare R2 — both speak the same
-S3 API, so this code works unmodified against either; only the
-.env values change).
+app/core/storage.py
 
-Uses aioboto3 rather than plain boto3 deliberately: boto3's calls
-are synchronous/blocking, and a blocking call inside an async route
-handler stalls the whole event loop, not just that one request.
-aioboto3 wraps the same API in proper async/await.
-
-Flow for uploads (never route raw file bytes through FastAPI):
-    1. Client asks our API for a presigned upload URL
-    2. Our API returns a short-lived URL (see PRESIGNED_URL_EXPIRE_SECONDS)
-    3. Client uploads the file bytes directly to S3/R2 using that URL
-    4. Client tells our API the upload is done (object_key), and we
-       store that key/URL on the relevant row (e.g. posts.media_url)
-
-Thumbnail generation for feed images should NOT happen inline here —
-trigger a background job (see app/jobs/) that downloads the original,
-resizes with Pillow, and re-uploads the thumbnail. Keep this module
-limited to the storage operations themselves.
+Thin wrapper around boto3's S3 client. No business logic — just the
+low-level presigned URL generation and object existence checks. Domain-
+specific logic (validating content types per feature, building the
+final object key structure) lives in app/services/storage/.
 """
 
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from __future__ import annotations
 
-import aioboto3
+import logging
+
+import boto3
+from botocore.exceptions import ClientError
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 
-def _client_kwargs() -> dict:
-    """Build the kwargs aioboto3 needs, working for both AWS S3 and R2."""
-    kwargs: dict = {
-        "region_name": settings.STORAGE_REGION,
-        "aws_access_key_id": settings.STORAGE_ACCESS_KEY_ID,
-        "aws_secret_access_key": settings.STORAGE_SECRET_ACCESS_KEY,
-    }
-    # Only set endpoint_url for R2 / non-AWS S3-compatible providers.
-    # Leaving this unset lets aioboto3 resolve the standard AWS endpoint.
-    if settings.STORAGE_ENDPOINT_URL:
-        kwargs["endpoint_url"] = settings.STORAGE_ENDPOINT_URL
-    return kwargs
+_s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+    aws_secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    region_name=settings.STORAGE_REGION,
+)
 
 
-@asynccontextmanager
-async def get_storage_client() -> AsyncGenerator:
-    """
-    Async context manager yielding an aioboto3 S3 client.
-
-    Usage:
-        async with get_storage_client() as client:
-            await client.put_object(...)
-    """
-    session = aioboto3.Session()
-    async with session.client("s3", **_client_kwargs()) as client:
-        yield client
-
-
-async def generate_presigned_upload_url(object_key: str, content_type: str) -> dict:
-    """
-    Generate a short-lived presigned URL the client can PUT a file to
-    directly, bypassing our server entirely for the actual file bytes.
-
-    Returns both the upload URL and the public URL the client/posts
-    table should store once the upload completes.
-    """
-    async with get_storage_client() as client:
-        upload_url = await client.generate_presigned_url(
-            ClientMethod="put_object",
-            Params={
-                "Bucket": settings.STORAGE_BUCKET_NAME,
-                "Key": object_key,
-                "ContentType": content_type,
-            },
-            ExpiresIn=settings.PRESIGNED_URL_EXPIRE_SECONDS,
-        )
-
-    public_url = (
-        f"{settings.STORAGE_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
-        if settings.STORAGE_PUBLIC_BASE_URL
-        else f"https://{settings.STORAGE_BUCKET_NAME}.s3.amazonaws.com/{object_key}"
+def generate_presigned_upload_url(*, object_key: str, content_type: str) -> str:
+    """Returns a presigned PUT URL valid for S3_PRESIGNED_URL_EXPIRY_SECONDS.
+    The client PUTs the raw file bytes directly to this URL with the
+    same Content-Type header specified here — a mismatched header will
+    cause S3 to reject the upload (this is intentional: it prevents a
+    client from uploading a file type different from what was declared)."""
+    return _s3_client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": settings.S3_BUCKET_NAME, "Key": object_key, "ContentType": content_type},
+        ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY_SECONDS,
     )
 
-    return {
-        "upload_url": upload_url,
-        "public_url": public_url,
-        "object_key": object_key,
-        "expires_in": settings.PRESIGNED_URL_EXPIRE_SECONDS,
-    }
+
+def object_exists(*, object_key: str) -> bool:
+    """HEAD-checks whether an object was actually uploaded — used to
+    verify a client's 'upload complete' claim before trusting it."""
+    try:
+        _s3_client.head_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        logger.error("Unexpected S3 error checking object existence", exc_info=True, extra={"object_key": object_key})
+        raise
 
 
-async def delete_object(object_key: str) -> None:
-    """Delete an object from storage (e.g. when a post or avatar is removed)."""
-    async with get_storage_client() as client:
-        await client.delete_object(Bucket=settings.STORAGE_BUCKET_NAME, Key=object_key)
+def get_object_url(*, object_key: str) -> str:
+    """Public HTTPS URL for a stored object. Assumes either a public
+    bucket/CDN in front, or that callers separately generate presigned
+    GET URLs for private buckets — this function does NOT sign a read
+    URL, it just builds the standard S3 URL shape."""
+    return f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{object_key}"
+
+
+def delete_object(*, object_key: str) -> None:
+    """Used by the story purge job and any future 'delete media on
+    content delete' flow."""
+    _s3_client.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)

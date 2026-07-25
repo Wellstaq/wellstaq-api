@@ -11,6 +11,7 @@ from arq.connections import RedisSettings
 from app.core.config import settings
 from app.jobs.analytics.hashtag_trends import compute_hashtag_trend_snapshots
 from app.jobs.analytics.department_rank import compute_department_rank_snapshots
+from app.jobs.payment.subscription_lifecycle import expire_trials
 from app.jobs.analytics.leaderboard import (
     compute_leaderboard_snapshots_daily,
     compute_leaderboard_snapshots_weekly,
@@ -41,4 +42,5 @@ class WorkerSettings:
         cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
         cron(compute_engagement_logs, hour=1, minute=0),
         cron(purge_expired_stories, minute={0, 15, 30, 45}),
+        cron(expire_trials, hour=set(range(24)), minute=0)
     ]

@@ -57,6 +57,7 @@ from ._helpers import (
     _log_audit,
     _validate_password_strength,
 )
+from app.services.payment import start_trial
 from app.core.constants import HEADQUARTERS_BRANCH_NAME
 
 logger = logging.getLogger(__name__)
@@ -232,8 +233,11 @@ async def org_owner_signup(
     await session.flush()
     await seed_super_admin_permissions(session, user)
 
+    # ── Step 7b: start free trial ─────────────────────────────────────────────
+    await start_trial(session=session, organization_id=org.id)
+
     # ── Step 8 ─────────────────────────────────────────────────────────────────
-    _log_audit(
+    await _log_audit(
         session,
         user=user,
         activity_type=ActivityType.ACCOUNT_CREATED,

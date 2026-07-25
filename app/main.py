@@ -39,7 +39,11 @@ from app.routers import (
     categories,
     engagement_logs,
     engagements,
+    storages,
+    
 )
+from app.routers.payments import router as payment_router, webhook_router as payment_webhook_router
+
 
 
 @asynccontextmanager
@@ -92,6 +96,9 @@ app.include_router(wellbeings.router)
 app.include_router(categories.router)
 app.include_router(engagements.router)
 app.include_router(engagement_logs.router)
+app.include_router(storages.router)
+app.include_router(payment_router)
+app.include_router(payment_webhook_router)
 
 @app.get("/")
 async def root():
