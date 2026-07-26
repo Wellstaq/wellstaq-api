@@ -82,7 +82,10 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
         subscription.current_period_start = now
         subscription.current_period_end = now + billing_period
         if subscription.external_subscription_id is None:
-            subscription.external_subscription_id = event_data.get("subscription", {}).get("subscription_code")
+            subscription_code = event_data.get("subscription", {}).get("subscription_code")
+            if subscription_code:
+                subscription.external_subscription_id = subscription_code
+                subscription.auto_renew = True
 
     await session.flush()
     logger.info("Payment succeeded, subscription activated", extra={"organization_id": transaction.organization_id})

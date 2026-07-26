@@ -147,10 +147,9 @@ async def remove_club_member(
     requesting_user_id: str,
 ) -> None:
     """
-    Called by the club leader to remove a member.
-    No permission rows required — leader owns the club.
+    Removes a member from a club. Authorization (leader, or club.update
+    permission) is enforced by the router before this is called.
     """
-    # Load club
     club_result = await session.execute(
         select(Club).where(
             Club.id == club_id,
@@ -161,21 +160,15 @@ async def remove_club_member(
     if not club:
         raise AppError("Club not found.", status.HTTP_404_NOT_FOUND)
 
-    # Only the leader can use this endpoint
-    if club.leader_id != requesting_user_id:
+    # A permission-holder removing the leader isn't a supported flow —
+    # leadership changes go through transfer/delete, not member removal.
+    if target_user_id == club.leader_id:
         raise AppError(
-            "Only the club leader can remove members.",
-            status.HTTP_403_FORBIDDEN,
-        )
-
-    # Leader cannot remove themselves via this endpoint
-    if target_user_id == requesting_user_id:
-        raise AppError(
-            "You cannot remove yourself. Use the leave endpoint or delete the club.",
+            "The club leader cannot be removed this way. "
+            "Transfer leadership or delete the club instead.",
             status.HTTP_400_BAD_REQUEST,
         )
 
-    # Confirm target is actually a member
     member_result = await session.execute(
         select(ClubMember).where(
             ClubMember.club_id == club_id,
@@ -192,8 +185,6 @@ async def remove_club_member(
     await session.delete(member)
     club.member_count = max(0, club.member_count - 1)
     await session.flush()
-
-
 async def get_club_members(
     session: AsyncSession,
     organization_id: str,
@@ -226,3 +217,17 @@ async def get_club_members(
         .limit(limit)
     )
     return list(result.scalars().all()), total
+
+
+async def is_club_member(
+    session: AsyncSession,
+    club_id: str,
+    user_id: str,
+) -> bool:
+    result = await session.execute(
+        select(ClubMember).where(
+            ClubMember.club_id == club_id,
+            ClubMember.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none() is not None

@@ -54,56 +54,59 @@ Architecture principles:
 
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (CheckConstraint, 
+  DateTime, 
+  ForeignKey, 
+  Index, 
+  Integer, 
+  String, 
+  JSON,
+  UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-
 
 class SubscriptionPlan(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
     Global lookup table — the plans your platform offers.
 
-    Not org-scoped, same pattern as WellbeingDimension: shared taxonomy
-    that every org references but no org owns.
-
-    - billing_interval: "monthly" | "annual" — free string, app-validated.
-    - price_kobo / price_cents: store in smallest unit per currency.
-      For simplicity, one price column per plan is fine for now; if you
-      need multi-currency pricing, that becomes a separate
-      plan_prices table later.
-    - max_employees: NULL means unlimited (enterprise/custom plans).
-    - is_active: False = plan is retired, existing subs continue but
-      new orgs cannot sign up for it.
+    features is a flexible JSON dict holding both numeric limits and
+    boolean feature flags for this plan, e.g.:
+        {
+          "max_employees": 50,
+          "max_departments": 5,
+          "max_clubs": null,          # null = unlimited
+          "wellbeing_export": false
+        }
+    A missing key or a null value both mean "unlimited / not restricted"
+    for that dimension — see enforce_plan_limit in
+    app/services/payment/plan_limits.py, which treats both the same way.
+    JSON chosen over dedicated columns (max_departments, max_clubs,
+    etc.) so new tier-differentiators can be added via seed data alone,
+    without a schema migration every time — see conversation history
+    for the full reasoning.
     """
 
     __tablename__ = "subscription_plans"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    # e.g. "monthly" | "annual"
     billing_interval: Mapped[str] = mapped_column(String(20), nullable=False)
-    # Amount in smallest currency unit (e.g. kobo for NGN, cents for USD)
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
-    # ISO 4217 uppercase — e.g. "NGN", "USD", "GBP"
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
-    # NULL = unlimited
-    max_employees: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # False = retired plan, no new signups allowed
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
-    # Gateway's plan/price ID — e.g. Stripe price_xxx
     external_plan_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
-    # ── Relationships ──────────────────────────────────────────────────────
+    # New — replaces max_employees as a dedicated column. See class
+    # docstring for shape and null-means-unlimited convention.
+    features: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
     subscriptions: Mapped[list["OrganizationSubscription"]] = relationship(
-        "OrganizationSubscription",
-        back_populates="plan",
+        "OrganizationSubscription", back_populates="plan",
     )
 
     __table_args__ = (
-        CheckConstraint(
-            "billing_interval IN ('monthly', 'annual')",
-            name="ck_subscription_plans_billing_interval",
-        ),
+        CheckConstraint("billing_interval IN ('monthly', 'annual')", name="ck_subscription_plans_billing_interval"),
         CheckConstraint("amount >= 0", name="ck_subscription_plans_amount_non_negative"),
     )
 
@@ -165,6 +168,7 @@ class OrganizationSubscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_renew: Mapped[bool] = mapped_column(nullable=False, default=False)
 
     # ── Gateway references ────────────────────────────────────────────────
     # e.g. Stripe sub_xxx

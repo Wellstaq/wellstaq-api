@@ -197,6 +197,7 @@ REFERENCE_TYPES = (
     "challenge",
     "club",
     "department",
+    "survey"
 
 )
 

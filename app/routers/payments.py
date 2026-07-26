@@ -75,7 +75,8 @@ async def initiate_checkout_route(
         user = user_result.scalar_one()
 
         result = await initiate_checkout(
-            session=db, organization_id=org_id, initiating_user=user, callback_url=body.callback_url,
+            session=db, organization_id=org_id, initiating_user=user,
+            auto_renew=body.auto_renew, callback_url=body.callback_url,
         )
         await db.commit()
         return CheckoutResponse(**result)

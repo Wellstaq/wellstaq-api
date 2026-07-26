@@ -28,10 +28,17 @@ PLANS: list[dict] = [
     {
         "name": "Standard",
         "billing_interval": "monthly",
-        "amount": 500000,  # placeholder — smallest currency unit, e.g. ₦5,000.00 in kobo
+        "amount": 500000,
         "currency": "NGN",
-        "max_employees": None,
         "is_active": True,
+        "features": {
+            "max_employees": None,
+            "max_departments": None,
+            "max_clubs": None,
+            "max_branches": None,
+            "max_events": None,
+            "max_challenges": None,
+        },
     },
 ]
 

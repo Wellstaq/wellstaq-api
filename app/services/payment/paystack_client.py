@@ -101,3 +101,15 @@ async def initialize_transaction(
     if not body.get("status"):
         raise PaystackError(body.get("message", "Paystack transaction initialization failed."), response.status_code)
     return body["data"]
+
+
+# paystack_client.py — new function
+async def disable_subscription(*, subscription_code: str, email_token: str) -> None:
+    """email_token is Paystack's per-subscription token, returned when
+    the subscription was created — needed to authorize disabling it."""
+    payload = {"code": subscription_code, "token": email_token}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(f"{PAYSTACK_BASE_URL}/subscription/disable", json=payload, headers=_headers())
+    body = response.json()
+    if not body.get("status"):
+        raise PaystackError(body.get("message", "Failed to disable subscription."), response.status_code)

@@ -30,7 +30,7 @@ import logging
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.services.payment import enforce_plan_limit
 from app.models import Branch, Organization
 from app.services.auth.signup_service import HEADQUARTERS_BRANCH_NAME
 
@@ -72,7 +72,18 @@ async def create_branch(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization is deactivated.",
         )
+    
+   
+   #Enforce branch creation limit when there is different tier plans, 
+   #for start, this will have no effect as the app  only has one tier plan with no limit set but there  is 
+   # intended plan to create multiple tier later in the subsequent verswion
+    existing_count = (await session.execute(
+        select(func.count()).select_from(Branch).where(Branch.organization_id == organization_id)
+    )).scalar_one()
 
+    await enforce_plan_limit(
+        session=session, organization_id=organization_id, limit_key="max_branches", current_count=existing_count,
+    )
     # ── Reserved name guard ────────────────────────────────────────────────────
     # "Headquarters" is the auto-created protected branch every org gets at
     # signup. Blocking it here keeps the name stable as a system identifier

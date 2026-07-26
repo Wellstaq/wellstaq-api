@@ -1,21 +1,27 @@
+# app/services/club/create_club.py
+
 """
 app/services/club/create_club.py
 
-Anyone in the org can create a club, but they must belong to the branch
-they want to create it under. The creator automatically becomes the
-club leader and is added as the first member.
+Creates a club in the given branch. Authorization (branch membership or
+club.create permission) is enforced by the router before this is called —
+this function assumes the caller is already permitted to act in this
+branch/org and focuses purely on the write.
+
+The creator automatically becomes the club leader and is added as the
+first member.
 """
 
 from __future__ import annotations
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
 from app.models.club import Club, ClubMember
-from app.models import User
 from app.services.errors import AppError
+from app.services.payment import enforce_plan_limit
 
 
 async def create_club(
@@ -40,19 +46,13 @@ async def create_club(
             status.HTTP_404_NOT_FOUND,
         )
 
-    # Confirm creator belongs to this branch
-    user_result = await session.execute(
-        select(User).where(
-            User.id == created_by,
-            User.organization_id == organization_id,
-            User.branch_id == branch_id,
-        )
+    existing_count = (await session.execute(
+        select(func.count()).select_from(Club).where(Club.organization_id == organization_id)
+    )).scalar_one()
+
+    await enforce_plan_limit(
+        session=session, organization_id=organization_id, limit_key="max_clubs", current_count=existing_count,
     )
-    if not user_result.scalar_one_or_none():
-        raise AppError(
-            "You must belong to this branch to create a club here.",
-            status.HTTP_403_FORBIDDEN,
-        )
 
     # Check name uniqueness within org
     existing = await session.execute(

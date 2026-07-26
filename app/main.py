@@ -36,6 +36,7 @@ from app.routers import (
     activity_logs,
     leaderboards,
     wellbeings,
+    wellbeing_surveys,
     categories,
     engagement_logs,
     engagements,
@@ -93,12 +94,14 @@ app.include_router(activities.router)
 app.include_router(activity_logs.router)
 app.include_router(leaderboards.router)
 app.include_router(wellbeings.router)
+app.include_router(wellbeing_surveys.router)
 app.include_router(categories.router)
 app.include_router(engagements.router)
 app.include_router(engagement_logs.router)
 app.include_router(storages.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
+
 
 @app.get("/")
 async def root():

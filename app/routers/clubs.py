@@ -60,8 +60,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["clubs"])
 
-
-# ── Create ─────────────────────────────────────────────────────────────────────
+# Create post
 
 @router.post(
     "/organizations/{org_id}/branches/{branch_id}/clubs",
@@ -69,9 +68,11 @@ router = APIRouter(tags=["clubs"])
     status_code=status.HTTP_201_CREATED,
     summary="Create a club",
     description=(
-        "Any authenticated user can create a club, but they must belong to "
-        "the branch they are creating it under. The creator automatically "
-        "becomes the club leader and is added as the first member."
+        "Any member of the target branch can create a club there. "
+        "A user who is not a member of the branch can still create one if "
+        "they hold `club.create` — org-wide, or scoped to this branch. "
+        "The creator automatically becomes the club leader and is added "
+        "as the first member."
     ),
 )
 async def create_club_route(
@@ -82,6 +83,17 @@ async def create_club_route(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ClubResponse:
     require_same_organization(org_id, current_user)
+
+    # Implicit grant: members creating within their own branch don't need
+    # a standing permission. Everyone else needs club.create, org-wide or
+    # scoped to this specific branch.
+    if current_user.branch_id != branch_id:
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="club.create",
+            target_branch_id=branch_id,
+        )
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/clubs"):
         club = await create_club(
@@ -95,8 +107,6 @@ async def create_club_route(
         )
         await db.commit()
         return ClubResponse.model_validate(club)
-
-
 # ── List org-wide ──────────────────────────────────────────────────────────────
 
 @router.get(
@@ -384,9 +394,9 @@ async def leave_club_route(
     status_code=status.HTTP_200_OK,
     summary="Remove a club member",
     description=(
-        "Club leader removes a member from their club. "
-        "No admin permission required — the leader owns the club. "
-        "Leader cannot remove themselves via this endpoint."
+        "Removes a member from a club. Allowed for the club leader, or a "
+        "user holding `club.update` (org-wide or scoped to the club's "
+        "branch). The leader cannot remove themselves via this endpoint."
     ),
 )
 async def remove_club_member_route(
@@ -401,6 +411,17 @@ async def remove_club_member_route(
     async with request_guard(
         db, "/organizations/{org_id}/clubs/{club_id}/members/{user_id}"
     ):
+        club = await get_club(session=db, organization_id=org_id, club_id=club_id)
+
+        is_leader = club.leader_id == current_user.user_id
+        if not is_leader:
+            await require_scoped_permission(
+                db=db,
+                current_user=current_user,
+                permission="club.update",
+                target_branch_id=club.branch_id,
+            )
+
         await remove_club_member(
             session=db,
             organization_id=org_id,
@@ -416,7 +437,6 @@ async def remove_club_member_route(
             message="Member removed from club.",
         )
 
-
 # ── List members ───────────────────────────────────────────────────────────────
 
 @router.get(
@@ -424,6 +444,12 @@ async def remove_club_member_route(
     response_model=ClubMembersListResponse,
     status_code=status.HTTP_200_OK,
     summary="List club members",
+    description=(
+        "Public clubs: visible to any member of the organization. "
+        "Private clubs: visible only to the club leader, existing "
+        "members, or a user holding `club.update` (org-wide or scoped "
+        "to the club's branch)."
+    ),
 )
 async def list_club_members_route(
     org_id: str,
@@ -436,6 +462,21 @@ async def list_club_members_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/clubs/{club_id}/members"):
+        club = await get_club(session=db, organization_id=org_id, club_id=club_id)
+
+        if club.privacy == "private":
+            is_leader = club.leader_id == current_user.user_id
+            is_member = is_leader or await is_club_member(
+                session=db, club_id=club_id, user_id=current_user.user_id
+            )
+            if not is_member:
+                await require_scoped_permission(
+                    db=db,
+                    current_user=current_user,
+                    permission="club.update",
+                    target_branch_id=club.branch_id,
+                )
+
         members, total = await get_club_members(
             session=db,
             organization_id=org_id,
