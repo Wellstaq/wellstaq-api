@@ -5,10 +5,12 @@ app/services/challenge/create_challenge.py
 from __future__ import annotations
 
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 
 from app.models import Challenge
 from app.services.challenge._helpers import validate_org_and_branch
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.payment import enforce_plan_limit
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,13 @@ async def create_challenge(
     created_by: str,
 ) -> Challenge:
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
+    existing_count = (await session.execute(
+        select(func.count()).select_from(Challenge).where(Challenge.organization_id == organization_id)
+    )).scalar_one()
 
+    await enforce_plan_limit(
+        session=session, organization_id=organization_id, limit_key="max_challenges", current_count=existing_count,
+    )
     # Normalized the same way Hashtag.tag_name is — metric_type is
     # freeform (no enum), but the frontend/mobile client will likely
     # branch logic off this string (e.g. "steps" -> show step counter).

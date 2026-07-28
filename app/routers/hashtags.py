@@ -16,7 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
+from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.hashtag import (

@@ -238,6 +238,22 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    survey_configs: Mapped[list["WellbeingSurveyConfig"]] = relationship(
+        "WellbeingSurveyConfig", back_populates="organization", cascade="all, delete-orphan",
+        foreign_keys="WellbeingSurveyConfig.organization_id",
+    )
+    survey_windows: Mapped[list["WellbeingSurveyWindow"]] = relationship(
+        "WellbeingSurveyWindow", back_populates="organization", cascade="all, delete-orphan",
+        foreign_keys="WellbeingSurveyWindow.organization_id",
+    )
+    survey_responses: Mapped[list["WellbeingSurveyResponse"]] = relationship(
+        "WellbeingSurveyResponse", back_populates="organization", cascade="all, delete-orphan",
+        foreign_keys="WellbeingSurveyResponse.organization_id",
+    )
+    pulse_snapshots: Mapped[list["WellbeingPulseSnapshot"]] = relationship(
+        "WellbeingPulseSnapshot", back_populates="organization", cascade="all, delete-orphan",
+        foreign_keys="WellbeingPulseSnapshot.organization_id",
+    )
     health_assessments: Mapped[list["UserHealthAssessment"]] = relationship(
         "UserHealthAssessment",
         back_populates="organization",
@@ -286,21 +302,6 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
-
-    # CHANGED: User.organization_id is now NOT NULL with ondelete="CASCADE"
-    # (every user belongs to exactly one org for their entire lifetime —
-    # see User model docstring). Org deletion must therefore delete all
-    # member User rows, not orphan them.
-    #
-    # cascade="all, delete-orphan" + passive_deletes=True together mean:
-    # SQLAlchemy still treats members as owned children for ORM purposes
-    # (e.g. removing a User from org.members marks it for deletion), but
-    # passive_deletes=True stops the ORM from trying to compute its own
-    # DELETE ordering for these rows when the *parent* Organization
-    # itself is deleted — that job is handed entirely to the database's
-    # ondelete="CASCADE" on User.organization_id. This is the other half
-    # of the fix for the owner_id/members circular dependency — see the
-    # comment on the `owner` relationship above for the full explanation.
     members: Mapped[list["User"]] = relationship(
         "User",
         foreign_keys="User.organization_id",
@@ -308,25 +309,6 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-
-    # ── Denormalized org-scoped children of User ────────────────────────
-    # These three carry their own organization_id (set at creation time
-    # from the parent User) specifically so they can be queried or
-    # RLS-scoped without a JOIN back to users — see organization_id
-    # docstrings on UserSettings / UserDevice / UserAuthProvider for the
-    # full rationale. Named all_user_* rather than settings/devices to
-    # avoid colliding with a future per-org "settings" concept of
-    # Organization's own; these are explicitly the per-user rows scoped
-    # to this org, not org-level settings.
-    #
-    # passive_deletes=True for the same reason as `members` above: each
-    # of these rows is *also* reachable via User's own cascade
-    # (UserSettings/UserDevice/UserAuthProvider all cascade from
-    # User.id too), so without passive_deletes the ORM would try to
-    # compute two different deletion orderings for the same rows when an
-    # org-wide delete cascades through both Organization and its member
-    # Users simultaneously. Deferring to the DB's ondelete="CASCADE"
-    # avoids that ambiguity entirely.
     all_user_settings: Mapped[list["UserSettings"]] = relationship(
         "UserSettings",
         back_populates="organization",

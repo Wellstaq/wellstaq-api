@@ -44,6 +44,7 @@ from app.auth.dependencies import (
     require_permission,
     require_scoped_permission,
     require_same_organization,
+    require_active_subscription,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -113,7 +114,8 @@ async def create_event_route(
     org_id: str,
     body: EventCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("event.create")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("event.create")),
 ) -> EventResponse:
     require_same_organization(org_id, current_user)
 
@@ -249,7 +251,8 @@ async def edit_event_route(
     event_id: str,
     body: EventUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("event.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("event.update")),
 ) -> EventResponse:
     require_same_organization(org_id, current_user)
 
@@ -298,7 +301,8 @@ async def cancel_event_route(
     org_id: str,
     event_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("event.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("event.update")),
 ) -> EventResponse:
     require_same_organization(org_id, current_user)
 
@@ -338,7 +342,8 @@ async def delete_event_route(
     org_id: str,
     event_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("event.delete")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("event.delete")),
 ):
     require_same_organization(org_id, current_user)
 
@@ -449,7 +454,7 @@ async def join_event_route(
     event_id: str,
     body: ParticipantJoinRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ParticipantActionResponse:
     require_same_organization(org_id, current_user)
 
@@ -502,7 +507,7 @@ async def update_participant_status_route(
     user_id: str,
     body: ParticipantStatusUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ParticipantActionResponse:
     require_same_organization(org_id, current_user)
 
@@ -554,7 +559,8 @@ async def mark_attendance_route(
     user_id: str,
     body: ParticipantAttendanceUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("event.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("event.update")),
 ) -> ParticipantActionResponse:
     require_same_organization(org_id, current_user)
 
@@ -605,7 +611,7 @@ async def remove_participant_route(
     event_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     require_same_organization(org_id, current_user)
 

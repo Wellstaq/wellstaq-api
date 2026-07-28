@@ -22,9 +22,10 @@ Coverage:
   remove_club_member:
     - Happy path removal by the leader
     - 404 when club doesn't exist
-    - 403 when requester isn't the leader
     - 400 when leader tries to remove themselves
     - 404 when target isn't a member
+    (requester-authorization is enforced by the router, not this
+    service — see remove_club_member_route for that coverage)
 
   get_club_members:
     - Returns paginated members ordered by first_name
@@ -35,10 +36,12 @@ Coverage:
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
 from app.models.club import Club, ClubMember
+from app.models import SubscriptionPlan, OrganizationSubscription
 from app.services.club.create_club import create_club
 from app.services.club.manage_members import (
     get_club_members,
@@ -59,14 +62,56 @@ async def _make_branch(db_session: AsyncSession, organization_id: str, **overrid
     return branch
 
 
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_clubs": None},  # Unlimited clubs for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
 async def _setup(db_session: AsyncSession, *, privacy: str = "public"):
     """Standard fixture: org, branch, leader (owner) with a club they
     created, and one additional branch-member user who is NOT yet in
-    the club — the typical starting point for join/leave/remove tests."""
+    the club — the typical starting point for join/leave/remove tests.
+    Also sets up an active subscription, required by create_club()'s
+    plan-limit check."""
     org, leader = await make_org_with_owner(db_session)
     branch = await _make_branch(db_session, org.id)
     leader.branch_id = branch.id
     await db_session.flush()
+
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
 
     club = await create_club(
         session=db_session,
@@ -296,32 +341,13 @@ class TestRemoveClubMember:
 
         assert exc_info.value.status_code == 404
 
-    @pytest.mark.asyncio
-    async def test_raises_403_when_requester_is_not_leader(self, db_session: AsyncSession):
-        org, branch, leader, club, member = await _setup(db_session)
-        other_member = await make_user_with_role(
-            db_session,
-            organization_id=org.id,
-            role_name="member",
-            email="other@example.com",
-            branch_id=branch.id,
-        )
-        db_session.add(other_member)
-        await db_session.flush()
-        await join_club(
-            session=db_session, organization_id=org.id, club_id=club.id, user_id=member.id
-        )
-
-        with pytest.raises(AppError) as exc_info:
-            await remove_club_member(
-                session=db_session,
-                organization_id=org.id,
-                club_id=club.id,
-                target_user_id=member.id,
-                requesting_user_id=other_member.id,
-            )
-
-        assert exc_info.value.status_code == 403
+    # NOTE: "requester is not the leader" is NOT tested here.
+    # remove_club_member()'s docstring is explicit that authorization
+    # (leader, or club.update permission) is enforced by the router
+    # (remove_club_member_route) before this function is ever called —
+    # the service itself never checks requesting_user_id against
+    # club.leader_id or any permission. That coverage belongs in a
+    # router-level test against remove_club_member_route instead.
 
     @pytest.mark.asyncio
     async def test_raises_400_when_leader_removes_self(self, db_session: AsyncSession):

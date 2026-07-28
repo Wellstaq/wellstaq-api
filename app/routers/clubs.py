@@ -28,6 +28,7 @@ from app.auth.dependencies import (
     get_current_user,
     require_same_organization,
     require_scoped_permission,
+    require_active_subscription,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -80,7 +81,7 @@ async def create_club_route(
     branch_id: str,
     body: ClubCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubResponse:
     require_same_organization(org_id, current_user)
 
@@ -216,7 +217,7 @@ async def edit_club_route(
     club_id: str,
     body: ClubUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubResponse:
     require_same_organization(org_id, current_user)
 
@@ -263,7 +264,7 @@ async def delete_club_route(
     org_id: str,
     club_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubDeleteResponse:
     require_same_organization(org_id, current_user)
 
@@ -312,7 +313,7 @@ async def join_club_route(
     club_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubJoinResponse:
     require_same_organization(org_id, current_user)
 
@@ -358,7 +359,7 @@ async def leave_club_route(
     club_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubLeaveResponse:
     require_same_organization(org_id, current_user)
 
@@ -404,7 +405,7 @@ async def remove_club_member_route(
     club_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ClubRemoveMemberResponse:
     require_same_organization(org_id, current_user)
 

@@ -22,7 +22,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
+from app.auth.dependencies import (
+    CurrentUser,
+    get_current_user,
+    require_same_organization,
+    require_active_subscription,
+)
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.chat import (
@@ -40,7 +45,8 @@ router = APIRouter(prefix="/organizations/{org_id}/conversations", tags=["chat"]
 async def send_message_route(
     org_id: str, conversation_type: str, conversation_id: str, body: MessageCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
+    
 ) -> MessageResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/conversations/{conversation_type}/{conversation_id}/messages"):
@@ -84,7 +90,7 @@ async def list_messages_route(
 async def pin_message_route(
     org_id: str, message_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
 ) -> PinActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/conversations/messages/{message_id}/pin"):
@@ -103,7 +109,7 @@ async def pin_message_route(
 async def unpin_message_route(
     org_id: str, message_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
 ) -> PinActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/conversations/messages/{message_id}/pin"):
@@ -127,7 +133,7 @@ async def delete_message_route(
     org_id: str,
     message_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
 ) -> MessageDeleteResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/conversations/messages/{message_id}"):

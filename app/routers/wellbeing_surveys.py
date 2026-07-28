@@ -23,8 +23,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_permission, require_same_organization
+from app.models import WellbeingSurveyResponse
+from app.auth.dependencies import(
+     CurrentUser,
+     get_current_user,
+     require_permission,
+     require_same_organization,
+     require_scoped_permission,
+     require_active_subscription,
+)
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models.wellbeing_survey import PULSE_QUESTIONS
@@ -39,6 +48,7 @@ from app.schemas.wellbeing_survey import (
     SurveyConfigResponse,
     SurveyQuestionInfo,
     SurveySubmitRequest,
+    MyResponseItem,
 )
 from app.services.wellbeing_survey import (
     get_live_pulse,
@@ -59,7 +69,8 @@ router = APIRouter(prefix="/organizations/{org_id}/wellbeing-survey", tags=["wel
 async def set_cadence_route(
     org_id: str, body: SurveyCadenceRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("org.settings.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("org.settings.update")),
 ) -> SurveyConfigResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/config"):
@@ -95,8 +106,6 @@ async def get_open_window_route(
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/open-window"):
         window = await get_open_window_or_404(session=db, organization_id=org_id)
 
-        from sqlalchemy import select
-        from app.models.wellbeing_survey import WellbeingSurveyResponse
         existing = await db.execute(
             select(WellbeingSurveyResponse.id).where(
                 WellbeingSurveyResponse.window_id == window.id, WellbeingSurveyResponse.user_id == current_user.user_id,
@@ -115,7 +124,7 @@ async def get_open_window_route(
 async def submit_response_route(
     org_id: str, body: SurveySubmitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/responses"):
@@ -140,17 +149,23 @@ async def my_responses_route(
 
 
 # ── Admin/manager: pulse aggregates ──────────────────────────────────────────
-
 @router.get("/pulse/live", response_model=LivePulseResponse, status_code=status.HTTP_200_OK)
 async def live_pulse_route(
     org_id: str,
+    branch_id: str | None = Query(default=None, description="Omit for org-wide, or scope to one branch."),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("wellbeing.view_team")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> LivePulseResponse:
     require_same_organization(org_id, current_user)
+
+   
+    await require_scoped_permission(
+        db=db, current_user=current_user, permission="wellbeing.view_team", target_branch_id=branch_id,
+    )
+
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/pulse/live"):
         window = await get_open_window_or_404(session=db, organization_id=org_id)
-        aggregation = await get_live_pulse(session=db, organization_id=org_id)
+        aggregation = await get_live_pulse(session=db, organization_id=org_id, branch_id=branch_id)
 
         pq = aggregation["per_question"]
         return LivePulseResponse(
@@ -169,11 +184,16 @@ async def live_pulse_route(
 @router.get("/pulse/history", response_model=PulseSnapshotListResponse, status_code=status.HTTP_200_OK)
 async def pulse_history_route(
     org_id: str,
+    branch_id: str | None = Query(default=None),
     limit: int = Query(default=12, ge=1, le=52),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("wellbeing.view_team")),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> PulseSnapshotListResponse:
     require_same_organization(org_id, current_user)
+    await require_scoped_permission(
+        db=db, current_user=current_user, permission="wellbeing.view_team", target_branch_id=branch_id,
+    )
+
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/pulse/history"):
-        snapshots = await get_pulse_history(session=db, organization_id=org_id, limit=limit)
+        snapshots = await get_pulse_history(session=db, organization_id=org_id, branch_id=branch_id, limit=limit)
         return PulseSnapshotListResponse(items=[PulseSnapshotResponse.model_validate(s) for s in snapshots])

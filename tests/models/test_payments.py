@@ -18,6 +18,8 @@ Key design rules being tested:
   adding a new currency never requires a migration.
 - amount stored as integer in smallest currency unit (kobo, cents) — no
   floats for money, ever.
+- SubscriptionPlan.features is a JSON dict holding plan limits like
+  max_employees, max_departments, etc. Null or missing keys mean unlimited.
 """
 
 import pytest
@@ -41,6 +43,7 @@ def make_plan(
     billing_interval: str = "monthly",
     amount: int = 5000,
     currency: str = "NGN",
+    features: dict | None = None,
     **overrides,
 ) -> SubscriptionPlan:
     return SubscriptionPlan(
@@ -48,6 +51,7 @@ def make_plan(
         billing_interval=billing_interval,
         amount=amount,
         currency=currency,
+        features=features or {},
         **overrides,
     )
 
@@ -161,7 +165,7 @@ async def test_subscription_plan_defaults(db_session: AsyncSession):
     await db_session.flush()
 
     assert plan.is_active is True
-    assert plan.max_employees is None
+    assert plan.features == {}
     assert plan.external_plan_id is None
     assert plan.currency == "NGN"
 
@@ -173,7 +177,7 @@ async def test_subscription_plan_full_fields(db_session: AsyncSession):
         "annual",
         120000,
         "USD",
-        max_employees=500,
+        features={"max_employees": 500, "max_departments": 10, "wellbeing_export": True},
         external_plan_id="price_stripe_xxx",
         is_active=True,
     )
@@ -184,7 +188,9 @@ async def test_subscription_plan_full_fields(db_session: AsyncSession):
         select(SubscriptionPlan).where(SubscriptionPlan.id == plan.id)
     )
     fetched = result.scalar_one()
-    assert fetched.max_employees == 500
+    assert fetched.features["max_employees"] == 500
+    assert fetched.features["max_departments"] == 10
+    assert fetched.features["wellbeing_export"] is True
     assert fetched.external_plan_id == "price_stripe_xxx"
 
 
@@ -240,12 +246,36 @@ async def test_subscription_plan_can_be_retired(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_subscription_plan_unlimited_employees(db_session: AsyncSession):
-    """max_employees=NULL means unlimited seats."""
-    plan = make_plan(max_employees=None)
+    """features without max_employees key (or max_employees=null) means unlimited seats."""
+    plan = make_plan(features={"max_departments": 5})  # No max_employees key
     db_session.add(plan)
     await db_session.flush()
 
-    assert plan.max_employees is None
+    assert "max_employees" not in plan.features
+
+
+@pytest.mark.asyncio
+async def test_subscription_plan_features_json_storage(db_session: AsyncSession):
+    """Features dict is stored as JSON and retrieved correctly."""
+    plan = make_plan(
+        features={
+            "max_employees": 100,
+            "max_departments": None,  # Null means unlimited
+            "wellbeing_export": True,
+            "custom_branding": False,
+        }
+    )
+    db_session.add(plan)
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == plan.id)
+    )
+    fetched = result.scalar_one()
+    assert fetched.features["max_employees"] == 100
+    assert fetched.features["max_departments"] is None
+    assert fetched.features["wellbeing_export"] is True
+    assert fetched.features["custom_branding"] is False
 
 
 @pytest.mark.asyncio
@@ -590,9 +620,8 @@ async def test_transaction_created_at_auto_set(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_transaction_has_no_updated_at(db_session: AsyncSession):
     """PaymentTransaction deliberately has no updated_at — it is an
-    append-only ledger. TimestampMixin is not used here. Verifying
-    this structurally protects against accidentally adding updated_at
-    later and turning this into a mutable table."""
+    append-only ledger. TimestampMixin is not used here;
+    only created_at is needed for an immutable ledger entry."""
     _, org = await setup_org(db_session)
     _, sub = await setup_plan_and_sub(db_session, org.id)
 

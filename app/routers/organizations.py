@@ -35,6 +35,7 @@ from app.auth.dependencies import (
     require_permission,
     require_same_organization,
     require_scoped_permission,
+    require_active_subscription,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -84,7 +85,8 @@ async def send_invite_route(
     org_id: str,
     body: SendInviteRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("member.invite")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("member.invite")),
 ) -> SendInviteResponse:
     require_same_organization(org_id, current_user)
 

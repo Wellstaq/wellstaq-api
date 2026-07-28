@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, require_permission, require_same_organization
+from app.auth.dependencies import CurrentUser, require_permission, require_same_organization, get_current_user
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models import User
@@ -28,9 +28,19 @@ from app.schemas.payment import (
     SubscriptionResponse,
     TransactionListResponse,
     TransactionResponse,
+    PlanListResponse,
+    PlanResponse
 )
-from app.services.payment import get_subscription, get_transaction_history, initiate_checkout
-from app.services.payment.webhook_service import handle_charge_failed, handle_charge_success, verify_paystack_signature
+from app.services.payment import (get_subscription, 
+    get_transaction_history, 
+    initiate_checkout,
+    cancel_auto_renew, 
+    get_available_plans,
+    handle_charge_failed,
+    verify_paystack_signature,
+    handle_charge_success,  
+    
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +85,23 @@ async def initiate_checkout_route(
         user = user_result.scalar_one()
 
         result = await initiate_checkout(
-            session=db, organization_id=org_id, initiating_user=user,
+            session=db, organization_id=org_id, plan_id=body.plan_id, initiating_user=user,
             auto_renew=body.auto_renew, callback_url=body.callback_url,
         )
         await db.commit()
         return CheckoutResponse(**result)
+
+@router.post("/subscription/cancel-auto-renew", response_model=SubscriptionResponse, status_code=status.HTTP_200_OK)
+async def cancel_auto_renew_route(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("org.billing.manage")),
+) -> SubscriptionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/subscription/cancel-auto-renew"):
+        subscription = await cancel_auto_renew(session=db, organization_id=org_id)
+        await db.commit()
+        return SubscriptionResponse.model_validate(subscription)
 
 
 # ── Webhook — separate router, no org_id prefix ─────────────────────────────
@@ -114,3 +136,19 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
         await db.commit()
 
     return {"status": "received"}
+
+# ── platform subscription plans — separate router, no org_id prefix ─────────────────────────────
+
+plans_router = APIRouter(tags=["payment"])
+
+@plans_router.get("/plans", response_model=PlanListResponse, status_code=status.HTTP_200_OK)
+async def list_available_plans_route(
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> PlanListResponse:
+    """No org scoping — plans are a global, platform-wide catalogue,
+    same as WellbeingDimension. Registered outside the org-prefixed
+    router since it isn't org-specific data."""
+    async with request_guard(db, "/plans"):
+        plans = await get_available_plans(session=db)
+        return PlanListResponse(items=[PlanResponse.model_validate(p) for p in plans])

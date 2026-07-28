@@ -44,7 +44,7 @@ class WorkerSettings:
         cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
         cron(compute_engagement_logs, hour=1, minute=0),
         cron(purge_expired_stories, minute={0, 15, 30, 45}),
-        cron(expire_subscriptions, hour=set(range(24)), minute=0)
+        cron(expire_subscriptions, hour=set(range(24)), minute=0),
 
         cron(open_survey_windows, hour=6, minute=0),   # once daily, opens windows whose turn has come
         cron(close_survey_windows, hour=23, minute=55), # once daily, closes windows whose window_end has passed, triggers snapshot

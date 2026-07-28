@@ -27,3 +27,11 @@ async def get_transaction_history(*, session: AsyncSession, organization_id: str
     total = (await session.execute(count_query)).scalar_one()
     transactions = (await session.execute(query)).scalars().all()
     return list(transactions), total
+
+
+async def get_available_plans(*, session: AsyncSession):
+    from app.models.payment import SubscriptionPlan
+    result = await session.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.is_active.is_(True)).order_by(SubscriptionPlan.amount.asc())
+    )
+    return list(result.scalars().all())

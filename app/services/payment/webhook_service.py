@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.payment import OrganizationSubscription, PaymentTransaction
+from app.models import OrganizationSubscription, PaymentTransaction, SubscriptionPlan
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +40,6 @@ def verify_paystack_signature(*, payload_body: bytes, signature_header: str | No
 
 
 async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> None:
-    """
-    event_data is Paystack's 'data' object from a charge.success event.
-    Looks up the PENDING PaymentTransaction by external_reference,
-    marks it succeeded, and — if this is the org's first successful
-    payment — flips the subscription from trialing/past_due to active
-    and advances current_period_end by one billing interval.
-    """
     reference = event_data.get("reference")
     if not reference:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook payload missing reference.")
@@ -56,35 +49,49 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
     )
     transaction = result.scalar_one_or_none()
     if transaction is None:
-        # Could be a webhook for a transaction not initiated through
-        # initiate_checkout (e.g. a stale/replayed event, or a manual
-        # Paystack dashboard charge). Log and ignore rather than error —
-        # webhooks should always return 200 to Paystack even for events
-        # we choose not to act on, to prevent Paystack's retry storm.
         logger.warning("Webhook for unknown transaction reference", extra={"reference": reference})
         return
 
     if transaction.status == "succeeded":
-        return  # already processed — webhook delivery is at-least-once, this must be idempotent
+        return
 
     transaction.status = "succeeded"
 
+    authorization = event_data.get("authorization", {})
+    card_type = authorization.get("card_type")
+    last4 = authorization.get("last4")
+    if card_type and last4:
+        transaction.payment_method = f"{card_type} ending in {last4}"
+    elif event_data.get("channel"):
+        transaction.payment_method = event_data.get("channel")
+
     subscription_result = await session.execute(
-        select(OrganizationSubscription)
-        .options(selectinload(OrganizationSubscription.plan))
-        .where(OrganizationSubscription.id == transaction.subscription_id)
+        select(OrganizationSubscription).where(OrganizationSubscription.id == transaction.subscription_id)
     )
     subscription = subscription_result.scalar_one_or_none()
+
     if subscription is not None:
         now = datetime.now(timezone.utc)
-        billing_period = timedelta(days=30) if subscription.plan.billing_interval == "monthly" else timedelta(days=365)
+
+        # ── THIS is where the block you asked about goes ──────────────
+        plan_result = await session.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.id == transaction.plan_id)
+        )
+        paid_plan = plan_result.scalar_one_or_none()
+        billing_period = timedelta(days=30) if paid_plan.billing_interval == "monthly" else timedelta(days=365)
+
         subscription.status = "active"
         subscription.current_period_start = now
         subscription.current_period_end = now + billing_period
+        subscription.plan_id = transaction.plan_id
+        # ────────────────────────────────────────────────────────────
+
         if subscription.external_subscription_id is None:
-            subscription_code = event_data.get("subscription", {}).get("subscription_code")
+            subscription_data = event_data.get("subscription", {})
+            subscription_code = subscription_data.get("subscription_code")
             if subscription_code:
                 subscription.external_subscription_id = subscription_code
+                subscription.email_token = subscription_data.get("email_token")
                 subscription.auto_renew = True
 
     await session.flush()

@@ -47,6 +47,7 @@ from app.auth.dependencies import (
     require_permission,
     require_scoped_permission,
     require_same_organization,
+    require_active_subscription,
 )
 from app.core.database import get_db
 from app.core.guards import request_guard
@@ -94,7 +95,8 @@ async def create_department_route(
     org_id: str,
     body: DepartmentCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.create")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.create")),
 ) -> DepartmentResponse:
     require_same_organization(org_id, current_user)
 
@@ -236,7 +238,8 @@ async def edit_department_route(
     dept_id: str,
     body: DepartmentUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.update")),
 ) -> DepartmentResponse:
     require_same_organization(org_id, current_user)
 
@@ -284,7 +287,8 @@ async def delete_department_route(
     dept_id: str,
     body: DepartmentDeleteRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.delete")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.delete")),
 ) -> DepartmentDeleteResponse:
     require_same_organization(org_id, current_user)
 
@@ -337,7 +341,8 @@ async def assign_user_to_department_route(
     dept_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.update")),
 ) -> DepartmentMemberAssignResponse:
     require_same_organization(org_id, current_user)
 
@@ -427,7 +432,8 @@ async def assign_department_head_route(
     dept_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.update")),
 ) -> DepartmentHeadAssignResponse:
     require_same_organization(org_id, current_user)
 
@@ -481,7 +487,8 @@ async def remove_department_head_route(
         description="If true, reverts the former head's role to 'member'.",
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("department.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("department.update")),
 ) -> DepartmentHeadRemoveResponse:
     require_same_organization(org_id, current_user)
 

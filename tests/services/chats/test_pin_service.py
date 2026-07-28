@@ -37,7 +37,7 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import date, time, datetime, timezone
+from datetime import date, time, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -46,12 +46,58 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-from app.models import Club, Event, GroupChatMessage
+from app.models import Club, Event, GroupChatMessage, SubscriptionPlan, OrganizationSubscription
 from app.services.chat.pin_service import pin_message, unpin_message
 from tests.conftest import make_org_with_owner, make_user_with_role
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_clubs": None},  # Unlimited clubs for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
+async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
+    """make_org_with_owner() plus an active subscription, required by
+    create_club()'s plan-limit check."""
+    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
+    return org, owner
+
 
 async def _make_branch(
     db_session: AsyncSession,
@@ -159,7 +205,7 @@ class TestPinMessageHappyPath:
     async def test_pins_message_with_moderation_access(self, mock_require_mod, db_session: AsyncSession):
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -184,7 +230,7 @@ class TestPinMessageHappyPath:
     async def test_returns_group_chat_message_instance(self, mock_require_mod, db_session: AsyncSession):
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -210,7 +256,7 @@ class TestPinMessageHappyPath:
         """Pinning a new message must unpin the old one (DB unique constraint)."""
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -252,7 +298,7 @@ class TestPinMessageHappyPath:
         """Pinning in club A should not unpin in club B."""
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -286,7 +332,7 @@ class TestPinMessageHappyPath:
     async def test_pinned_at_timestamp_is_utc(self, mock_require_mod, db_session: AsyncSession):
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -332,7 +378,7 @@ class TestPinMessageNotFound:
     async def test_raises_404_when_message_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -375,7 +421,7 @@ class TestPinMessagePermissionErrors:
             detail="Permission denied",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -404,7 +450,7 @@ class TestUnpinMessageHappyPath:
     async def test_unpins_message_with_moderation_access(self, mock_require_mod, db_session: AsyncSession):
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -431,7 +477,7 @@ class TestUnpinMessageHappyPath:
     async def test_returns_group_chat_message_instance(self, mock_require_mod, db_session: AsyncSession):
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -487,7 +533,7 @@ class TestUnpinMessagePermissionErrors:
             detail="Permission denied",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -519,7 +565,7 @@ class TestUnpinMessageIdempotency:
         """Unpinning a message that is not pinned should not error."""
         mock_require_mod.return_value = AsyncMock()
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()

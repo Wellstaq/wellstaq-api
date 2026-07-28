@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, Event, Organization
+from app.services.payment import enforce_plan_limit
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,13 @@ async def create_event(
             status.HTTP_404_NOT_FOUND,
             "Branch not found or does not belong to this organization.",
         )
+    existing_count = (await session.execute(
+        select(func.count()).select_from(Event).where(Event.organization_id == organization_id)
+    )).scalar_one()
+
+    await enforce_plan_limit(
+        session=session, organization_id=organization_id, limit_key="max_events", current_count=existing_count,
+    )
 
     event = Event(
         title=title.strip(),

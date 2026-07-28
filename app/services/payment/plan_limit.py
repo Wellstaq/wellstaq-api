@@ -33,7 +33,7 @@ async def enforce_plan_limit(
     if limit is None:
         return
 
-    if current_count >= 0:
+    if current_count >= limit:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
             f"Your current plan allows up to {limit} for this resource. Upgrade to add more.",

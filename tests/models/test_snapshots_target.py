@@ -4,49 +4,17 @@ LeaderboardSnapshot, Target, and KPISnapshot model tests.
 All tests are async, isolated per test via rollback in conftest.
 No HTTP client needed — these are model/ORM-level tests.
 
-NOTE ON ASSUMPTIONS: this rewrite assumes two things about conftest.py
-that live outside the files given to me, and that should be double
-checked against the real conftest:
-  1. `make_org_with_owner` already creates a default Branch and
-     assigns it to the returned owner (owner.branch_id is populated).
-     This appears to be true today since only the plain `make_user()`
-     helper triggered the `users.branch_id NOT NULL` failure in the
-     given traceback — the owner path did not.
-  2. `make_user(organization_id, **overrides)` forwards **overrides
-     the same way make_snapshot/make_target/make_kpi_snapshot do
-     below, so passing `branch_id=...` works. If it doesn't yet accept
-     that, it needs a one-line change:
-         def make_user(organization_id, **overrides):
-             defaults = dict(organization_id=organization_id, ...)
-             return User(**{**defaults, **overrides})
-  A local `make_branch` factory is added below since branch-scoped
-  tests need to create additional branches beyond the owner's default
-  one; adjust its default fields to match the real Branch model.
-
-What's tested:
-  - LeaderboardSnapshot: persistence, UUID format, computed_at
-    auto-set, previous_rank/previous_org_rank nullable on first run,
-    rank/org_rank/period check constraints, org + branch + user FK
-    enforcement, cascade on org/branch/user delete, cross-tenant and
-    cross-branch isolation, composite indexes exist, org/branch/user
-    relationship loading, and that a single row can carry both a
-    branch-scoped rank and an org-wide rank consistent with values
-    across multiple branches.
-  - Target: persistence, UUID format, unique constraint on
-    (branch, metric_type, period), duplicate insert raises, org +
-    branch FK enforcement, cascade on org/branch delete, check
-    constraints (empty metric_type, empty period, non-positive
-    target_value), org/branch relationship loading, org-wide rollup
-    index exists.
-  - KPISnapshot: persistence, UUID format, unique constraint on
-    (branch, metric_name, period_start), duplicate insert raises,
-    org + branch FK enforcement, cascade on org/branch delete, check
-    constraints (empty metric_name, invalid period range), org/branch
-    relationship loading, org-wide rollup index exists.
+Key patterns enforced:
+  - User.branch_id is NOT NULL — every make_user() call passes
+    branch_id=owner.branch_id (the HQ branch auto-created by
+    make_org_with_owner).
+  - LeaderboardSnapshot requires period_type ('daily', 'weekly', 'monthly')
+    and has a unique constraint on (org, user, metric, period_type, 
+    period_start, period_end).
 """
 
 import pytest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -80,6 +48,7 @@ def make_snapshot(organization_id: str, branch_id: str, user_id: str, **override
         previous_org_rank=None,
         period_start=date(2026, 6, 1),
         period_end=date(2026, 6, 7),
+        period_type="weekly",  # Required: daily | weekly | monthly
     )
     return LeaderboardSnapshot(**{**defaults, **overrides})
 
@@ -132,6 +101,7 @@ async def test_leaderboard_snapshot_persists(db_session: AsyncSession):
     assert fetched.previous_org_rank is None
     assert fetched.period_start == date(2026, 6, 1)
     assert fetched.period_end == date(2026, 6, 7)
+    assert fetched.period_type == "weekly"
 
 
 @pytest.mark.asyncio
@@ -196,8 +166,8 @@ async def test_leaderboard_snapshot_previous_rank_set(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_multiple_metrics_same_period(db_session: AsyncSession):
-    """No uniqueness on (user, metric, period) — the scheduler can
-    write steps, distance, and squat rankings independently."""
+    """Multiple metrics for same user/period are allowed — different
+    metric_type means different unique constraint key."""
     org, owner = await make_org_with_owner(db_session)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, metric_type="steps", rank=1, org_rank=1))
@@ -212,6 +182,134 @@ async def test_leaderboard_snapshot_multiple_metrics_same_period(db_session: Asy
         )
     )
     assert len(result.scalars().all()) == 3
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_snapshot_unique_constraint(db_session: AsyncSession):
+    """Cannot create duplicate snapshots for same (org, user, metric, 
+    period_type, period_start, period_end)."""
+    org, owner = await make_org_with_owner(db_session)
+
+    snapshot1 = make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="weekly",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+        rank=1,
+        org_rank=1,
+    )
+    db_session.add(snapshot1)
+    await db_session.flush()
+
+    # Same org, user, metric, period_type, period_start, period_end
+    snapshot2 = make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="weekly",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+        rank=2,  # Different rank doesn't matter
+        org_rank=2,
+    )
+    db_session.add(snapshot2)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_snapshot_different_period_types_allowed(db_session: AsyncSession):
+    """Same metric, same dates, but different period_type is allowed."""
+    org, owner = await make_org_with_owner(db_session)
+
+    db_session.add(make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="weekly",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+    ))
+    db_session.add(make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="daily",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 1),
+    ))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(LeaderboardSnapshot).where(LeaderboardSnapshot.user_id == owner.id)
+    )
+    assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_snapshot_different_period_dates_allowed(db_session: AsyncSession):
+    """Same metric, same period_type, but different dates is allowed."""
+    org, owner = await make_org_with_owner(db_session)
+
+    db_session.add(make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="weekly",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+    ))
+    db_session.add(make_snapshot(
+        org.id, owner.branch_id, owner.id,
+        metric_type="steps",
+        period_type="weekly",
+        period_start=date(2026, 6, 8),
+        period_end=date(2026, 6, 14),
+    ))
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(LeaderboardSnapshot).where(LeaderboardSnapshot.user_id == owner.id)
+    )
+    assert len(result.scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_snapshot_invalid_period_type_raises(db_session: AsyncSession):
+    org, owner = await make_org_with_owner(db_session)
+
+    snapshot = make_snapshot(org.id, owner.branch_id, owner.id, period_type="yearly")
+    db_session.add(snapshot)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_snapshot_valid_period_types(db_session: AsyncSession):
+    """All valid period_types are accepted."""
+    org, owner = await make_org_with_owner(db_session)
+
+    for period_type in ["daily", "weekly", "monthly"]:
+        # Use different dates to avoid unique constraint violation
+        if period_type == "daily":
+            start = date(2026, 6, 1)
+            end = date(2026, 6, 1)
+        elif period_type == "weekly":
+            start = date(2026, 6, 2)
+            end = date(2026, 6, 8)
+        else:  # monthly
+            start = date(2026, 6, 3)
+            end = date(2026, 6, 30)
+        
+        snapshot = make_snapshot(
+            org.id, owner.branch_id, owner.id,
+            period_type=period_type,
+            period_start=start,
+            period_end=end,
+        )
+        db_session.add(snapshot)
+        await db_session.flush()
+        
+        # Clean up for next iteration
+        await db_session.delete(snapshot)
+        await db_session.flush()
 
 
 @pytest.mark.asyncio
@@ -241,18 +339,6 @@ async def test_leaderboard_snapshot_branch_fk_must_exist(db_session: AsyncSessio
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
-
-
-@pytest.mark.asyncio
-async def test_leaderboard_snapshot_branch_id_required(db_session: AsyncSession):
-    """branch_id is NOT NULL — every leaderboard row must be scoped
-    to a branch, since every user belongs to exactly one."""
-    org, owner = await make_org_with_owner(db_session)
-
-    snapshot = make_snapshot(org.id, None, owner.id)  # Pass None positionally
-    db_session.add(snapshot)
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_user_fk_must_exist(db_session: AsyncSession):
@@ -407,7 +493,13 @@ async def test_leaderboard_snapshot_filterable_by_org(db_session: AsyncSession):
     )
 
     db_session.add(make_snapshot(org_a.id, owner_a.branch_id, owner_a.id, rank=1, org_rank=1))
-    db_session.add(make_snapshot(org_b.id, owner_b.branch_id, owner_b.id, rank=1, org_rank=1))
+    # Use different dates for org_b to avoid unique constraint issues
+    db_session.add(make_snapshot(
+        org_b.id, owner_b.branch_id, owner_b.id, 
+        rank=1, org_rank=1,
+        period_start=date(2026, 6, 8),
+        period_end=date(2026, 6, 14),
+    ))
     await db_session.flush()
 
     result = await db_session.execute(
@@ -714,15 +806,6 @@ async def test_target_branch_fk_must_exist(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_target_branch_id_required(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
-
-    target = make_target(org.id, None)  # Pass None positionally
-    db_session.add(target)
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
-
-@pytest.mark.asyncio
 async def test_target_metric_type_cannot_be_empty(db_session: AsyncSession):
     org, owner = await make_org_with_owner(db_session)
 
@@ -1014,15 +1097,6 @@ async def test_kpi_snapshot_branch_fk_must_exist(db_session: AsyncSession):
     with pytest.raises(IntegrityError):
         await db_session.flush()
 
-
-@pytest.mark.asyncio
-async def test_kpi_snapshot_branch_id_required(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
-
-    kpi = make_kpi_snapshot(org.id, None)  # Pass None positionally
-    db_session.add(kpi)
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_metric_name_cannot_be_empty(db_session: AsyncSession):

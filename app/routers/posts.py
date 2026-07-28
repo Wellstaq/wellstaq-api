@@ -64,7 +64,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
+from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models import PostComment
@@ -138,7 +138,7 @@ async def create_post_route(
     org_id: str,
     body: PostCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> PostResponse:
     require_same_organization(org_id, current_user)
     check_post_creation_membership(current_user=current_user, branch_id=body.branch_id)
@@ -283,7 +283,7 @@ async def edit_post_route(
     post_id: str,
     body: PostUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> PostResponse:
     require_same_organization(org_id, current_user)
 
@@ -312,7 +312,7 @@ async def delete_post_route(
     org_id: str,
     post_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     require_same_organization(org_id, current_user)
 
@@ -331,7 +331,7 @@ async def delete_post_route(
 async def like_post_route(
     org_id: str, post_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> LikeActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/like"):
@@ -345,7 +345,7 @@ async def like_post_route(
 async def unlike_post_route(
     org_id: str, post_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> LikeActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/like"):
@@ -401,7 +401,7 @@ async def list_comments_route(
 async def add_comment_route(
     org_id: str, post_id: str, body: CommentCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> CommentResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments"):
@@ -421,7 +421,7 @@ async def add_comment_route(
 async def edit_comment_route(
     org_id: str, post_id: str, comment_id: str, body: CommentUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> CommentResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments/{comment_id}"):
@@ -446,7 +446,7 @@ async def edit_comment_route(
 async def delete_comment_route(
     org_id: str, post_id: str, comment_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/comments/{comment_id}"):
@@ -469,7 +469,7 @@ async def delete_comment_route(
 async def share_post_route(
     org_id: str, post_id: str, body: ShareCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ShareResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/share"):
@@ -485,7 +485,7 @@ async def share_post_route(
 async def save_post_route(
     org_id: str, post_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> SaveActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/save"):
@@ -498,7 +498,7 @@ async def save_post_route(
 async def unsave_post_route(
     org_id: str, post_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> SaveActionResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/posts/{post_id}/save"):

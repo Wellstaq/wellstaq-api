@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
+from app.auth.dependencies import CurrentUser, get_current_user, require_active_subscription, require_same_organization
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.activity_log import (
@@ -44,7 +44,8 @@ router = APIRouter(prefix="/organizations/{org_id}/activity-log", tags=["activit
 async def submit_activity_route(
     org_id: str, body: ActivitySubmitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
+   
 ) -> ActivitySubmitResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/activity-log"):

@@ -30,7 +30,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
+from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.story import StoryCreateRequest, StoryListResponse, StoryResponse
@@ -44,7 +44,7 @@ router = APIRouter(prefix="/organizations/{org_id}/stories", tags=["stories"])
 async def create_story_route(
     org_id: str, body: StoryCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> StoryResponse:
     require_same_organization(org_id, current_user)
     check_story_creation_membership(current_user=current_user, branch_id=body.branch_id)
@@ -109,7 +109,7 @@ async def get_story_route(
 async def delete_story_route(
     org_id: str, story_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/stories/{story_id}"):

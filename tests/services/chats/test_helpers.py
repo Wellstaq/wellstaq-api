@@ -53,7 +53,7 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,7 +61,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Club, Event, GroupChatMessage
+from app.models import Club, Event, GroupChatMessage, SubscriptionPlan, OrganizationSubscription
 from app.services.chat._helpers import (
     get_conversation_branch_id,
     get_message_or_404,
@@ -73,6 +73,54 @@ from tests.conftest import make_org_with_owner
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_clubs": None},  # Unlimited clubs for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
+async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
+    """make_org_with_owner() plus an active subscription, required by
+    create_club()'s plan-limit check. Applied uniformly here (even for
+    tests that only create an event) so this file doesn't break again
+    if create_event() ever grows its own plan-limit check."""
+    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
+    return org, owner
+
 
 async def _make_branch(
     db_session: AsyncSession,
@@ -172,7 +220,7 @@ class TestValidateConversationHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_none_for_valid_club(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -189,7 +237,7 @@ class TestValidateConversationHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_none_for_valid_event(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -248,7 +296,7 @@ class TestValidateConversationNotFound:
     async def test_raises_404_when_club_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -292,7 +340,7 @@ class TestValidateConversationNotFound:
     async def test_raises_404_when_event_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -367,7 +415,7 @@ class TestGetMessageOr404HappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_message_when_found(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -409,7 +457,7 @@ class TestGetMessageOr404NotFound:
     async def test_raises_404_when_message_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
@@ -441,7 +489,7 @@ class TestGetConversationBranchIdHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_branch_id_for_club(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id, name="Downtown Branch")
         owner.branch_id = branch.id
         await db_session.flush()
@@ -457,7 +505,7 @@ class TestGetConversationBranchIdHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_branch_id_for_event(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id, name="Uptown Branch")
         owner.branch_id = branch.id
         await db_session.flush()
@@ -508,7 +556,7 @@ class TestRequireChatModerationAccessHappyPath:
     @pytest.mark.asyncio
     async def test_grants_access_to_club_leader(self, db_session: AsyncSession):
         """Club leader can moderate their own club's chat without any permission."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -532,7 +580,7 @@ class TestRequireChatModerationAccessHappyPath:
         self, mock_require_permission, db_session: AsyncSession
     ):
         """Non-leader with chat.moderate permission can moderate."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -574,7 +622,7 @@ class TestRequireChatModerationAccessHappyPath:
         self, mock_require_permission, db_session: AsyncSession
     ):
         """For events, there's no leader check — only permission matters."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -605,7 +653,7 @@ class TestRequireChatModerationAccessPermissionErrors:
         self, mock_require_permission, db_session: AsyncSession
     ):
         """Non-leader without chat.moderate permission cannot moderate."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()

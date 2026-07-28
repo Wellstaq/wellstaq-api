@@ -25,7 +25,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_permission, require_same_organization
+from app.auth.dependencies import(
+    CurrentUser,
+    get_current_user,
+    require_permission,
+    require_same_organization,
+    require_active_subscription,
+)
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models import User
@@ -100,7 +106,8 @@ router = APIRouter(prefix="/organizations/{org_id}/challenges", tags=["challenge
 async def create_challenge_route(
     org_id: str, body: ChallengeCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("challenge.create")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("challenge.create")),
 ) -> ChallengeResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges"):
@@ -161,7 +168,8 @@ async def get_challenge_route(
 async def edit_challenge_route(
     org_id: str, challenge_id: str, body: ChallengeUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+     current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("challenge.update")),
 ) -> ChallengeResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}"):
@@ -192,7 +200,8 @@ async def edit_challenge_route(
 async def delete_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("challenge.delete")),
+     current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("challenge.delete")),
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}"):
@@ -208,7 +217,7 @@ async def delete_challenge_route(
 async def join_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
 ) -> ParticipantJoinResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/join"):
@@ -221,7 +230,8 @@ async def join_challenge_route(
 async def leave_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+     current_user: CurrentUser = Depends(require_active_subscription),
+   
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/join"):
@@ -247,7 +257,8 @@ async def leave_challenge_route(
 async def submit_progress_route(
     org_id: str, challenge_id: str, body: ProgressSubmitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
+   
 ) -> ProgressEntryResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/progress"):
@@ -300,7 +311,8 @@ async def list_participants_route(
 async def mark_participant_complete_route(
     org_id: str, challenge_id: str, user_id: str, body: ParticipantCompleteRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+     current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("challenge.update")),
 ) -> ParticipantInfo:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/participants/{user_id}/complete"):
@@ -333,7 +345,8 @@ async def mark_participant_complete_route(
 async def cancel_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("challenge.update")),
 ) -> ChallengeResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/cancel"):

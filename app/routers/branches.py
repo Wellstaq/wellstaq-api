@@ -98,12 +98,12 @@ async def create_branch_route(
     org_id: str,
     body: BranchCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.create")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.create")),
 ) -> BranchResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/branches"):
-        await require_active_subscription(db =db, current_user=current_user)
         await require_scoped_permission(
             db=db,
             current_user=current_user,
@@ -191,7 +191,8 @@ async def edit_branch_route(
     branch_id: str,
     body: BranchUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.update")),
 ) -> BranchResponse:
     require_same_organization(org_id, current_user)
 
@@ -235,7 +236,8 @@ async def delete_branch_route(
     org_id: str,
     branch_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.delete")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.delete")),
 ):
     require_same_organization(org_id, current_user)
 
@@ -307,7 +309,8 @@ async def assign_user_to_branch_route(
     user_id: str,
     body: BranchMemberAssignRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.update")),
 ) -> BranchMemberAssignResponse:
     require_same_organization(org_id, current_user)
 
@@ -376,7 +379,8 @@ async def assign_branch_manager_route(
     branch_id: str,
     body: BranchManagerAssignRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.manager.assign")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.manager.assign")),
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
 
@@ -420,7 +424,8 @@ async def unassign_branch_manager_route(
     org_id: str,
     branch_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("branch.manager.assign")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("branch.manager.assign")),
 ) -> BranchManagerResponse:
     require_same_organization(org_id, current_user)
 

@@ -34,7 +34,7 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,12 +42,61 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Club, Event, GroupChatMessage
+from app.models import Club, Event, GroupChatMessage, SubscriptionPlan, OrganizationSubscription
 from app.services.chat.delete_message import _has_deletion_access, delete_message
 from tests.conftest import make_org_with_owner, make_user_with_role
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_clubs": None},  # Unlimited clubs for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
+async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
+    """make_org_with_owner() plus an active subscription. Some tests in
+    this file create a Club, and create_club() runs a plan-limit check
+    (enforce_plan_limit) that 404s without a subscription record — so
+    every org here gets one, regardless of whether that particular test
+    happens to create a club."""
+    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
+    return org, owner
+
 
 async def _make_branch(
     db_session: AsyncSession,
@@ -147,7 +196,7 @@ class TestDeleteMessageClubLeader:
 
     @pytest.mark.asyncio
     async def test_club_leader_can_delete_any_message_in_club(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -186,7 +235,7 @@ class TestDeleteMessageClubLeader:
 
     @pytest.mark.asyncio
     async def test_club_leader_deletion_does_not_require_permission(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -212,7 +261,7 @@ class TestDeleteMessageEventCreator:
 
     @pytest.mark.asyncio
     async def test_event_creator_can_delete_any_message_in_event(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -251,7 +300,7 @@ class TestDeleteMessageEventCreator:
 
     @pytest.mark.asyncio
     async def test_event_creator_deletion_does_not_require_permission(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -278,7 +327,7 @@ class TestDeleteMessageWithModeratePermission:
     @pytest.mark.asyncio
     @patch("app.services.chat.delete_message.require_scoped_permission")
     async def test_user_with_chat_moderate_can_delete(self, mock_require_permission, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -328,7 +377,7 @@ class TestDeleteMessageWithModeratePermission:
     @pytest.mark.asyncio
     @patch("app.services.chat.delete_message.require_scoped_permission")
     async def test_permission_check_for_event_conversation(self, mock_require_permission, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -369,7 +418,7 @@ class TestDeleteMessageLogging:
 
     @pytest.mark.asyncio
     async def test_logs_deletion_with_correct_metadata(self, db_session: AsyncSession, caplog):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -402,7 +451,7 @@ class TestDeleteMessagePermissionErrors:
     async def test_raises_403_when_no_access_paths_grant_permission(
         self, mock_require_permission, db_session: AsyncSession
     ):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -440,7 +489,7 @@ class TestDeleteMessagePermissionErrors:
     @pytest.mark.asyncio
     async def test_club_leader_check_does_not_apply_to_events(self, db_session: AsyncSession):
         """Being a club leader does NOT grant deletion rights in events."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -484,7 +533,7 @@ class TestDeleteMessagePermissionErrors:
     @pytest.mark.asyncio
     async def test_event_creator_check_does_not_apply_to_clubs(self, db_session: AsyncSession):
         """Being an event creator does NOT grant deletion rights in clubs."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -550,12 +599,12 @@ class TestDeleteMessageNotFound:
     async def test_raises_404_when_message_belongs_to_different_org(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, owner2 = await make_org_with_owner(
+        org2, owner2 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
@@ -585,7 +634,7 @@ class TestHasDeletionAccessHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_true_for_club_leader(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -604,7 +653,7 @@ class TestHasDeletionAccessHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_true_for_event_creator(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -623,7 +672,7 @@ class TestHasDeletionAccessHappyPath:
 
     @pytest.mark.asyncio
     async def test_returns_false_for_regular_member(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()

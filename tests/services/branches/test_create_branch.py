@@ -22,15 +22,62 @@ Coverage:
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch
+from app.models import Branch, SubscriptionPlan, OrganizationSubscription
 from app.services.branch.create_branch import create_branch
 from tests.conftest import make_org_with_owner
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_branches": None},  # Unlimited branches for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
+async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
+    """make_org_with_owner() plus an active subscription, required by
+    create_branch()'s plan-limit check (max_branches)."""
+    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
+    return org, owner
+
 
 async def _create(
     db_session: AsyncSession,
@@ -52,7 +99,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_creates_branch_successfully(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id)
 
@@ -61,7 +108,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_returns_branch_with_correct_fields(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id, name="Abuja Branch")
 
@@ -73,7 +120,7 @@ class TestCreateBranchSuccess:
     async def test_branch_id_is_populated_after_creation(
         self, db_session: AsyncSession
     ):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id)
 
@@ -83,7 +130,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_timestamps_are_set_after_creation(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id)
 
@@ -92,7 +139,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_manager_id_is_none_by_default(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id)
 
@@ -100,7 +147,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_created_by_is_stored_correctly(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id)
 
@@ -108,7 +155,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_name_is_stripped_of_whitespace(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch = await _create(db_session, org.id, owner.id, name="  Lagos Branch  ")
 
@@ -118,12 +165,12 @@ class TestCreateBranchSuccess:
     async def test_allows_same_name_in_different_organizations(
         self, db_session: AsyncSession
     ):
-        org1, owner1 = await make_org_with_owner(
+        org1, owner1 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-one"),
             user_kwargs=dict(email="owner1@example.com"),
         )
-        org2, owner2 = await make_org_with_owner(
+        org2, owner2 = await _make_org_with_subscription(
             db_session,
             org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
@@ -137,7 +184,7 @@ class TestCreateBranchSuccess:
 
     @pytest.mark.asyncio
     async def test_allows_different_names_in_same_org(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
 
         branch1 = await _create(db_session, org.id, owner.id, name="Lagos")
         branch2 = await _create(db_session, org.id, owner.id, name="Abuja")
@@ -186,7 +233,7 @@ class TestCreateBranchNameUniqueness:
     async def test_raises_409_when_name_already_exists_exact_match(
         self, db_session: AsyncSession
     ):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         await _create(db_session, org.id, owner.id, name="Lagos")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -198,7 +245,7 @@ class TestCreateBranchNameUniqueness:
     async def test_raises_409_when_name_conflicts_case_insensitive(
         self, db_session: AsyncSession
     ):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         await _create(db_session, org.id, owner.id, name="Lagos")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -208,7 +255,7 @@ class TestCreateBranchNameUniqueness:
 
     @pytest.mark.asyncio
     async def test_raises_409_for_mixed_case_conflict(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         await _create(db_session, org.id, owner.id, name="Head Office")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -220,7 +267,7 @@ class TestCreateBranchNameUniqueness:
     async def test_409_detail_mentions_the_conflicting_name(
         self, db_session: AsyncSession
     ):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await _make_org_with_subscription(db_session)
         await _create(db_session, org.id, owner.id, name="Lagos")
 
         with pytest.raises(HTTPException) as exc_info:

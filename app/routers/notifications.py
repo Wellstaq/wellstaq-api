@@ -21,7 +21,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user
+from app.auth.dependencies import CurrentUser, get_current_user, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.notification import (
@@ -74,7 +74,7 @@ async def unread_count_route(
 async def mark_notification_read_route(
     notification_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> MarkReadResponse:
     async with request_guard(db, "/notifications/{notification_id}/read"):
         notification = await mark_as_read(session=db, user_id=current_user.user_id, notification_id=notification_id)
@@ -85,7 +85,7 @@ async def mark_notification_read_route(
 @router.patch("/read-all", response_model=MarkAllReadResponse, status_code=status.HTTP_200_OK)
 async def mark_all_notifications_read_route(
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> MarkAllReadResponse:
     async with request_guard(db, "/notifications/read-all"):
         count = await mark_all_as_read(session=db, user_id=current_user.user_id)
@@ -97,7 +97,7 @@ async def mark_all_notifications_read_route(
 async def delete_notification_route(
     notification_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ):
     async with request_guard(db, "/notifications/{notification_id}"):
         await delete_notification(session=db, user_id=current_user.user_id, notification_id=notification_id)

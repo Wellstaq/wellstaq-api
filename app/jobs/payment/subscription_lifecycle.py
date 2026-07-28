@@ -1,4 +1,4 @@
-d"""
+"""
 app/jobs/payment/subscription_lifecycle.py
 
 Two automatic transitions, both handled here since they're the same

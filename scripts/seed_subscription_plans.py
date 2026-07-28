@@ -40,6 +40,21 @@ PLANS: list[dict] = [
             "max_challenges": None,
         },
     },
+     {
+        "name": "Trial",
+        "billing_interval": "monthly",
+        "amount": 0,
+        "currency": "NGN",
+        "is_active": True,
+        "features": {
+            "max_employees": 2,
+            "max_departments": 2,
+            "max_clubs":2,
+            "max_branches": 2,
+            "max_events": 2,
+            "max_challenges": 2,
+        },
+    },
 ]
 
 

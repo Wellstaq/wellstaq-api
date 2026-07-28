@@ -17,7 +17,6 @@ from app.core.database import engine
 from app.models.base import Base
 from app.routers import (
     auth, 
-    general, 
     uploads, 
     departments,
     organizations,
@@ -41,9 +40,14 @@ from app.routers import (
     engagement_logs,
     engagements,
     storages,
+    targets,
     
 )
-from app.routers.payments import router as payment_router, webhook_router as payment_webhook_router
+from app.routers.payments import(
+    router as payment_router,
+    webhook_router as payment_webhook_router,
+    plans_router as available_subscription_router,
+)
 
 
 
@@ -74,7 +78,7 @@ app.add_middleware(
 
 # Public + protected routers. Every future domain router (departments,
 # clubs, events, posts, ...) gets included here the same way.
-app.include_router(general.router)
+
 app.include_router(auth.router)
 app.include_router(uploads.router)
 app.include_router(departments.router)
@@ -99,8 +103,10 @@ app.include_router(categories.router)
 app.include_router(engagements.router)
 app.include_router(engagement_logs.router)
 app.include_router(storages.router)
+app.include_router(targets.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
+app.include_router(available_subscription_router)
 
 
 @app.get("/")

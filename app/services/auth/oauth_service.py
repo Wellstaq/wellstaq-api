@@ -243,7 +243,7 @@ async def oauth_login(
         user.avatar_url = avatar_url
 
     # ── Audit + flush ──────────────────────────────────────────────────────────
-    _log_audit(
+    await _log_audit(
         session,
         user=user,
         activity_type=ActivityType.LOGIN,

@@ -8,6 +8,13 @@ Strategy:
   mocking jwt internals, we generate real tokens via the same helper the
   OTP flow uses (_make_email_verification_token), so tests exercise the
   real decode path end-to-end.
+
+  org_owner_signup() also calls start_trial() internally, which looks up
+  the single active SubscriptionPlan (SubscriptionPlan.is_active == True)
+  to start the org's trial against. In production that row is seeded via
+  a script that also registers the plan with the payment gateway — not
+  something this test suite exercises — so an autouse fixture seeds a
+  minimal active SubscriptionPlan directly before every test here.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from app.models import (
     UserPermission,
     UserSettings,
 )
+from app.models.payment import SubscriptionPlan
 from app.services.auth.otp_service import _make_email_verification_token
 from app.services.auth.signup_service import org_owner_signup
 from app.services.errors import AuthError
@@ -67,6 +75,25 @@ async def _seed_super_admin_role(db_session: AsyncSession) -> Role:
     db_session.add(role)
     await db_session.flush()
     return role
+
+
+@pytest.fixture(autouse=True)
+async def _seed_active_plan(db_session: AsyncSession):
+    """org_owner_signup() -> start_trial() requires SubscriptionPlan.is_active
+    == True to exist (it picks the single active plan when no plan_id is
+    given). Production seeds this via a script that also talks to the
+    payment gateway; here we just need the local row."""
+    plan = SubscriptionPlan(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={},
+        is_active=True,
+    )
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
 
 
 # ── Core happy path ────────────────────────────────────────────────────────────

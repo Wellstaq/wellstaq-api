@@ -20,7 +20,6 @@ from sqlalchemy import select
 
 from app.core.database import get_db
 from app.models import User
-from app.models.wellbeing_survey import CADENCE_DAYS if False else None  # placeholder, see below
 from app.models.wellbeing_survey import WellbeingSurveyConfig, WellbeingSurveyWindow
 from app.services.notification import create_notification
 from app.services.wellbeing_survey._helpers import CADENCE_DAYS, compute_window_range
@@ -72,7 +71,7 @@ async def open_survey_windows(ctx: dict[str, Any]) -> None:
                     session=session, user_id=user_id, organization_id=config.organization_id,
                     notification_type="announcement",
                     body="A new wellbeing survey is open — your responses help us support the team better.",
-                    reference_id=window.id, reference_type="Survey",
+                    reference_id=window.id, reference_type="survey",
                 )
                 notified += 1
 

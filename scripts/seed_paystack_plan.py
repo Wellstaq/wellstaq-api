@@ -63,8 +63,11 @@ async def create_paystack_plan(*, plan: SubscriptionPlan) -> str:
 
 
 async def create_missing_plans(session: AsyncSession) -> None:
-    result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.external_plan_id.is_(None)))
+    result = await session.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.external_plan_id.is_(None), SubscriptionPlan.amount > 0)
+    )
     plans = result.scalars().all()
+    
 
     if not plans:
         print("✓ Every plan already has an external_plan_id — nothing to do.")

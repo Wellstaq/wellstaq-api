@@ -34,7 +34,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user, require_permission, require_same_organization
+from app.auth.dependencies import (
+    CurrentUser,
+    get_current_user,
+    require_permission,
+    require_same_organization,
+    require_active_subscription,
+)
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.wellbeing import (
@@ -102,7 +108,8 @@ async def list_wellbeing_challenges_route(
 async def opt_in_route(
     org_id: str, body: OrgChallengeOptInRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("org.settings.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("org.settings.update")),
 ) -> OrgChallengeOptInResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/wellbeing/opted-in-challenges"):
@@ -118,7 +125,8 @@ async def opt_in_route(
 async def opt_out_route(
     org_id: str, wellbeing_challenge_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(require_permission("org.settings.update")),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("org.settings.update")),
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/wellbeing/opted-in-challenges/{wellbeing_challenge_id}"):
@@ -144,7 +152,7 @@ async def list_opted_in_route(
 @router.post("/wellbeing/baselines", response_model=BaselineResponse, status_code=status.HTTP_201_CREATED)
 async def submit_baseline_route(
     body: BaselineSubmitRequest,
-    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(require_active_subscription),
 ) -> BaselineResponse:
     async with request_guard(db, "/wellbeing/baselines"):
         baseline = await submit_baseline(
@@ -169,7 +177,7 @@ async def my_baselines_route(
 @router.post("/wellbeing/assessments", response_model=AssessmentResponse, status_code=status.HTTP_201_CREATED)
 async def submit_assessment_route(
     body: AssessmentSubmitRequest,
-    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(require_active_subscription),
 ) -> AssessmentResponse:
     async with request_guard(db, "/wellbeing/assessments"):
         assessment = await submit_assessment(

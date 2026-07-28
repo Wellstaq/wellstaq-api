@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from app.core.database import get_db
 from app.models import Challenge, ChallengeParticipant, ChallengeProgressEntry
-from app.services.challenge._helpers import _mark_challenge_complete
+from app.services.challenge._helpers import mark_challenge_complete
 
 logger = logging.getLogger(__name__)
 

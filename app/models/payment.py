@@ -170,6 +170,12 @@ class OrganizationSubscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_renew: Mapped[bool] = mapped_column(nullable=False, default=False)
 
+    # Paystack's per-subscription authorization token, returned in the
+    # charge.success webhook payload alongside subscription_code — required
+    # to call Paystack's /subscription/disable endpoint later. Without this
+    # stored, auto-renew can never be cancelled via the API.
+    email_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # ── Gateway references ────────────────────────────────────────────────
     # e.g. Stripe sub_xxx
     external_subscription_id: Mapped[str | None] = mapped_column(
@@ -242,6 +248,10 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
         index=True,
     )
 
+    plan_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("subscription_plans.id", ondelete="SET NULL"), nullable=True,
+    )
+
     # ── Transaction data ───────────────────────────────────────────────────
     # Smallest currency unit (kobo, cents, etc.) — never use float for money
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -250,6 +260,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     # card | bank_transfer | ussd | etc — free string, app-validated
     payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    
 
     # ── Gateway references ─────────────────────────────────────────────────
     # e.g. Stripe ch_xxx or pi_xxx — queried on every webhook

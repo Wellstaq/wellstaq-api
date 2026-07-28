@@ -248,7 +248,12 @@ def _register_kwargs(**overrides) -> dict:
         baseline={"entries": [
             {"dimension": "sleep", "level": 3, "reason": "ok"},
         ]},
-        priorities=[{"priority": "focus", "rank": 1}],
+        # "focus" is not a member of PRIORITY_VOCABULARY
+        # (reduce_stress, build_energy, improve_balance, save_better,
+        # stay_active, feel_connected) — the DB CHECK constraint
+        # ck_user_priorities_priority_vocab rejects anything outside
+        # that set, so this must be one of those real values.
+        priorities=[{"priority": "reduce_stress", "rank": 1}],
         device_name="TestDevice",
         device_fingerprint="test-fp",
         ip_address="127.0.0.1",

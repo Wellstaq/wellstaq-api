@@ -20,9 +20,11 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
+from app.models import SubscriptionPlan, OrganizationSubscription
 from app.services.club.create_club import create_club
 from app.services.club.update_club import edit_club
 from app.services.errors import AppError
@@ -38,11 +40,54 @@ async def _make_branch(db_session: AsyncSession, organization_id: str, **overrid
     return branch
 
 
+async def _make_plan(db_session: AsyncSession, **overrides) -> SubscriptionPlan:
+    """Create a subscription plan with generous limits for testing."""
+    defaults = dict(
+        name="Test Plan",
+        billing_interval="monthly",
+        amount=0,
+        currency="USD",
+        features={"max_clubs": None},  # Unlimited clubs for testing
+    )
+    plan = SubscriptionPlan(**{**defaults, **overrides})
+    db_session.add(plan)
+    await db_session.flush()
+    return plan
+
+
+async def _make_subscription(
+    db_session: AsyncSession,
+    organization_id: str,
+    plan_id: str,
+    **overrides
+) -> OrganizationSubscription:
+    """Create an active subscription for an organization."""
+    defaults = dict(
+        status="active",
+        current_period_start=datetime.now(timezone.utc),
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    sub = OrganizationSubscription(
+        organization_id=organization_id,
+        plan_id=plan_id,
+        **{**defaults, **overrides}
+    )
+    db_session.add(sub)
+    await db_session.flush()
+    return sub
+
+
 async def _make_club_with_owner(db_session: AsyncSession, *, org_kwargs=None, user_kwargs=None, **club_overrides):
+    """Sets up an org + branch-assigned owner + an active subscription
+    (required by create_club()'s plan-limit check), then creates a club
+    via the real create_club() service."""
     org, owner = await make_org_with_owner(db_session, org_kwargs=org_kwargs, user_kwargs=user_kwargs)
     branch = await _make_branch(db_session, org.id)
     owner.branch_id = branch.id
     await db_session.flush()
+
+    plan = await _make_plan(db_session)
+    await _make_subscription(db_session, org.id, plan.id)
 
     defaults = dict(
         organization_id=org.id,

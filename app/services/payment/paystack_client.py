@@ -113,3 +113,15 @@ async def disable_subscription(*, subscription_code: str, email_token: str) -> N
     body = response.json()
     if not body.get("status"):
         raise PaystackError(body.get("message", "Failed to disable subscription."), response.status_code)
+
+async def disable_subscription(*, subscription_code: str, email_token: str) -> None:
+    payload = {"code": subscription_code, "token": email_token}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            response = await client.post(f"{PAYSTACK_BASE_URL}/subscription/disable", json=payload, headers=_headers())
+        except httpx.RequestError as exc:
+            raise PaystackError(f"Could not reach Paystack: {exc}") from exc
+
+    body = response.json()
+    if not body.get("status"):
+        raise PaystackError(body.get("message", "Failed to disable subscription."), response.status_code)

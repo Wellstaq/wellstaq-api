@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentUser, get_current_user
+from app.auth.dependencies import CurrentUser, get_current_user, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.engagement import (
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/engagement", tags=["engagement"])
 async def set_priorities_route(
     body: PrioritySetRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> PriorityListResponse:
     async with request_guard(db, "/engagement/priorities"):
         priorities = await set_priorities(session=db, user_id=current_user.user_id, priorities=body.priorities)
@@ -65,7 +65,7 @@ async def list_priorities_route(
 async def submit_checkin_route(
     body: CheckinSubmitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_active_subscription),
 ) -> CheckinResponse:
     async with request_guard(db, "/engagement/checkins"):
         checkin = await submit_checkin(

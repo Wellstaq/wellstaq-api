@@ -29,6 +29,12 @@ from app.models.permission import Permission, Role, UserPermission
 from app.models.engagement import ActivityLog, EngagementLog
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
 from app.models.payment import SubscriptionPlan, PaymentTransaction, OrganizationSubscription
+from app.models.wellbeing_survey import(
+    WellbeingPulseSnapshot,
+    WellbeingSurveyConfig,
+    WellbeingSurveyWindow,
+    WellbeingSurveyResponse,
+) 
 
 # this table should be erased and dropped after development
 from app.models.otp_code import OtpCode

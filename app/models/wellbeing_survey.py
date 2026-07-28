@@ -83,10 +83,9 @@ class WellbeingSurveyWindow(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     responses: Mapped[list["WellbeingSurveyResponse"]] = relationship(
         "WellbeingSurveyResponse", back_populates="window", cascade="all, delete-orphan",
     )
-    snapshot: Mapped["WellbeingPulseSnapshot"] = relationship(
-        "WellbeingPulseSnapshot", back_populates="window", uselist=False, cascade="all, delete-orphan",
+    snapshots: Mapped[list["WellbeingPulseSnapshot"]] = relationship(
+        "WellbeingPulseSnapshot", back_populates="window", cascade="all, delete-orphan",
     )
-
     __table_args__ = (
         UniqueConstraint("organization_id", "window_start", name="uq_wellbeing_survey_window_org_start"),
         CheckConstraint("window_end >= window_start", name="ck_wellbeing_survey_window_range"),
@@ -128,29 +127,27 @@ class WellbeingSurveyResponse(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<WellbeingSurveyResponse window={self.window_id} user={self.user_id} q={self.question_key} v={self.response_value}>"
 
-
 class WellbeingPulseSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
-    One row per closed WellbeingSurveyWindow, computed by
-    compute_pulse_snapshots (background job). Holds BOTH aggregations
-    together — the 5 per-question percentages/statuses, and the 3-band
-    workforce distribution — per the product spec, so a single row
-    answers the whole Pulse card.
-
-    Per-question fields are individual columns (not JSON) since the
-    question set is fixed platform-wide (5 known questions), not
-    dynamic — matches the pattern used for LeaderboardSnapshot's fixed
-    rank/org_rank columns rather than the JSON approach used for
-    SubscriptionPlan.features, where the key set genuinely varies.
+    One row per (window, branch_id) — branch_id NULL means the org-wide
+    snapshot, branch_id set means that specific branch's snapshot. Both
+    scopes share this table since it's the same shape of data, just a
+    different population being aggregated — same reasoning as
+    KPISnapshot's original branch/org split (before KPI itself was
+    scrapped), applied here instead.
     """
 
     __tablename__ = "wellbeing_pulse_snapshots"
 
     window_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("wellbeing_survey_windows.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
+        String(36), ForeignKey("wellbeing_survey_windows.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     organization_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    # NULL = org-wide snapshot for this window. Set = branch-scoped.
+    branch_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=True, index=True,
     )
 
     stress_manageability_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
@@ -168,8 +165,16 @@ class WellbeingPulseSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
 
-    window: Mapped["WellbeingSurveyWindow"] = relationship("WellbeingSurveyWindow", back_populates="snapshot")
+    #Realtionships
+    
+    # WellbeingPulseSnapshot
+    window: Mapped["WellbeingSurveyWindow"] = relationship("WellbeingSurveyWindow", back_populates="snapshots")
     organization: Mapped["Organization"] = relationship("Organization", foreign_keys=[organization_id])
 
+    __table_args__ = (
+        UniqueConstraint("window_id", "branch_id", name="uq_wellbeing_pulse_snapshot_window_branch"),
+    )
+
     def __repr__(self) -> str:
-        return f"<WellbeingPulseSnapshot window={self.window_id} respondents={self.respondent_count}>"
+        scope = f"branch={self.branch_id}" if self.branch_id else "org-wide"
+        return f"<WellbeingPulseSnapshot window={self.window_id} {scope} respondents={self.respondent_count}>"

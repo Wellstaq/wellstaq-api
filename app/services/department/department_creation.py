@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 from app.models import Organization, Department, Branch
+from app.services.payment import enforce_plan_limit
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,13 @@ async def create_department(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization is deactivated.",
         )
+    existing_count = (await session.execute(
+        select(func.count()).select_from(Department).where(Department.organization_id == organization_id)
+    )).scalar_one()
+
+    await enforce_plan_limit(
+        session=session, organization_id=organization_id, limit_key="max_departments", current_count=existing_count,
+    )
 
     # Branch is now required — every department belongs to a branch,
     # no org-wide departments anymore. Still validated against the org

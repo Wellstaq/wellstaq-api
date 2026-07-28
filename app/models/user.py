@@ -117,6 +117,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     state: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Relationships
+
+    #settings
     settings: Mapped["UserSettings"] = relationship(
         "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
@@ -126,6 +128,9 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     auth_providers: Mapped[list["UserAuthProvider"]] = relationship(
         "UserAuthProvider", back_populates="user", cascade="all, delete-orphan"
     )
+
+
+    #org
     owned_organizations: Mapped[list["Organization"]] = relationship(
         "Organization",
         back_populates="owner",
@@ -136,6 +141,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="members",
         foreign_keys=[organization_id],
     )
+
+    #branches
     managed_branches: Mapped[list["Branch"]] = relationship(
         "Branch",
         back_populates="manager",
@@ -146,6 +153,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="members",
         foreign_keys=[branch_id],
     )
+
+    #club and department
     club_memberships: Mapped[list["ClubMember"]] = relationship(
         "ClubMember",
         back_populates="user",
@@ -156,6 +165,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="user",
         foreign_keys="DepartmentMember.user_id",
     )
+
+    #Challenge and Event
     created_events: Mapped[list["Event"]] = relationship(
         "Event",
         back_populates="creator",
@@ -183,6 +194,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
         foreign_keys="ChallengeProgressEntry.user_id",
     )
+
+    #invite 
     sent_invites: Mapped[list["OrganizationInvite"]] = relationship(
         "OrganizationInvite",
         back_populates="inviter",
@@ -194,6 +207,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="OrganizationInvite.accepted_by_id",
         uselist=False,
     )
+
+    #Posts and stories
     posts: Mapped[list["Post"]] = relationship(
         "Post", back_populates="user", foreign_keys="Post.user_id",
     )
@@ -212,6 +227,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     stories: Mapped[list["Story"]] = relationship(
         "Story", back_populates="user", cascade="all, delete-orphan",
     )
+
+    #chats
     group_chat_messages: Mapped[list["GroupChatMessage"]] = relationship(
         "GroupChatMessage", back_populates="user", foreign_keys="GroupChatMessage.user_id",
     )
@@ -219,14 +236,37 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "GroupChatMessage", back_populates="pinned_by_user", foreign_keys="GroupChatMessage.pinned_by",
     )
 
+    #notifications
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="user", foreign_keys="Notification.user_id",
     )
     triggered_notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="actor", foreign_keys="Notification.actor_id",
     )
+
+    #wellbeing
+    wellbeing_scores: Mapped[list["WellbeingScore"]] = relationship(
+        "WellbeingScore", back_populates="user", cascade="all, delete-orphan",
+    )
+
+    wellbeing_survey_responses: Mapped[list["WellbeingSurveyResponse"]] = relationship(
+        "WellbeingSurveyResponse", back_populates="user", cascade="all, delete-orphan",
+        foreign_keys="WellbeingSurveyResponse.user_id",
+    )
     wellbeing_baselines: Mapped[list["UserWellbeingBaseline"]] = relationship(
         "UserWellbeingBaseline", back_populates="user", cascade="all, delete-orphan",
+    )
+    health_assessments: Mapped[list["UserHealthAssessment"]] = relationship(
+        "UserHealthAssessment", back_populates="user", cascade="all, delete-orphan",
+    )
+
+
+    #activity and engagement
+    activity_logs: Mapped[list["ActivityLog"]] = relationship(
+        "ActivityLog", back_populates="user", cascade="all, delete-orphan"
+    )
+    engagement_logs: Mapped[list["EngagementLog"]] = relationship(
+        "EngagementLog", back_populates="user", cascade="all, delete-orphan"
     )
     priorities: Mapped[list["UserPriority"]] = relationship(
         "UserPriority", back_populates="user", cascade="all, delete-orphan",
@@ -237,23 +277,16 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     activity_feed: Mapped[list["UserActivityFeed"]] = relationship(
         "UserActivityFeed", back_populates="user", cascade="all, delete-orphan",
     )
-    health_assessments: Mapped[list["UserHealthAssessment"]] = relationship(
-        "UserHealthAssessment", back_populates="user", cascade="all, delete-orphan",
-    )
-    wellbeing_scores: Mapped[list["WellbeingScore"]] = relationship(
-        "WellbeingScore", back_populates="user", cascade="all, delete-orphan",
-    )
-    activity_logs: Mapped[list["ActivityLog"]] = relationship(
-        "ActivityLog", back_populates="user", cascade="all, delete-orphan"
-    )
-    engagement_logs: Mapped[list["EngagementLog"]] = relationship(
-        "EngagementLog", back_populates="user", cascade="all, delete-orphan"
-    )
+
+
+    #snapshots
     leaderboard_snapshots: Mapped[list["LeaderboardSnapshot"]] = relationship(
         "LeaderboardSnapshot",
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+    #permissioh and roles
     role: Mapped[Optional["Role"]] = relationship(
         "Role",
         back_populates="users",
@@ -265,10 +298,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         foreign_keys="UserPermission.user_id",
         cascade="all, delete-orphan",
     )
-    # NEW — every branch/department this user's single role is
-    # actively exercised in (oversight), completely separate from
-    # branch_id above (home/membership). See permission.py
-    # UserRoleAssignment docstring.
+   
     role_assignments: Mapped[list["UserRoleAssignment"]] = relationship(
         "UserRoleAssignment",
         back_populates="user",
