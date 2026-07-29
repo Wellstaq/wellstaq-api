@@ -71,7 +71,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import InviteStatus, RoleName
@@ -81,6 +81,7 @@ from app.models.department import Department
 from app.models.permission import UserRoleAssignment
 from app.services.errors import AuthError
 from app.core.constants import INVITE_TTL_DAYS, ESCALATION_RESTRICTED_ROLES
+from app.services.payment import enforce_plan_limit
 
 logger = logging.getLogger(__name__)
 
@@ -114,18 +115,36 @@ async def send_invite(
     is_super_admin = invited_by_role == RoleName.SUPER_ADMIN
     is_admin = invited_by_role == RoleName.ADMIN
 
-    # ── Guard 1: org must exist and be active ──────────────────────────────────
-    org_result = await session.execute(
-        select(Organization).where(Organization.id == org_id)
-    )
+   # ── Guard 1: org must exist and be active ──────────────────────────────
+    org_result = await session.execute(select(Organization).where(Organization.id == org_id))
     org = org_result.scalar_one_or_none()
     if org is None:
         raise AuthError("Organization not found.", status.HTTP_404_NOT_FOUND)
     if not org.is_active:
-        raise AuthError(
-            "Organization is deactivated. Invites cannot be sent.",
-            status.HTTP_403_FORBIDDEN,
+        raise AuthError("Organization is deactivated. Invites cannot be sent.", status.HTTP_403_FORBIDDEN)
+
+    # ── Guard 1a: plan seat limit ────────────────────────────────────────────
+    # Checked early, before any other work — no point validating
+    # branch/role/department if the org can't add another member at all.
+    current_member_count = (await session.execute(
+        select(func.count()).select_from(User).where(User.organization_id == org_id)
+    )).scalar_one()
+
+    # Pending invites also count toward the seat limit — otherwise an
+    # admin could send 100 invites in a row past their limit, since
+    # none of them are "members" yet until accepted.
+    pending_invite_count = (await session.execute(
+        select(func.count()).select_from(OrganizationInvite).where(
+            OrganizationInvite.organization_id == org_id,
+            OrganizationInvite.status == InviteStatus.PENDING,
+            OrganizationInvite.expires_at > now,
         )
+    )).scalar_one()
+
+    await enforce_plan_limit(
+        session=session, organization_id=org_id, limit_key="max_employees",
+        current_count=current_member_count + pending_invite_count,
+    )
 
     # ── Guard 2: email must not already be a member ────────────────────────────
     existing_user = await session.execute(

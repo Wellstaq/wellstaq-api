@@ -62,7 +62,7 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.security import hash_password
@@ -80,6 +80,8 @@ from app.models import (
     UserPriority,
     UserWellbeingBaseline,
 )
+from app.services.payment import enforce_plan_limit
+
 from app.models.branch import Branch
 from app.models.department import DepartmentMember
 from app.models.permission import Role, UserRoleAssignment
@@ -361,7 +363,22 @@ async def invite_register(
             "An account already exists for this email.",
             status.HTTP_409_CONFLICT,
         )
-     # ── Step 4a: password strength ────────────────────────────────────────────
+    
+    # ── Step 4a: plan seat limit (defensive re-check) ────────────────────────
+    # send_invite() already checked this when the invite was created, but
+    # time has passed since then — other members could have joined and
+    # pushed the org over its limit before this invite was accepted.
+    
+    current_member_count = (await session.execute(
+        select(func.count()).select_from(User).where(User.organization_id == invite.organization_id)
+    )).scalar_one()
+    await enforce_plan_limit(
+        session=session, organization_id=invite.organization_id, limit_key="max_employees",
+        current_count=current_member_count,
+    )
+
+    # ── Step 4a: password strength ────────────────────────────────────────────
+
     _validate_password_strength(password)
 
     # ── Step 5: create user as PENDING ────────────────────────────────────────
