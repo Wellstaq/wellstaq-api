@@ -7,6 +7,7 @@ evaluation, which can only run once a challenge's window has fully
 closed (a single passing day doesn't mean the whole challenge is won —
 a later day could still fail, so this can't be determined mid-challenge
 the way cumulative challenges are).
+
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import Challenge, ChallengeParticipant, ChallengeProgressEntry
 from app.services.challenge._helpers import mark_challenge_complete
 
@@ -31,7 +32,7 @@ async def activate_and_close_challenges(ctx: dict[str, Any]) -> None:
     daily_minimum_evaluated = 0
     daily_minimum_passed = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         draft_result = await session.execute(
             select(Challenge).where(
                 Challenge.status == "draft",
@@ -62,7 +63,6 @@ async def activate_and_close_challenges(ctx: dict[str, Any]) -> None:
                 daily_minimum_passed += passed_count
 
         await session.commit()
-        break
 
     logger.info(
         "Challenge status transitions applied",
@@ -75,17 +75,6 @@ async def activate_and_close_challenges(ctx: dict[str, Any]) -> None:
 
 
 async def _finalize_daily_minimum_challenge(session, challenge: Challenge) -> int:
-    """
-    Walks every day in [start_date, end_date] for every participant who
-    hasn't already been marked complete, and checks that EVERY day has
-    an entry meeting target_value — a day with NO entry counts as a
-    fail (missing = didn't meet the minimum that day), same as a day
-    with a value below target_value. Only participants who pass every
-    single day get marked complete (and notified, via
-    _mark_challenge_complete).
-
-    Returns the count of participants who passed.
-    """
     if challenge.start_date is None or challenge.end_date is None:
         return 0
 
@@ -118,7 +107,7 @@ async def _finalize_daily_minimum_challenge(session, challenge: Challenge) -> in
         )
 
         if passed_every_day:
-            await _mark_challenge_complete(session=session, challenge=challenge, participant=participant)
+            await mark_challenge_complete(session=session, challenge=challenge, participant=participant)
             passed_count += 1
 
     return passed_count

@@ -16,6 +16,10 @@ from app.services.chat._helpers import (
     validate_conversation,
 )
 
+from app.services.storage import confirm_upload
+from urllib.parse import urlparse
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +46,13 @@ async def send_message(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A message needs content or media.",
         )
+    
+    if media_url is not None:
+        object_key = urlparse(media_url).path.lstrip("/")
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
+
+    
 
     await validate_conversation(
         session=session,

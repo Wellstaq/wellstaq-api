@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models.wellbeing import WellbeingChallenge, WellbeingDimension
 
 logger = logging.getLogger(__name__)
@@ -83,11 +83,10 @@ async def seed_wellbeing_challenges(session: AsyncSession) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    async for session in get_db():
+    async with get_job_session() as session:
         await seed_dimensions(session)
         await seed_wellbeing_challenges(session)
         await session.commit()
-        break
 
 
 if __name__ == "__main__":

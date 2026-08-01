@@ -76,15 +76,13 @@ async def _seed_super_admin_role(db_session: AsyncSession) -> Role:
     await db_session.flush()
     return role
 
-
 @pytest.fixture(autouse=True)
 async def _seed_active_plan(db_session: AsyncSession):
-    """org_owner_signup() -> start_trial() requires SubscriptionPlan.is_active
-    == True to exist (it picks the single active plan when no plan_id is
-    given). Production seeds this via a script that also talks to the
-    payment gateway; here we just need the local row."""
+    """org_owner_signup() -> start_trial() requires a SubscriptionPlan named
+    'Trial' with is_active == True. Production seeds this via a script that
+    also talks to the payment gateway; here we just need the local row."""
     plan = SubscriptionPlan(
-        name="Test Plan",
+        name="Trial",         
         billing_interval="monthly",
         amount=0,
         currency="USD",
@@ -94,7 +92,6 @@ async def _seed_active_plan(db_session: AsyncSession):
     db_session.add(plan)
     await db_session.flush()
     return plan
-
 
 # ── Core happy path ────────────────────────────────────────────────────────────
 

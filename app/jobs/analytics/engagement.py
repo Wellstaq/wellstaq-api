@@ -1,51 +1,26 @@
 """
-app/jobs/analytics/engagement.py
+app/jobs/analytics/leaderboard.py
 
-compute_engagement_logs — computes a trailing-7-day engagement score
-for every user, across every organization, once daily (see worker.py
-cron). Scores the window ending YESTERDAY, not today (today isn't over
-yet, so including it would understate everyone unfairly).
+compute_leaderboard_snapshots recomputes LeaderboardSnapshot rows for
+every organization and metric_type with activity in the requested
+period, computing both branch-local and organization-wide rankings.
 
-Four metric_types, each a 0-100 score over the trailing 7 days:
+period_type ('daily' | 'weekly' | 'monthly') distinguishes snapshot
+granularity so identical date ranges cannot be confused between
+different reporting periods. The same function can therefore be reused
+for daily, weekly, monthly, or manual backfill jobs.
 
-  checkins:      (days with a DailyCheckin / 7) * 100
-                 Rewards check-in CONSISTENCY, not a single day's
-                 yes/no — a habit-formation signal.
+The job is idempotent: existing snapshots for the same
+(organization_id, user_id, metric_type, period_type, period_start,
+period_end) are updated instead of duplicated, assuming the model
+enforces the corresponding UniqueConstraint.
 
-  participation: (days with any ActivityLog entry / 7) * 100
-                 Same consistency shape, applied to activity logging.
+Performance: all reads are bulk queries (no per-user database queries).
+Ranking is performed entirely in memory. Remaining tradeoffs are the
+per-organization/per-metric iteration and one ORM write per snapshot
+row, both acceptable until larger production scale requires further
+optimization.
 
-  social:        (posts + comments + likes given + club joins over the
-                 7 days) / SOCIAL_ACTION_CEILING, capped at 100.
-                 SOCIAL_ACTION_CEILING is a placeholder constant below —
-                 not yet validated against real usage data.
-
-  productivity:  50% participation_score + 50% (100 if the user
-                 completed a challenge within the window, else 0).
-                 Weakest-justified of the four — revisit once there's a
-                 clearer product definition of "productivity" for this app.
-
-Trend tracking: for every row written, looks up the SAME user/metric_type's
-value from the PRIOR non-overlapping 7-day window and stores it as
-previous_value, with trend_direction computed accordingly — powers a
-"you're improving" signal in the UI (same idea as
-LeaderboardSnapshot.previous_rank driving its up/down arrow).
-
-PERFORMANCE DESIGN:
-  Reads are done via ONE bulk GROUP BY query per signal, covering every
-  user in a single round trip — not per-user queries. The only per-user
-  work left is arithmetic, not I/O.
-
-  Writes are NOT a true dialect-specific bulk upsert (no INSERT...ON
-  CONFLICT) — existing rows for the window are bulk-LOADED in one query,
-  then updated in memory; new rows are added in memory too. Only the
-  read side was N+1 before; the write side still issues one
-  INSERT/UPDATE per row at flush time. Deferred, not fixed — same
-  tradeoff flagged for the leaderboard job.
-
-TODO(formula-review): all four formulas, and SOCIAL_ACTION_CEILING
-specifically, are first-pass placeholders, not validated against real
-usage data.
 """
 
 from __future__ import annotations
@@ -57,8 +32,8 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.core.database import get_db
 from app.jobs.helpers.scoring import cap_score, trend_direction
+from app.jobs.shared import get_job_session
 from app.models import (
     ActivityLog,
     ChallengeParticipant,
@@ -73,7 +48,7 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-SOCIAL_ACTION_CEILING = 15  # placeholder — see module docstring TODO
+SOCIAL_ACTION_CEILING = 15
 ENGAGEMENT_METRIC_TYPES = ("checkins", "participation", "social", "productivity")
 
 
@@ -85,10 +60,11 @@ async def compute_engagement_logs(ctx: dict[str, Any]) -> None:
 
     written = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         users = await _load_users(session)
         if not users:
-            break
+            logger.info("Engagement logs computed", extra={"window_end": str(window_end), "rows_written": 0})
+            return
 
         checkin_counts = await _load_checkin_counts(session, window_start, window_end)
         activity_counts = await _load_activity_counts(session, window_start, window_end)
@@ -134,12 +110,9 @@ async def compute_engagement_logs(ctx: dict[str, Any]) -> None:
                 written += 1
 
         await session.commit()
-        break
 
     logger.info("Engagement logs computed", extra={"window_end": str(window_end), "rows_written": written})
 
-
-# ── Bulk loaders — one query each, covering every user at once ─────────────
 
 async def _load_users(session) -> list[tuple[str, str, str]]:
     result = await session.execute(select(User.id, User.organization_id, User.branch_id))
@@ -165,9 +138,6 @@ async def _load_activity_counts(session, window_start: date, window_end: date) -
 
 
 async def _load_social_counts(session, window_start: date, window_end: date) -> dict[str, int]:
-    """Four separate GROUP BY queries (posts, comments, likes, joins) —
-    still bulk (one query per SIGNAL, not per user), then merged into a
-    single per-user total in Python."""
     totals: dict[str, int] = defaultdict(int)
 
     posts_result = await session.execute(
@@ -219,9 +189,6 @@ async def _load_completed_challenge_user_ids(session, window_start: date, window
 
 
 async def _load_metric_values(session, target_date: date) -> dict[tuple[str, str], float]:
-    """Loads every user's value for every metric_type on ONE specific
-    date (the previous window's end date) in a single query — used for
-    trend comparison."""
     result = await session.execute(
         select(EngagementLog.user_id, EngagementLog.metric_type, EngagementLog.value)
         .where(EngagementLog.date == target_date, EngagementLog.metric_type.in_(ENGAGEMENT_METRIC_TYPES))
@@ -230,9 +197,6 @@ async def _load_metric_values(session, target_date: date) -> dict[tuple[str, str
 
 
 async def _load_existing_rows(session, target_date: date) -> dict[tuple[str, str], EngagementLog]:
-    """Same idea as _load_metric_values, but returns the actual ORM
-    objects for the CURRENT window's date, so the main loop can
-    update-in-place instead of re-querying per row."""
     result = await session.execute(
         select(EngagementLog).where(
             EngagementLog.date == target_date, EngagementLog.metric_type.in_(ENGAGEMENT_METRIC_TYPES)

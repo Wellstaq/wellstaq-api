@@ -8,11 +8,15 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from app.models import Story
 from app.services.story._helpers import  validate_org_and_branch
 from app.core.constants import MEDIA_TYPES
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.storage import confirm_upload
+from urllib.parse import urlparse
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,11 @@ async def create_story(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"media_type must be one of {MEDIA_TYPES}.")
 
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
+    
+    object_key = urlparse(media_url).path.lstrip("/")
+    if not confirm_upload(object_key=object_key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
+
 
     now = datetime.now(timezone.utc)
     story = Story(

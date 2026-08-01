@@ -91,6 +91,8 @@ from app.services.auth import (
     verify_two_fa_challenge,
 )
 from app.services.errors import AuthError
+from app.core.limiter import limiter, key_by_email_or_ip
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -212,13 +214,8 @@ async def _verify_apple(id_token: str) -> dict:
 
 @router.post("/signup/otp/request", status_code=status.HTTP_200_OK,
              summary="Step 1 — request an email OTP for signup")
-async def signup_otp_request(payload: OtpRequestSchema, db: AsyncSession = Depends(get_db)):
-    """
-    Always returns 200 — avoids leaking whether an email is registered.
-    Rate-limited at the reverse-proxy / middleware layer.
-    TODO: wire slowapi if middleware rate limiting is not in place.
-    """
-    
+@limiter.limit("3/minute", key_func=key_by_email_or_ip)
+async def signup_otp_request(request: Request, payload: OtpRequestSchema, db: AsyncSession = Depends(get_db)):
     async with request_guard(db, "/auth/signup/otp/request", email=payload.email):
         await request_otp(db, payload.email, purpose="verification")
         await db.commit()
@@ -229,7 +226,7 @@ async def signup_otp_request(payload: OtpRequestSchema, db: AsyncSession = Depen
              summary="Step 2 — verify OTP, receive email_verification_token")
 async def signup_otp_verify(payload: OtpVerifySchema, db: AsyncSession = Depends(get_db)):
     async with request_guard(db, "/auth/signup/otp/verify", email=payload.email):
-        token = await verify_otp(db, payload.email, payload.code)
+        token = await verify_otp(db, payload.email, payload.code, "verification")
         await db.commit()
         return {"email_verification_token": token}
 
@@ -348,11 +345,11 @@ async def register_invited(payload: InviteRegisterRequest, request: Request, db:
         }
     },
 )
+@limiter.limit("10/minute", key_func=key_by_email_or_ip)
 async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Returns TokenResponse (2FA off) or TwoFaChallengeResponse (2FA on).
     Rate-limited at the reverse-proxy / middleware layer.
-    TODO: wire slowapi if middleware rate limiting is not in place.
     """
     d = _device_meta(request)
     async with request_guard(db, "/auth/login", email=payload.email):
@@ -426,12 +423,8 @@ async def login_apple(payload: OAuthRequest, request: Request, db: AsyncSession 
 
 @router.post("/2fa/verify", response_model=TokenResponse,
              summary="Complete a 2FA challenge after password login")
+@limiter.limit("5/minute", key_func=key_by_email_or_ip)            
 async def two_fa_verify(payload: TwoFaVerifyRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Challenge token is short-lived (5 min) and single-use.
-    Rate-limited at the reverse-proxy / middleware layer.
-    TODO: wire slowapi if middleware rate limiting is not in place.
-    """
     d = _device_meta(request)
     async with request_guard(db, "/auth/2fa/verify"):
         tokens = await verify_two_fa_challenge(

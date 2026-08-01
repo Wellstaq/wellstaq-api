@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import Branch
 from app.models.wellbeing_survey import WellbeingPulseSnapshot, WellbeingSurveyWindow
 from app.services.wellbeing_survey.live_pulse_service import compute_pulse_aggregation
@@ -18,14 +18,15 @@ logger = logging.getLogger(__name__)
 
 
 async def compute_pulse_snapshots(ctx: dict[str, Any], window_id: str) -> None:
-    async for session in get_db():
+    scopes: list[str | None] = [None]
+
+    async with get_job_session() as session:
         window_result = await session.execute(select(WellbeingSurveyWindow).where(WellbeingSurveyWindow.id == window_id))
         window = window_result.scalar_one_or_none()
         if window is None:
             logger.warning("compute_pulse_snapshots called for unknown window", extra={"window_id": window_id})
-            break
+            return
 
-        scopes: list[str | None] = [None]  # org-wide first
         branches_result = await session.execute(select(Branch.id).where(Branch.organization_id == window.organization_id))
         scopes.extend(row[0] for row in branches_result.all())
 
@@ -47,6 +48,5 @@ async def compute_pulse_snapshots(ctx: dict[str, Any], window_id: str) -> None:
             session.add(snapshot)
 
         await session.commit()
-        break
 
     logger.info("Pulse snapshots computed", extra={"window_id": window_id, "scopes_computed": len(scopes)})

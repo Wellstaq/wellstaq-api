@@ -42,6 +42,9 @@ from app.services.payment import (get_subscription,
     
 )
 
+from app.services.payment.paystack_client import verify_transaction, PaystackError
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/organizations/{org_id}", tags=["payment"])
@@ -108,7 +111,6 @@ async def cancel_auto_renew_route(
 
 webhook_router = APIRouter(tags=["payment-webhooks"])
 
-
 @webhook_router.post("/webhooks/paystack", status_code=status.HTTP_200_OK)
 async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(get_db)):
     payload_body = await request.body()
@@ -120,6 +122,28 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
     event = json.loads(payload_body)
     event_type = event.get("event")
     event_data = event.get("data", {})
+
+    # ── Server-to-server re-verification ────────────────────────────────────
+    # Signature verification confirms the payload genuinely came from
+    # Paystack right now — it does NOT independently confirm the payment
+    # actually happened on Paystack's records. Re-querying Paystack
+    # directly for the transaction's true status is a second, independent
+    # source of truth, defending against any scenario where a signed
+    # payload doesn't match Paystack's actual ledger.
+    reference = event_data.get("reference")
+    if event_type in ("charge.success", "charge.failed") and reference:
+        try:
+            verified_data = await verify_transaction(reference=reference)
+        except PaystackError:
+            logger.error("Failed to re-verify transaction with Paystack", extra={"reference": reference})
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not verify transaction with payment provider.")
+
+        if verified_data.get("status") != ("success" if event_type == "charge.success" else "failed"):
+            logger.error(
+                "Webhook event type does not match Paystack's verified status — ignoring",
+                extra={"reference": reference, "webhook_event": event_type, "verified_status": verified_data.get("status")},
+            )
+            return {"status": "ignored"}
 
     async with request_guard(db, "/webhooks/paystack"):
         if event_type == "charge.success":
@@ -136,7 +160,6 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
         await db.commit()
 
     return {"status": "received"}
-
 # ── platform subscription plans — separate router, no org_id prefix ─────────────────────────────
 
 plans_router = APIRouter(tags=["payment"])

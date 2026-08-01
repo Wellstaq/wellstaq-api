@@ -12,8 +12,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
 from app.core.config import settings
 from app.core.database import engine
+from app.core.limiter import limiter
 from app.models.base import Base
 from app.routers import (
     auth, 
@@ -49,6 +54,11 @@ from app.routers.payments import(
     plans_router as available_subscription_router,
 )
 
+from app.routers.user_settings import(
+    router as update_user_profile,
+    auth_password_router as password_update,
+)
+
 
 
 @asynccontextmanager
@@ -67,6 +77,12 @@ app = FastAPI(
     debug=settings.DEBUG,
     lifespan=lifespan,
 )
+
+# Rate limiting (slowapi) — app-level, identity-aware layer.
+# Sits behind Nginx's IP-based limiting; see app/core/limiter.py.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,6 +123,8 @@ app.include_router(targets.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
 app.include_router(available_subscription_router)
+app.include_router(update_user_profile)
+app.include_router(password_update)
 
 
 @app.get("/")

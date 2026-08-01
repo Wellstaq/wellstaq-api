@@ -133,7 +133,7 @@ async def verify_invite_otp(
 
     now = datetime.now(timezone.utc)
     invite = await _load_pending_invite(session, invite_code, now)
-    await verify_otp(session, invite.invited_email, code)
+    await verify_otp(session, invite.invited_email, code, "verification")
     return _make_invite_verification_token(invite.invited_email, invite_code)
 
 

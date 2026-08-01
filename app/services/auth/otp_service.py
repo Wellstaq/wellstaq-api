@@ -1,17 +1,29 @@
 """
 app/services/auth/otp_service.py
 
-Centralised OTP management.
-Handles generation, hashing, storage, and delivery (email/SMS) of One-Time Passwords.
+Centralised OTP management — now backed by Redis instead of an OtpCode
+DB table. OTPs are inherently short-lived and high-write; Redis's
+native key expiry replaces expires_at + the "burn prior codes" step
+(setting a new key for the same email+purpose naturally supersedes the
+old one), and needs no periodic purge job the way a DB table would.
+
+Storage shape: one Redis key per (email, purpose), holding a JSON blob
+{code_hash, attempt_count} — preserves the exact same attempt-counting
+and hashing behavior as the original DB-backed version, just stored
+differently. TTL on the key IS the expiry — no expires_at field needed.
+
+session parameter removed from both functions — nothing here touches
+the DB anymore except the purpose="verification" duplicate-email guard,
+which still needs a session since it queries the User table.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import status
@@ -25,7 +37,7 @@ from app.core.constants import (
     EMAIL_VERIFICATION_TOKEN_TTL_DAYS,
     TokenType,
 )
-from app.models.otp_code import OtpCode
+from app.core.redis import get_redis
 from app.services.errors import OtpError
 
 logger = logging.getLogger(__name__)
@@ -37,54 +49,29 @@ def _hash_code(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _make_code() -> str:
-    """
-    Cryptographically random numeric OTP.
-    secrets.randbelow(10 ** N) is uniform over [0, 10^N) — no modulo bias.
-    zfill preserves leading zeros (e.g. "042891").
-    """
     return str(secrets.randbelow(10 ** OTP_LENGTH)).zfill(OTP_LENGTH)
 
 
-def _make_email_verification_token(email: str) -> str:
-    """
-    Issue a short-lived email_verification_token after OTP success.
+def _otp_key(*, email: str, purpose: str) -> str:
+    return f"otp:{purpose}:{email}"
 
-    Uses jwt.py's _create_token() directly because jwt.py's public
-    create_access_token() only accepts (user_id, organization_id, branch_id,
-    role, permissions) — it has no token_type, expires_delta, or extra_claims
-    parameters. _create_token() is the correct internal surface for custom tokens.
-    """
+
+def _make_email_verification_token(email: str) -> str:
+    from datetime import timedelta
     from app.auth import jwt as _jwt
     return _jwt._create_token(
         subject=email,
         expires_delta=timedelta(days=EMAIL_VERIFICATION_TOKEN_TTL_DAYS),
         token_type="access",
-        extra_claims={
-            "type": TokenType.EMAIL_VERIFICATION,
-            "email": email,
-        },
+        extra_claims={"type": TokenType.EMAIL_VERIFICATION, "email": email},
     )
 
 
 # ── Email delivery ─────────────────────────────────────────────────────────────
 
 async def _send_email_otp(email: str, code: str, purpose: str) -> None:
-    """
-    Send the OTP via SendGrid.
-
-    Raises OtpError on delivery failure so the caller can roll back the
-    OtpCode row — an undelivered code should leave no DB trace.
-    """
-    subject = (
-        "Your verification code"
-        if purpose == "verification"
-        else "Your security code"
-    )
+    subject = "Your verification code" if purpose == "verification" else "Your security code"
 
     html_body = f"""
     <html>
@@ -111,11 +98,7 @@ async def _send_email_otp(email: str, code: str, purpose: str) -> None:
         from app.core.email import send_email
         await send_email(to=email, subject=subject, html=html_body)
     except Exception:
-        logger.error(
-            "Failed to send OTP email",
-            exc_info=True,
-            extra={"recipient": email, "purpose": purpose},
-        )
+        logger.error("Failed to send OTP email", exc_info=True, extra={"recipient": email, "purpose": purpose})
         raise OtpError(
             "Failed to send verification code. Please try again later.",
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -130,124 +113,78 @@ async def request_otp(
     purpose: Literal["verification", "2fa_email", "2fa_sms"] = "verification",
 ) -> None:
     """
-    Generate a new OTP, burn prior unused codes, store hash, deliver.
-    Returns nothing — code is sent directly to the user.
-    Raises OtpError on delivery failure (caller should rollback).
-
-    For purpose="verification" (initial registration), rejects emails that
-    already belong to an existing account — no code is generated or sent.
-    For purpose="2fa_email", the user must already exist, so this guard
-    is intentionally skipped.
-
-    Channel availability is checked BEFORE any OtpCode row is created —
-    an unsupported channel (e.g. 2fa_sms, not yet integrated) must leave
-    no DB trace at all, same principle as an email delivery failure.
+    session is still required — the purpose="verification" duplicate-
+    email guard queries the User table, which still lives in the DB.
+    Nothing else in this function touches the DB anymore.
     """
     email = email.lower().strip()
 
-    # ── Guard: block re-registration attempts ──────────────────────────────────
     if purpose == "verification":
         from app.models import User
         existing_user = await session.execute(select(User).where(User.email == email))
         if existing_user.scalar_one_or_none():
-            raise OtpError(
-                "An account with this email already exists.",
-                status.HTTP_409_CONFLICT,
-            )
+            raise OtpError("An account with this email already exists.", status.HTTP_409_CONFLICT)
 
-    # ── Guard: reject unsupported channels BEFORE touching the DB ─────────────
-    # This must run before the OtpCode insert below — an unsupported
-    # channel should never leave a dangling, undeliverable code row.
     if purpose == "2fa_sms":
-        # TODO: integrate Twilio / AWS SNS
         raise OtpError(
             "SMS delivery is not currently configured. Please use email or TOTP.",
             status.HTTP_501_NOT_IMPLEMENTED,
         )
 
-    # ── Burn prior unused codes for this email ─────────────────────────────────
-    existing = await session.execute(
-        select(OtpCode).where(OtpCode.email == email, OtpCode.used == False)  # noqa: E712
-    )
-    for old in existing.scalars().all():
-        old.used = True
-
-    # ── Create the new code ─────────────────────────────────────────────────────
     raw_code = _make_code()
-    session.add(OtpCode(
-        email=email,
-        code_hash=_hash_code(raw_code),
-        expires_at=_now() + timedelta(minutes=OTP_TTL_MINUTES),
-        attempt_count=0,
-        used=False,
-    ))
-    await session.flush()
+    payload = json.dumps({"code_hash": _hash_code(raw_code), "attempt_count": 0})
 
-    # purpose is guaranteed to be "verification" or "2fa_email" here —
-    # 2fa_sms already returned above.
+    redis = await get_redis()
+    # Setting the key overwrites any prior unused code for this
+    # email+purpose automatically — this IS the "burn prior codes" step,
+    # no separate query/update needed like the DB version required.
+    await redis.set(_otp_key(email=email, purpose=purpose), payload, ex=OTP_TTL_MINUTES * 60)
+
     await _send_email_otp(email, raw_code, purpose)
 
 
-async def verify_otp(session: AsyncSession, email: str, code: str) -> str:
+async def verify_otp(session: AsyncSession, email: str, code: str, purpose: str = "verification") -> str:
     """
-    Verify a submitted OTP code.
-
-    Attempt counting
-    ─────────────────
-    Every wrong guess increments attempt_count and flushes immediately.
-    Once attempt_count reaches OTP_MAX_ATTEMPTS the record is locked
-    (used=True) — forcing the user to request a fresh code.
-    The router must commit() (not rollback) on OtpError so these
-    increments survive. See app/core/guards.py for the commit logic.
-
-    Returns
-    ────────
-    A short-lived email_verification JWT on success.
+    purpose is now a required lookup key (Redis needs to know which key
+    to check) — the original DB version could find "the latest unused
+    code for this email" without knowing purpose ahead of time, since it
+    just queried by email + used=False. Redis needs the exact key, so
+    callers must now pass purpose explicitly. Check call sites of
+    verify_otp() for this — anywhere that doesn't currently pass
+    purpose will need updating to pass whichever purpose that flow uses
+    (almost certainly "verification" for registration flows, matching
+    the default).
     """
     email = email.lower().strip()
+    redis = await get_redis()
+    key = _otp_key(email=email, purpose=purpose)
 
-    result = await session.execute(
-        select(OtpCode)
-        .where(
-            OtpCode.email == email,
-            OtpCode.used == False,  # noqa: E712
-            OtpCode.expires_at > _now(),
-        )
-        .order_by(OtpCode.created_at.desc())
-        .limit(1)
-    )
-    record = result.scalar_one_or_none()
+    raw = await redis.get(key)
+    if raw is None:
+        raise OtpError("Verification code has expired or was not requested. Please request a new one.")
 
-    if record is None:
-        raise OtpError(
-            "Verification code has expired or was not requested. Please request a new one."
-        )
+    record = json.loads(raw)
 
-    if record.attempt_count >= OTP_MAX_ATTEMPTS:
-        raise OtpError(
-            "Too many incorrect attempts. Please request a new code.",
-            status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+    if record["attempt_count"] >= OTP_MAX_ATTEMPTS:
+        await redis.delete(key)
+        raise OtpError("Too many incorrect attempts. Please request a new code.", status.HTTP_429_TOO_MANY_REQUESTS)
 
-    if not hmac.compare_digest(record.code_hash, _hash_code(code.strip())):
-        record.attempt_count += 1
+    if not hmac.compare_digest(record["code_hash"], _hash_code(code.strip())):
+        record["attempt_count"] += 1
 
-        if record.attempt_count >= OTP_MAX_ATTEMPTS:
-            record.used = True
-            await session.flush()
-            raise OtpError(
-                "Too many incorrect attempts. Please request a new code.",
-                status.HTTP_429_TOO_MANY_REQUESTS,
-            )
+        if record["attempt_count"] >= OTP_MAX_ATTEMPTS:
+            await redis.delete(key)
+            raise OtpError("Too many incorrect attempts. Please request a new code.", status.HTTP_429_TOO_MANY_REQUESTS)
 
-        await session.flush()
-        remaining = OTP_MAX_ATTEMPTS - record.attempt_count
-        raise OtpError(
-            f"Incorrect verification code. "
-            f"{remaining} attempt{'s' if remaining != 1 else ''} remaining.",
-        )
+        # TTL must be preserved on this update — a plain SET without EX
+        # would make the key persist forever. Use KEEPTTL to update the
+        # value while leaving the existing expiry untouched.
+        await redis.set(key, json.dumps(record), keepttl=True)
 
-    record.used = True
-    await session.flush()
+        remaining = OTP_MAX_ATTEMPTS - record["attempt_count"]
+        raise OtpError(f"Incorrect verification code. {remaining} attempt{'s' if remaining != 1 else ''} remaining.")
+
+    # Success — delete immediately, one-time use.
+    await redis.delete(key)
 
     return _make_email_verification_token(email)

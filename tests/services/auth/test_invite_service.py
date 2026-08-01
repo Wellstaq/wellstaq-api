@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import secrets
+import json
 
 from app.core.constants import InviteStatus, UserStatus
 from app.models import (
@@ -33,7 +34,7 @@ from app.models import (
     UserSettings,
     DepartmentMember,
     Department,
-    OtpCode,
+  
 )
 from app.services.auth._helpers import _make_invite_verification_token
 from app.services.auth.invite_service import (
@@ -41,9 +42,10 @@ from app.services.auth.invite_service import (
     request_invite_otp,
     verify_invite_otp,
 )
-from app.services.auth.otp_service import _hash_code
 from app.services.errors import AuthError, OtpError
-
+from app.core.redis import get_redis
+from app.core.constants import OTP_TTL_MINUTES
+from app.services.auth.otp_service import _hash_code, _otp_key
 from tests.conftest import  make_org_with_owner, make_user_with_role
 
 
@@ -120,19 +122,11 @@ def mock_send_email(monkeypatch):
     monkeypatch.setattr("app.core.email.send_email", _noop)
 
 
-def _seed_otp(db_session: AsyncSession, email: str, raw_code: str, **overrides) -> OtpCode:
-    """Insert a verifiable OTP row directly, bypassing email delivery."""
-    defaults = dict(
-        email=email.lower().strip(),
-        code_hash=_hash_code(raw_code),
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-        attempt_count=0,
-        used=False,
-    )
-    otp = OtpCode(**{**defaults, **overrides})
-    db_session.add(otp)
-    return otp
-
+async def _seed_otp(email: str, raw_code: str, purpose: str = "verification") -> None:
+    """Insert a verifiable OTP directly into Redis, bypassing email delivery."""
+    redis = await get_redis()
+    payload = json.dumps({"code_hash": _hash_code(raw_code), "attempt_count": 0})
+    await redis.set(_otp_key(email=email.lower().strip(), purpose=purpose), payload, ex=OTP_TTL_MINUTES * 60)
 
 # ── request_invite_otp ───────────────────────────────────────────────────────
 
@@ -149,11 +143,11 @@ class TestRequestInviteOtp:
 
         assert masked == "n***@example.com"
 
-        otp_result = await db_session.execute(
-            select(OtpCode).where(OtpCode.email == "newhire@example.com")
-        )
-        assert otp_result.scalar_one_or_none() is not None
+        redis = await get_redis()
+        raw = await redis.get(_otp_key(email="newhire@example.com", purpose="verification"))
+        assert raw is not None
 
+    
     @pytest.mark.asyncio
     async def test_unknown_invite_code_raises_404(self, db_session: AsyncSession):
         with pytest.raises(AuthError) as exc_info:
@@ -213,8 +207,7 @@ class TestVerifyInviteOtp:
         org, owner, dept, invite = await _setup_org_dept_invite(
             db_session, invited_email="verify1@example.com"
         )
-        _seed_otp(db_session, "verify1@example.com", "111222")
-        await db_session.flush()
+        await _seed_otp("verify1@example.com", "111222")
 
         token = await verify_invite_otp(db_session, invite.invite_code, "111222")
         assert isinstance(token, str) and token
@@ -224,9 +217,7 @@ class TestVerifyInviteOtp:
         org, owner, dept, invite = await _setup_org_dept_invite(
             db_session, invited_email="verify2@example.com"
         )
-        _seed_otp(db_session, "verify2@example.com", "111222")
-        await db_session.flush()
-
+        await _seed_otp("verify1@example.com", "111222")   # ← wrong email, should be verify2
         with pytest.raises(OtpError):
             await verify_invite_otp(db_session, invite.invite_code, "999999")
 

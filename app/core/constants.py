@@ -53,6 +53,8 @@ class TokenType(StrEnum):
     EMAIL_VERIFICATION = "email_verification"
     INVITE_VERIFICATION = "invite_verification"
     TWO_FA_CHALLENGE = "2fa_challenge"
+    PASSWORD_RESET =  "password_reset"
+    
 
 
 class RoleName(StrEnum):

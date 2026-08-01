@@ -19,6 +19,7 @@ active -> active (successful renewal) only ever happens via the
 charge.success webhook (see webhook_service.py) — never by this job.
 """
 
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +28,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models.payment import OrganizationSubscription
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ async def expire_subscriptions(ctx: dict[str, Any]) -> None:
     trial_expired = 0
     period_expired = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         trial_result = await session.execute(
             select(OrganizationSubscription).where(
                 OrganizationSubscription.status == "trialing",
@@ -61,7 +62,6 @@ async def expire_subscriptions(ctx: dict[str, Any]) -> None:
             period_expired += 1
 
         await session.commit()
-        break
 
     logger.info(
         "Subscriptions expired",

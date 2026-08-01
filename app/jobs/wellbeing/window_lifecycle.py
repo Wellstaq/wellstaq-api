@@ -10,19 +10,21 @@ close_survey_windows — closes any window whose window_end has passed,
 then triggers compute_pulse_snapshots for it (see snapshot job).
 """
 
+
+
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta, timezone, datetime
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import User
 from app.models.wellbeing_survey import WellbeingSurveyConfig, WellbeingSurveyWindow
 from app.services.notification import create_notification
-from app.services.wellbeing_survey._helpers import CADENCE_DAYS, compute_window_range
+from app.services.wellbeing_survey._helpers import compute_window_range
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ async def open_survey_windows(ctx: dict[str, Any]) -> None:
     opened = 0
     notified = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         configs_result = await session.execute(
             select(WellbeingSurveyConfig).where(WellbeingSurveyConfig.is_active.is_(True))
         )
@@ -53,7 +55,7 @@ async def open_survey_windows(ctx: dict[str, Any]) -> None:
 
             start = today if latest is None else latest.window_end + timedelta(days=1)
             if start > today:
-                continue  # not time yet for this org's next window
+                continue
 
             window_start, window_end = compute_window_range(cadence=config.cadence, start=start)
             window = WellbeingSurveyWindow(
@@ -76,7 +78,6 @@ async def open_survey_windows(ctx: dict[str, Any]) -> None:
                 notified += 1
 
         await session.commit()
-        break
 
     logger.info("Survey windows opened", extra={"windows_opened": opened, "notifications_sent": notified})
 
@@ -86,22 +87,21 @@ async def close_survey_windows(ctx: dict[str, Any]) -> None:
 
     today = date.today()
     closed = 0
+    window_ids: list[str] = []
 
-    async for session in get_db():
+    async with get_job_session() as session:
         result = await session.execute(
             select(WellbeingSurveyWindow).where(
                 WellbeingSurveyWindow.is_closed.is_(False), WellbeingSurveyWindow.window_end < today,
             )
         )
         windows = result.scalars().all()
-        window_ids = []
         for window in windows:
             window.is_closed = True
             closed += 1
             window_ids.append(window.id)
 
         await session.commit()
-        break
 
     logger.info("Survey windows closed", extra={"windows_closed": closed})
 

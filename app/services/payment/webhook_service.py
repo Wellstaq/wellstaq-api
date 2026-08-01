@@ -38,7 +38,6 @@ def verify_paystack_signature(*, payload_body: bytes, signature_header: str | No
     ).hexdigest()
     return hmac.compare_digest(computed, signature_header)
 
-
 async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> None:
     reference = event_data.get("reference")
     if not reference:
@@ -53,6 +52,34 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
         return
 
     if transaction.status == "succeeded":
+        return
+
+    # ── Amount/currency verification ────────────────────────────────────────
+    # Never trust the webhook's "success" claim without confirming it
+    # matches what WE expected to be charged. A malformed or tampered
+    # payload reporting success for a different amount must be rejected,
+    # not silently activated.
+    webhook_amount = event_data.get("amount")
+    webhook_currency = event_data.get("currency")
+
+    if webhook_amount != transaction.amount:
+        logger.error(
+            "Amount mismatch on charge.success webhook — refusing to mark succeeded",
+            extra={"reference": reference, "expected_amount": transaction.amount, "webhook_amount": webhook_amount},
+        )
+        transaction.status = "failed"
+        transaction.failure_reason = f"Amount mismatch: expected {transaction.amount}, webhook reported {webhook_amount}."
+        await session.flush()
+        return
+
+    if webhook_currency and webhook_currency != transaction.currency:
+        logger.error(
+            "Currency mismatch on charge.success webhook — refusing to mark succeeded",
+            extra={"reference": reference, "expected_currency": transaction.currency, "webhook_currency": webhook_currency},
+        )
+        transaction.status = "failed"
+        transaction.failure_reason = f"Currency mismatch: expected {transaction.currency}, webhook reported {webhook_currency}."
+        await session.flush()
         return
 
     transaction.status = "succeeded"
@@ -73,10 +100,7 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
     if subscription is not None:
         now = datetime.now(timezone.utc)
 
-        # ── THIS is where the block you asked about goes ──────────────
-        plan_result = await session.execute(
-            select(SubscriptionPlan).where(SubscriptionPlan.id == transaction.plan_id)
-        )
+        plan_result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == transaction.plan_id))
         paid_plan = plan_result.scalar_one_or_none()
         billing_period = timedelta(days=30) if paid_plan.billing_interval == "monthly" else timedelta(days=365)
 
@@ -84,7 +108,6 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
         subscription.current_period_start = now
         subscription.current_period_end = now + billing_period
         subscription.plan_id = transaction.plan_id
-        # ────────────────────────────────────────────────────────────
 
         if subscription.external_subscription_id is None:
             subscription_data = event_data.get("subscription", {})
@@ -96,7 +119,6 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
 
     await session.flush()
     logger.info("Payment succeeded, subscription activated", extra={"organization_id": transaction.organization_id})
-
 
 async def handle_charge_failed(*, session: AsyncSession, event_data: dict) -> None:
     reference = event_data.get("reference")

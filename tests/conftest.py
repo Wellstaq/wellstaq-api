@@ -14,6 +14,9 @@ from app.main import app
 from app.core.database import get_db
 from app.models.base import Base
 from app.models import Branch, Organization, Role, User
+import app.core.redis as redis_module
+from app.models.payment import SubscriptionPlan
+from app.services.payment import start_trial
 
 # ── In-memory SQLite for tests — never touches app.db ────
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -246,9 +249,63 @@ async def make_org_with_owner(
     )
     db_session.add(owner)
     await db_session.flush()
-
-    # ── Step 4: patch circular FK ─────────────────────────────────────────────
+# ── Step 4: patch circular FK ─────────────────────────────────────────────
     org.owner_id = owner.id
     await db_session.flush()
 
+    # ── Step 5: start trial subscription ──────────────────────────────────────
+    # invite_register() -> enforce_plan_limit() requires the org to have an
+    # active subscription. Real signups always have one (org_owner_signup()
+    # calls start_trial() itself); this helper bypasses that flow, so it
+    # must replicate the same side effect here.
+    await get_or_create_trial_plan(db_session)
+    await start_trial(session=db_session, organization_id=org.id)
+
     return org, owner
+
+
+@pytest.fixture(autouse=True)
+async def _reset_redis_client():
+    """
+    get_redis() caches its client in a module-level global tied to
+    whatever event loop was active when it was first created. Since
+    pytest-asyncio gives each test its own event loop, a client built
+    in one test is unusable (and raises 'Event loop is closed') in the
+    next. Force a fresh client per test so it always binds to the
+    current test's loop.
+    """
+    redis_module._redis_client = None
+    yield
+    if redis_module._redis_client is not None:
+        await redis_module._redis_client.aclose()
+        redis_module._redis_client = None
+    
+
+
+async def get_or_create_trial_plan(db_session: AsyncSession) -> SubscriptionPlan:
+    """
+    start_trial() (called by both org_owner_signup() and, indirectly via
+    make_org_with_owner(), every test that builds an org) requires a
+    SubscriptionPlan named 'Trial' with is_active=True. Production seeds
+    this via a script that also registers the plan with the payment
+    gateway — tests just need the local row, created once per session.
+    """
+    result = await db_session.execute(
+        select(SubscriptionPlan).where(
+            SubscriptionPlan.name == "Trial",
+            SubscriptionPlan.is_active.is_(True),
+        )
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        plan = SubscriptionPlan(
+            name="Trial",
+            billing_interval="monthly",
+            amount=0,
+            currency="USD",
+            features={},
+            is_active=True,
+        )
+        db_session.add(plan)
+        await db_session.flush()
+    return plan

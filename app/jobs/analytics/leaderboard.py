@@ -27,9 +27,10 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 from typing import Any
+
 from sqlalchemy import func, select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import ActivityLog, LeaderboardSnapshot, User
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ async def compute_leaderboard_snapshots(
 
     written = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         organization_ids = await _load_organization_ids(session)
 
         for organization_id in organization_ids:
@@ -75,15 +76,12 @@ async def compute_leaderboard_snapshots(
                 )
 
         await session.commit()
-        break
 
     logger.info(
         "Leaderboard snapshots computed",
         extra={"period_type": period_type, "period_start": str(period_start), "period_end": str(period_end), "rows_written": written},
     )
 
-
-# ── Bulk loaders ─────────────────────────────────────────────────────────────
 
 async def _load_organization_ids(session) -> list[str]:
     result = await session.execute(select(User.organization_id).distinct())
@@ -120,12 +118,6 @@ async def _load_user_branches(session, user_ids: list[str]) -> dict[str, str]:
 
 
 async def _load_previous_ranks(session, organization_id: str, metric_type: str, period_type: str, period_start: date) -> dict[str, tuple[int, int]]:
-    """
-    Now filtered by period_type too — a weekly run only ever compares
-    against a PRIOR WEEKLY snapshot, never a monthly or daily one. This
-    is the fix for the exact bug flagged during review: comparing
-    non-comparable period types would previously have been possible.
-    """
     result = await session.execute(
         select(LeaderboardSnapshot.user_id, LeaderboardSnapshot.rank, LeaderboardSnapshot.org_rank)
         .where(
@@ -146,11 +138,6 @@ async def _load_previous_ranks(session, organization_id: str, metric_type: str, 
 async def _load_existing_rows(
     session, organization_id: str, metric_type: str, period_type: str, period_start: date, period_end: date
 ) -> dict[str, LeaderboardSnapshot]:
-    """Bulk-loads any snapshot rows already written for THIS EXACT
-    period (not prior periods) — used to update in place instead of
-    inserting a duplicate. This is the idempotency fix: re-running the
-    job for a period it already computed updates those same rows rather
-    than adding new ones, backed by the UniqueConstraint on the model."""
     result = await session.execute(
         select(LeaderboardSnapshot).where(
             LeaderboardSnapshot.organization_id == organization_id,
@@ -163,8 +150,6 @@ async def _load_existing_rows(
     rows = result.scalars().all()
     return {row.user_id: row for row in rows}
 
-
-# ── Ranking + write ──────────────────────────────────────────────────────────
 
 async def _write_snapshots(
     *, session, organization_id: str, metric_type: str, period_type: str, period_start: date, period_end: date,
@@ -216,10 +201,6 @@ async def _write_snapshots(
 
     return written
 
-
-# ── Cron entry points — ARQ's cron() needs a real function with a
-# __qualname__, so functools.partial doesn't work here. These are thin
-# wrappers, one per granularity, each just binding period_type. ──────────
 
 async def compute_leaderboard_snapshots_daily(ctx: dict[str, Any]) -> None:
     await compute_leaderboard_snapshots(ctx, period_type="daily")

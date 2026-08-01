@@ -44,6 +44,7 @@ data to validate against, or a clearer product opinion on what
 like engagement uses, not just raw totals).
 """
 
+
 from __future__ import annotations
 
 import logging
@@ -52,7 +53,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import ActivityLog, Department, DepartmentMember, DepartmentRankSnapshot
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ async def compute_department_rank_snapshots(ctx: dict[str, Any]) -> None:
 
     written = 0
 
-    async for session in get_db():
+    async with get_job_session() as session:
         organization_ids = await _load_organization_ids(session)
 
         for organization_id in organization_ids:
@@ -86,15 +87,12 @@ async def compute_department_rank_snapshots(ctx: dict[str, Any]) -> None:
             )
 
         await session.commit()
-        break
 
     logger.info(
         "Department rank snapshots computed",
         extra={"period_start": str(period_start), "period_end": str(period_end), "rows_written": written},
     )
 
-
-# ── Bulk loaders ─────────────────────────────────────────────────────────────
 
 async def _load_organization_ids(session) -> list[str]:
     result = await session.execute(select(Department.organization_id).distinct())
@@ -107,9 +105,6 @@ async def _load_department_ids(session, organization_id: str) -> list[str]:
 
 
 async def _load_user_department_map(session, department_ids: list[str]) -> dict[str, str]:
-    """One query — every member of every department in this org, mapped
-    user_id -> department_id. A user belongs to at most one department
-    (DepartmentMember.user_id is unique), so this mapping is unambiguous."""
     result = await session.execute(
         select(DepartmentMember.user_id, DepartmentMember.department_id)
         .where(DepartmentMember.department_id.in_(department_ids))
@@ -157,14 +152,11 @@ async def _load_existing_rows(session, department_ids: list[str], period_start: 
     return {row.department_id: row for row in rows}
 
 
-# ── Aggregate per-department + rank + write ─────────────────────────────────
-
 async def _write_snapshots(
     *, session, organization_id: str, department_ids: list[str], user_to_department: dict[str, str],
     total_activities: dict[str, int], avg_steps: dict[str, float],
     period_start: date, period_end: date, existing_rows: dict[str, DepartmentRankSnapshot],
 ) -> int:
-    # Roll per-user stats up to per-department totals/averages.
     dept_total_activities: dict[str, int] = {dept_id: 0 for dept_id in department_ids}
     dept_steps_values: dict[str, list[float]] = {dept_id: [] for dept_id in department_ids}
 
@@ -178,9 +170,6 @@ async def _write_snapshots(
         for dept_id, values in dept_steps_values.items()
     }
 
-    # performance_score: normalize both stats against this org's own max
-    # that period, average the two normalized scores into one 0-100
-    # figure. First-pass formula — see module docstring TODO.
     max_activities = max(dept_total_activities.values(), default=0)
     max_steps = max(dept_avg_steps.values(), default=0.0)
 
@@ -190,7 +179,6 @@ async def _write_snapshots(
         steps_score = (dept_avg_steps[dept_id] / max_steps * 100) if max_steps > 0 else 0.0
         scores[dept_id] = round((activity_score + steps_score) / 2, 2)
 
-    # Rank departments within this org by performance_score, descending.
     ranked = sorted(department_ids, key=lambda d: scores[d], reverse=True)
     ranks = {dept_id: idx + 1 for idx, dept_id in enumerate(ranked)}
 
@@ -204,13 +192,9 @@ async def _write_snapshots(
             existing.performance_score = scores[dept_id]
         else:
             session.add(DepartmentRankSnapshot(
-                department_id=dept_id,
-                rank=ranks[dept_id],
-                total_activities=dept_total_activities[dept_id],
-                avg_daily_steps=dept_avg_steps[dept_id],
-                performance_score=scores[dept_id],
-                period_start=period_start,
-                period_end=period_end,
+                department_id=dept_id, rank=ranks[dept_id], total_activities=dept_total_activities[dept_id],
+                avg_daily_steps=dept_avg_steps[dept_id], performance_score=scores[dept_id],
+                period_start=period_start, period_end=period_end,
             ))
         written += 1
 

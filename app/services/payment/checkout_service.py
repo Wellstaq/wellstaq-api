@@ -22,22 +22,29 @@ logger = logging.getLogger(__name__)
 def _generate_reference() -> str:
     return f"wellstaq_{secrets.token_urlsafe(16)}"
 
-
 async def initiate_checkout(
     *, session: AsyncSession, organization_id: str, plan_id: str, initiating_user: User,
     auto_renew: bool = False, callback_url: str | None = None,
 ) -> dict:
-    """
-    plan_id: the plan the org is checking out INTO — explicit, not
-    inferred from whatever plan they're currently on. This matters most
-    when converting from the free Trial plan to a real paid plan:
-    without this, checkout would silently charge against Trial's
-    amount=0, which is wrong. The subscription's plan_id is switched to
-    this plan only once payment actually succeeds (see
-    webhook_service.handle_charge_success), never here — this function
-    only initiates the charge attempt.
-    """
     subscription = await get_subscription_or_404(session=session, organization_id=organization_id)
+
+    # ── Idempotency guard ────────────────────────────────────────────────────
+    # If there's already a PENDING transaction for this org+plan, reject a
+    # new checkout attempt rather than creating a second parallel one —
+    # prevents double-submission (e.g. a user double-clicking "pay") from
+    # generating duplicate pending transactions and confusing history.
+    existing_pending = await session.execute(
+        select(PaymentTransaction).where(
+            PaymentTransaction.organization_id == organization_id,
+            PaymentTransaction.plan_id == plan_id,
+            PaymentTransaction.status == "pending",
+        )
+    )
+    if existing_pending.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A payment for this plan is already in progress. Please complete or wait for it to expire before retrying.",
+        )
 
     plan_result = await session.execute(
         select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id, SubscriptionPlan.is_active.is_(True))

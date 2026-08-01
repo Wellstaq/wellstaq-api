@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app.core.database import get_db
+from app.jobs.shared import get_job_session
 from app.models import Hashtag, PostHashtag
 from app.models.hashtag import HashtagTrendSnapshot
 
@@ -23,28 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 async def compute_hashtag_trend_snapshots(ctx: dict[str, Any]) -> None:
-    """
-    Trend score formula (v1 — deliberately simple, revisit once real
-    usage data exists to tune against):
-        trend_score = posts_in_window
-
-    This is intentionally just a raw count, not a decayed/weighted
-    velocity score. A more sophisticated formula (e.g. comparing this
-    window's count against the previous window's count to reward
-    accelerating hashtags, not just currently-popular ones) is a
-    reasonable v2 — flagging here rather than guessing at weights with
-    no real traffic data to validate them against.
-
-    Window: trailing 1 hour, ending at job run time. Chosen to be wider
-    than the 15-minute cron cadence itself, so a hashtag with sparse but
-    real activity doesn't flicker in and out of "trending" between
-    consecutive runs just because it landed in a 15-minute gap.
-    """
     window_end = datetime.now(timezone.utc)
     window_start = window_end - timedelta(hours=1)
 
     rows = []
-    async for session in get_db():
+    async with get_job_session() as session:
         result = await session.execute(
             select(
                 PostHashtag.organization_id,
@@ -63,11 +46,10 @@ async def compute_hashtag_trend_snapshots(ctx: dict[str, Any]) -> None:
                 post_count=post_count,
                 window_start=window_start,
                 window_end=window_end,
-                trend_score=post_count,  # v1 formula — see docstring
+                trend_score=post_count,
                 computed_at=window_end,
             ))
 
         await session.commit()
-        break
 
     logger.info("Hashtag trend snapshots computed", extra={"hashtags_updated": len(rows)})
