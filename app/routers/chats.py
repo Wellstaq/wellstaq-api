@@ -5,9 +5,6 @@ Group chat routes for clubs and events. conversation_type is 'club' or
 'event' (see GroupChatMessage model). Pinning is restricted to
 `chat.moderate` — an admin/manager permission, not structural.
 
-TODO(membership): every route here checks org membership only, not
-club/event membership specifically — see
-app/services/chat/_helpers.py::validate_conversation.
 
 Routes:
   POST   /organizations/{org_id}/conversations/{conversation_type}/{conversation_id}/messages

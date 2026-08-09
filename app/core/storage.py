@@ -34,8 +34,8 @@ def generate_presigned_upload_url(*, object_key: str, content_type: str) -> str:
     client from uploading a file type different from what was declared)."""
     return _s3_client.generate_presigned_url(
         "put_object",
-        Params={"Bucket": settings.S3_BUCKET_NAME, "Key": object_key, "ContentType": content_type},
-        ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY_SECONDS,
+        Params={"Bucket": settings.STORAGE_BUCKET_NAME, "Key": object_key, "ContentType": content_type},
+        ExpiresIn=settings.PRESIGNED_URL_EXPIRY_SECONDS,
     )
 
 
@@ -43,7 +43,7 @@ def object_exists(*, object_key: str) -> bool:
     """HEAD-checks whether an object was actually uploaded — used to
     verify a client's 'upload complete' claim before trusting it."""
     try:
-        _s3_client.head_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)
+        _s3_client.head_object(Bucket=settings.STORAGE_BUCKET_NAME, Key=object_key)
         return True
     except ClientError as exc:
         if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -51,16 +51,14 @@ def object_exists(*, object_key: str) -> bool:
         logger.error("Unexpected S3 error checking object existence", exc_info=True, extra={"object_key": object_key})
         raise
 
-
 def get_object_url(*, object_key: str) -> str:
-    """Public HTTPS URL for a stored object. Assumes either a public
-    bucket/CDN in front, or that callers separately generate presigned
-    GET URLs for private buckets — this function does NOT sign a read
-    URL, it just builds the standard S3 URL shape."""
-    return f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{object_key}"
+    """Public HTTPS URL for a stored object, served via CloudFront.
+    The S3 bucket itself is private — CloudFront (with Origin Access
+    Control) is the only thing allowed to read from it."""
+    return f"https://{settings.STORAGE_CDN_DOMAIN}/{object_key}"
 
 
 def delete_object(*, object_key: str) -> None:
     """Used by the story purge job and any future 'delete media on
     content delete' flow."""
-    _s3_client.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)
+    _s3_client.delete_object(Bucket=settings.STORAGE_BUCKET_NAME, Key=object_key)

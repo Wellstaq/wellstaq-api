@@ -90,7 +90,7 @@ class OrganizationClubInfo(BaseModel):
     name: str
     description: str | None
     privacy: str
-    category_id: str | None
+    category: str
     branch_id: str | None
     member_count: int
 
@@ -103,20 +103,36 @@ class OrganizationClubsListResponse(BaseModel):
 
 
 # ── Org / branch stats ────────────────────────────────────────────────────────
-
+class TrendData(BaseModel):
+    current: int
+    previous: int | None  # None when no baseline exists (Overall, or custom range with no prior data)
+    change_pct: float | None
+    
 class OrgStatsResponse(BaseModel):
     total_users: int
+    users_trend: TrendData
     total_branches: int
+    branches_trend: TrendData
     total_departments: int
+    departments_trend: TrendData
     total_clubs: int
+    clubs_trend: TrendData
     total_events: int
+    events_trend: TrendData
     total_challenges: int
+    challenges_trend: TrendData
     active_challenges: int
     total_posts: int
-
+    posts_trend: TrendData
 
 class BranchStatsResponse(BaseModel):
     total_users: int
+    users_trend: TrendData
     total_departments: int
+    departments_trend: TrendData
     total_clubs: int
+    clubs_trend: TrendData
     total_events: int
+    events_trend: TrendData
+    total_challenges: int
+    challenges_trend: TrendData

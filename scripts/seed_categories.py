@@ -1,7 +1,7 @@
 """
 scripts/seed_categories.py
 
-Global lookup seeder for Category (department/club badges) and
+Global lookup seeder for Category (departments badges) and
 HealthCategory (health assessment categories — currently dormant per
 the owner's decision to strip health-condition tracking from the UI for
 now, but the table and seed stay in place for when it returns).

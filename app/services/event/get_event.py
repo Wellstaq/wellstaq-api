@@ -15,14 +15,42 @@ from app.models import Event, EventParticipant, User
 logger = logging.getLogger(__name__)
 
 
-async def get_event(*, session: AsyncSession, organization_id: str, event_id: str) -> Event:
-    result = await session.execute(
-        select(Event).where(Event.id == event_id, Event.organization_id == organization_id)
+async def get_event(
+    *,
+    session: AsyncSession,
+    organization_id: str,
+    event_id: str,
+) -> tuple[Event, int]:
+    """Returns (event, participant_count)."""
+
+    participant_count_sq = (
+        select(
+            EventParticipant.event_id,
+            func.count().label("cnt"),
+        )
+        .group_by(EventParticipant.event_id)
+        .subquery()
     )
-    event = result.scalar_one_or_none()
-    if event is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found or does not belong to this organization.")
-    return event
+
+    result = await session.execute(
+        select(Event, func.coalesce(participant_count_sq.c.cnt, 0))
+        .outerjoin(participant_count_sq, participant_count_sq.c.event_id == Event.id)
+        .where(
+            Event.id == event_id,
+            Event.organization_id == organization_id,
+        )
+    )
+
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Event not found or does not belong to this organization.",
+        )
+
+    event, participant_count = row
+    return event, participant_count
 
 
 async def get_events(
@@ -32,20 +60,36 @@ async def get_events(
     branch_id: str | None = None,
     offset: int = 0,
     limit: int = 50,
-) -> tuple[list[Event], int]:
-    """List events in an org, optionally filtered to one branch."""
+) -> tuple[list[tuple[Event, int]], int]:
+    """List events in an org, optionally filtered to one branch.
+    Returns (event, participant_count) pairs.
+    """
     filters = [Event.organization_id == organization_id]
     if branch_id is not None:
         filters.append(Event.branch_id == branch_id)
 
-    count_result = await session.execute(select(func.count()).select_from(Event).where(*filters))
+    count_result = await session.execute(
+        select(func.count()).select_from(Event).where(*filters)
+    )
     total = count_result.scalar_one()
 
-    result = await session.execute(
-        select(Event).where(*filters).order_by(Event.start_date.desc()).offset(offset).limit(limit)
+    participant_count_sq = (
+        select(EventParticipant.event_id, func.count().label("cnt"))
+        .group_by(EventParticipant.event_id)
+        .subquery()
     )
-    events = result.scalars().all()
-    return events, total
+
+    result = await session.execute(
+        select(Event, func.coalesce(participant_count_sq.c.cnt, 0))
+        .outerjoin(participant_count_sq, participant_count_sq.c.event_id == Event.id)
+        .where(*filters)
+        .order_by(Event.start_date.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    rows = result.all()
+    return rows, total
 
 
 async def get_event_participants(
@@ -57,10 +101,18 @@ async def get_event_participants(
     limit: int = 50,
 ) -> tuple[list[tuple[EventParticipant, User]], int]:
     """Returns (participant, user) pairs so the router can build a combined view."""
-    await get_event(session=session, organization_id=organization_id, event_id=event_id)  # existence check
+
+    # existence check
+    await get_event(
+        session=session,
+        organization_id=organization_id,
+        event_id=event_id,
+    )
 
     count_result = await session.execute(
-        select(func.count()).select_from(EventParticipant).where(EventParticipant.event_id == event_id)
+        select(func.count())
+        .select_from(EventParticipant)
+        .where(EventParticipant.event_id == event_id)
     )
     total = count_result.scalar_one()
 
@@ -72,5 +124,6 @@ async def get_event_participants(
         .offset(offset)
         .limit(limit)
     )
+
     rows = result.all()
     return rows, total

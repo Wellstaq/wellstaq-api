@@ -15,10 +15,8 @@ from app.services.chat._helpers import (
     require_conversation_membership,
     validate_conversation,
 )
-
-from app.services.storage import confirm_upload
-from urllib.parse import urlparse
-
+from app.services.storage import attach_media_asset, confirm_upload
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +44,12 @@ async def send_message(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A message needs content or media.",
         )
-    
+
+    object_key = None
     if media_url is not None:
-        object_key = urlparse(media_url).path.lstrip("/")
+        object_key = extract_object_key(media_url)
         if not confirm_upload(object_key=object_key):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
-
-    
 
     await validate_conversation(
         session=session,
@@ -82,6 +79,13 @@ async def send_message(
     session.add(message)
     await session.flush()
     await session.refresh(message)
+
+    # Mark the uploaded media (if any) as attached so the pending-asset
+    # sweep job leaves it alone. No-ops cleanly if object_key is None.
+    await attach_media_asset(
+        session=session, object_key=object_key,
+        attached_to_type="chat_message", attached_to_id=message.id,
+    )
 
     # TODO(redis/background-job): fan out a real-time notification/websocket
     # push to conversation members here once that infra exists.

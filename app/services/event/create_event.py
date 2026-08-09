@@ -8,11 +8,13 @@ import logging
 from datetime import date, time
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Branch, Event, Organization
 from app.services.payment import enforce_plan_limit
+from app.services.storage import attach_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,7 @@ async def create_event(
             status.HTTP_404_NOT_FOUND,
             "Branch not found or does not belong to this organization.",
         )
+
     existing_count = (await session.execute(
         select(func.count()).select_from(Event).where(Event.organization_id == organization_id)
     )).scalar_one()
@@ -78,6 +81,15 @@ async def create_event(
     session.add(event)
     await session.flush()
     await session.refresh(event)
+
+    # Mark the uploaded image (if any) as attached so the pending-asset
+    # sweep job leaves it alone. No-ops cleanly if image_url is None.
+    await attach_media_asset(
+        session=session,
+        object_key=extract_object_key(image_url),
+        attached_to_type="event",
+        attached_to_id=event.id,
+    )
 
     logger.info("Event created", extra={"event_id": event.id, "branch_id": branch_id, "org_id": organization_id})
     return event

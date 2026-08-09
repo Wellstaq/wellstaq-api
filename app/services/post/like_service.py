@@ -3,6 +3,8 @@ app/services/post/like_service.py
 """
 
 from __future__ import annotations
+from datetime import datetime, date, time as dt_time
+
 
 import logging
 
@@ -95,3 +97,23 @@ async def get_post_likers(
     total = (await session.execute(count_query)).scalar_one()
     users = (await session.execute(query)).scalars().all()
     return list(users), total
+async def get_likes_given_count(
+    *,
+    session: AsyncSession,
+    organization_id: str,
+    user_id: str,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> int:
+    """Count of posts this user has liked (rows in post_likes), optionally
+    restricted to a date window via period_start/period_end (inclusive).
+    Used for the 'likes given this week' stat."""
+    conditions = [PostLike.organization_id == organization_id, PostLike.user_id == user_id]
+
+    if period_start is not None:
+        conditions.append(PostLike.created_at >= datetime.combine(period_start, dt_time.min))
+    if period_end is not None:
+        conditions.append(PostLike.created_at <= datetime.combine(period_end, dt_time.max))
+
+    query = select(func.count()).select_from(PostLike).where(*conditions)
+    return (await session.execute(query)).scalar_one()

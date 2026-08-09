@@ -36,19 +36,25 @@ from app.auth.jwt import (
 )
 from app.models import Permission, Role, User, UserDevice, UserPermission
 
+from dataclasses import dataclass
 
+
+@dataclass(frozen=True)
+class UserPermissionGrant:
+    name: str
+    branch_id: str | None
 #  Shared permission loader 
 # This is THE single implementation used by both:
 #   • issue_tokens() / build_claims() (here, at login time)
 #   • get_current_user() in dependencies.py (at every request)
 #
-
 async def load_user_permissions(
     session: AsyncSession, user_id: str, organization_id: str
-) -> list[str]:
-    """Load every permission name directly granted to this user in this org."""
+) -> list[UserPermissionGrant]:
+    """Load every permission directly granted to this user in this org,
+    along with the branch it's scoped to (None = org-wide grant)."""
     result = await session.execute(
-        select(Permission.name)
+        select(Permission.name, UserPermission.branch_id)
         .join(UserPermission, UserPermission.permission_id == Permission.id)
         .where(
             UserPermission.user_id == user_id,
@@ -56,7 +62,8 @@ async def load_user_permissions(
         )
         .distinct()
     )
-    return list(result.scalars().all())
+    return [UserPermissionGrant(name=name, branch_id=branch_id) for name, branch_id in result.all()]
+    
 async def _load_role_name(session: AsyncSession, user: User) -> str | None:
     if not user.role_id:
         return None
@@ -69,7 +76,6 @@ async def _load_role_name(session: AsyncSession, user: User) -> str | None:
     result = await session.execute(select(Role.name).where(Role.id == user.role_id))
     return result.scalar_one_or_none()
 
-
 async def build_claims(session: AsyncSession, user: User) -> dict:
     """
     Resolve the four extra claims that jwt.py's create_access_token expects.
@@ -81,7 +87,7 @@ async def build_claims(session: AsyncSession, user: User) -> dict:
         "organization_id": user.organization_id,
         "branch_id": user.branch_id,
         "role": role_name,
-        "permissions": permissions,
+        "permissions": [{"name": p.name, "branch_id": p.branch_id} for p in permissions],
     }
 
 

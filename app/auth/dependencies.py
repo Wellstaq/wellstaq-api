@@ -58,6 +58,7 @@ from app.core.database import get_db
 from app.models import User, ClubMember, EventParticipant
 from app.models.permission import Permission, UserPermission
 from app.services.auth.token_service import load_user_permissions
+from app.services.auth.token_service import UserPermissionGrant, load_user_permissions
 
 http_bearer = HTTPBearer()
 
@@ -77,13 +78,13 @@ ROLE_HIERARCHY: dict[str, int] = {
 class CurrentUser:
     """Resolved identity + scope for the requesting user."""
     user_id: str
-    role: str | None           # single role name, or None if unassigned
+    role: str | None
     organization_id: str
     branch_id: str | None
-    permissions: list[str] = field(default_factory=list)
+    permissions: list[UserPermissionGrant] = field(default_factory=list)
 
     def has_permission(self, permission: str) -> bool:
-        return permission in self.permissions
+        return any(p.name == permission for p in self.permissions)
 
     def has_role(self, role_name: str) -> bool:
         return self.role == role_name

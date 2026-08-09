@@ -69,6 +69,8 @@ class Branch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     # True for the single auto-created "Headquarters" branch per org.
     # Protected by the service layer against deletion and renaming.

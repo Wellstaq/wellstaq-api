@@ -178,9 +178,12 @@ async def list_events_route(
             session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
         )
         return EventListResponse(
-            items=[EventResponse.model_validate(e) for e in events], total=total, offset=offset, limit=limit,
+            items=[
+                EventResponse.model_validate({**e.__dict__, "participant_count": count})
+                for e, count in events
+            ],
+            total=total, offset=offset, limit=limit,
         )
-
 
 # ── Get one ──────────────────────────────────────────────────────────────────
 
@@ -213,7 +216,12 @@ async def get_event_route(
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}"):
         event = await get_event(session=db, organization_id=org_id, event_id=event_id)
-        return EventResponse.model_validate(event)
+        return EventResponse.model_validate(
+            {
+                **event.__dict__,
+                "participant_count": participant_count,
+            }
+        )
 
 
 # ── Edit ─────────────────────────────────────────────────────────────────────

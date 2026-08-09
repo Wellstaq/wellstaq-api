@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
@@ -161,7 +161,6 @@ async def revoke_permission_route(
             message="Permission revoked successfully.",
         )
 
-
 @router.get(
     "",
     response_model=UserPermissionsResponse,
@@ -179,21 +178,19 @@ async def revoke_permission_route(
 async def get_user_permissions_route(
     org_id: str,
     user_id: str,
+    branch_id: str | None = Query(default=None, description="Scope the check to this branch. Omit for an org-wide check."),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(require_permission("member.role.assign")),
 ) -> UserPermissionsResponse:
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/members/{user_id}/permissions"):
-        """
-        TODO: fetch the branch id using any valid method
         await require_scoped_permission(
             db=db,
             current_user=current_user,
             permission="member.role.assign",
-            target_branch_id=body.branch_id,
+            target_branch_id=branch_id,
         )
-        """
 
         permissions = await get_user_permissions(
             session=db,

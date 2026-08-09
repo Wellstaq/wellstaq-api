@@ -8,10 +8,12 @@ import logging
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChallengeParticipant
 from app.services.challenge._helpers import get_challenge_or_404
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.storage import release_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,18 @@ async def delete_challenge(*, session: AsyncSession, organization_id: str, chall
             "Cancel it instead to preserve their records.",
         )
 
+    image_url = challenge.image_url  # capture before delete
+
     await session.delete(challenge)
     await session.flush()
+
+    if image_url:
+        try:
+            await release_media_asset(session=session, object_key=extract_object_key(image_url))
+        except Exception:
+            logger.error(
+                "Failed to release challenge image media asset", exc_info=True,
+                extra={"challenge_id": challenge_id},
+            )
+
     logger.info("Challenge deleted", extra={"challenge_id": challenge_id})

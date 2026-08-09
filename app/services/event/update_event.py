@@ -17,12 +17,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Event
 from app.core.constants import EVENT_STATUSES
+from app.models import Event
+from app.services.storage import attach_media_asset, confirm_upload, release_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
-
-
 
 
 async def edit_event(
@@ -50,8 +50,31 @@ async def edit_event(
         event.title = title.strip()
     if description is not None:
         event.description = description
+
     if image_url is not None:
+        object_key = extract_object_key(image_url)
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Image upload not found — upload may have failed or not completed yet.")
+
+        old_image_url = event.image_url
         event.image_url = image_url
+
+        # Mark the new upload as attached so the sweep job won't reap it.
+        await attach_media_asset(
+            session=session, object_key=object_key,
+            attached_to_type="event", attached_to_id=event.id,
+        )
+
+        # Release the old image now that it's no longer referenced.
+        if old_image_url and old_image_url != image_url:
+            try:
+                await release_media_asset(session=session, object_key=extract_object_key(old_image_url))
+            except Exception:
+                logger.error(
+                    "Failed to release old event image media asset", exc_info=True,
+                    extra={"event_id": event_id},
+                )
+
     if start_date is not None:
         event.start_date = start_date
     if end_date is not None:

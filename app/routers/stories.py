@@ -57,11 +57,11 @@ async def create_story_route(
         await db.commit()
         return StoryResponse.model_validate(story)
 
-
 @router.get("", response_model=StoryListResponse, status_code=status.HTTP_200_OK)
 async def list_stories_route(
     org_id: str,
     branch_id: str | None = Query(default=None),
+    scope: str = Query(default="branch_and_org", pattern="^(org_only|branch_and_org)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -70,13 +70,15 @@ async def list_stories_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/stories"):
+        org_only = scope == "org_only"
         stories, total = await get_stories(
-            session=db, organization_id=org_id, branch_id=branch_id,
+            session=db, organization_id=org_id,
+            branch_id=None if org_only else branch_id,
+            org_only=org_only,
             viewer_branch_id=current_user.branch_id, is_super_admin=(current_user.role == "super_admin"),
             offset=offset, limit=limit,
         )
         return StoryListResponse(items=[StoryResponse.model_validate(s) for s in stories], total=total, offset=offset, limit=limit)
-
 
 @router.get("/me", response_model=StoryListResponse, status_code=status.HTTP_200_OK)
 async def my_stories_route(

@@ -73,7 +73,8 @@ router = APIRouter(tags=["clubs"])
         "A user who is not a member of the branch can still create one if "
         "they hold `club.create` — org-wide, or scoped to this branch. "
         "The creator automatically becomes the club leader and is added "
-        "as the first member."
+        "as the first member. category is required and must be one of: "
+        "fitness, creativity, team_bonding, mental_health, nutrition."
     ),
 )
 async def create_club_route(
@@ -103,13 +104,14 @@ async def create_club_route(
             branch_id=branch_id,
             name=body.name,
             description=body.description,
+            image_url=body.image_url,
             privacy=body.privacy,
+            category=body.category,
             created_by=current_user.user_id,
         )
         await db.commit()
         return ClubResponse.model_validate(club)
 # ── List org-wide ──────────────────────────────────────────────────────────────
-
 @router.get(
     "/organizations/{org_id}/clubs",
     response_model=ClubListResponse,
@@ -128,21 +130,17 @@ async def list_clubs_route(
 
     async with request_guard(db, "/organizations/{org_id}/clubs"):
         clubs, total = await get_clubs(
-            session=db,
-            organization_id=org_id,
-            offset=offset,
-            limit=limit,
-            privacy=privacy,
+            session=db, organization_id=org_id, requesting_user_id=current_user.user_id,
+            offset=offset, limit=limit, privacy=privacy,
         )
-        return ClubListResponse(
-            items=[ClubResponse.model_validate(c) for c in clubs],
-            total=total,
-            offset=offset,
-            limit=limit,
-        )
+        items = []
+        for club, is_member in clubs:
+            resp = ClubResponse.model_validate(club)
+            resp.is_member = is_member
+            items.append(resp)
+        return ClubListResponse(items=items, total=total, offset=offset, limit=limit)
 
-
-# ── List by branch ─────────────────────────────────────────────────────────────
+# ── List by-branch ──────────────────────────────────────────────────────────────
 
 @router.get(
     "/organizations/{org_id}/branches/{branch_id}/clubs",
@@ -163,20 +161,15 @@ async def list_branch_clubs_route(
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/clubs"):
         clubs, total = await get_branch_clubs(
-            session=db,
-            organization_id=org_id,
-            branch_id=branch_id,
-            offset=offset,
-            limit=limit,
-            privacy=privacy,
+            session=db, organization_id=org_id, branch_id=branch_id, requesting_user_id=current_user.user_id,
+            offset=offset, limit=limit, privacy=privacy,
         )
-        return ClubListResponse(
-            items=[ClubResponse.model_validate(c) for c in clubs],
-            total=total,
-            offset=offset,
-            limit=limit,
-        )
-
+        items = []
+        for club, is_member in clubs:
+            resp = ClubResponse.model_validate(club)
+            resp.is_member = is_member
+            items.append(resp)
+        return ClubListResponse(items=items, total=total, offset=offset, limit=limit)
 
 # ── Get one ────────────────────────────────────────────────────────────────────
 
@@ -209,7 +202,8 @@ async def get_club_route(
     description=(
         "Club leader can edit their own club freely. "
         "Admins with `club.update` org-wide or branch-scoped can edit any club "
-        "within their scope."
+        "within their scope. category, if provided, must be one of: "
+        "fitness, creativity, team_bonding, mental_health, nutrition."
     ),
 )
 async def edit_club_route(
@@ -239,7 +233,9 @@ async def edit_club_route(
             club_id=club_id,
             name=body.name,
             description=body.description,
+            image_url=body.image_url,
             privacy=body.privacy,
+            category=body.category,
         )
         await db.commit()
         return ClubResponse.model_validate(club)

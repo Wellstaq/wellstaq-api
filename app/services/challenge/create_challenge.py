@@ -5,12 +5,14 @@ app/services/challenge/create_challenge.py
 from __future__ import annotations
 
 import logging
+
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.models import Challenge
 from app.services.challenge._helpers import validate_org_and_branch
-from app.services.payment import enforce_plan_limit
+from app.services.storage import attach_media_asset, confirm_upload
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ async def create_challenge(
     wellbeing_challenge_id: str | None,
     name: str,
     description: str | None,
+    image_url: str | None,
     start_date,
     end_date,
     metric_type: str | None,
@@ -31,23 +34,14 @@ async def create_challenge(
     created_by: str,
 ) -> Challenge:
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
-    existing_count = (await session.execute(
-        select(func.count()).select_from(Challenge).where(Challenge.organization_id == organization_id)
-    )).scalar_one()
 
-    await enforce_plan_limit(
-        session=session, organization_id=organization_id, limit_key="max_challenges", current_count=existing_count,
-    )
-    # Normalized the same way Hashtag.tag_name is — metric_type is
-    # freeform (no enum), but the frontend/mobile client will likely
-    # branch logic off this string (e.g. "steps" -> show step counter).
-    # Without normalization, "Steps" and "steps" silently become two
-    # different values and that matching breaks.
+    object_key = None
+    if image_url is not None:
+        object_key = extract_object_key(image_url)
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Image upload not found — upload may have failed or not completed yet.")
+
     normalized_metric_type = metric_type.strip().lower() if metric_type else None
-
-    # TODO(wellbeing-challenge-validation): validate wellbeing_challenge_id
-    # exists in wellbeing_challenges if set — low risk, small global
-    # lookup table.
 
     challenge = Challenge(
         organization_id=organization_id,
@@ -55,9 +49,10 @@ async def create_challenge(
         wellbeing_challenge_id=wellbeing_challenge_id,
         name=name.strip(),
         description=description,
+        image_url=image_url,
         start_date=start_date,
         end_date=end_date,
-        status="draft",
+        status="upcoming",
         metric_type=normalized_metric_type,
         target_type=target_type,
         target_value=target_value,
@@ -66,6 +61,13 @@ async def create_challenge(
     session.add(challenge)
     await session.flush()
     await session.refresh(challenge)
+
+    # Mark the uploaded image (if any) as attached so the pending-asset
+    # sweep job leaves it alone. No-ops cleanly if object_key is None.
+    await attach_media_asset(
+        session=session, object_key=object_key,
+        attached_to_type="challenge", attached_to_id=challenge.id,
+    )
 
     logger.info(
         "Challenge created",

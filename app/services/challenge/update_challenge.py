@@ -7,14 +7,14 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException, status
-
-from app.services.challenge._helpers import get_challenge_or_404
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.constants import CHALLENGE_STATUSES, TARGET_TYPES
 
+from app.core.constants import CHALLENGE_STATUSES, TARGET_TYPES
+from app.services.challenge._helpers import get_challenge_or_404
+from app.services.storage import attach_media_asset, confirm_upload, release_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
-
 
 
 async def edit_challenge(
@@ -24,6 +24,7 @@ async def edit_challenge(
     challenge_id: str,
     name: str | None,
     description: str | None,
+    image_url: str | None,  # new
     start_date,
     end_date,
     metric_type: str | None,
@@ -37,14 +38,42 @@ async def edit_challenge(
         challenge.name = name.strip()
     if description is not None:
         challenge.description = description
+
+    if image_url is not None and image_url != challenge.image_url:
+        object_key = extract_object_key(image_url)
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Image upload not found — upload may have failed or not completed yet.")
+
+        old_image_url = challenge.image_url
+        challenge.image_url = image_url
+
+        # Mark the new upload as attached so the pending-sweep won't
+        # reap it — without this it stays "pending" and gets deleted
+        # by sweep_pending_media_assets after the grace period even
+        # though it's the live challenge image.
+        await attach_media_asset(
+            session=session, object_key=object_key,
+            attached_to_type="challenge", attached_to_id=challenge.id,
+        )
+
+        # Release the old image now that it's no longer referenced.
+        # Without this, the old asset stays "attached" to a challenge
+        # that still exists, so sweep_orphaned_media_assets can never
+        # detect it as orphaned — it would sit in S3 forever.
+        if old_image_url:
+            try:
+                await release_media_asset(session=session, object_key=extract_object_key(old_image_url))
+            except Exception:
+                logger.error(
+                    "Failed to release old challenge image media asset", exc_info=True,
+                    extra={"challenge_id": challenge_id},
+                )
+
     if start_date is not None:
         challenge.start_date = start_date
     if end_date is not None:
         challenge.end_date = end_date
     if metric_type is not None:
-        # Same normalization as create_challenge — keep the two paths
-        # consistent so a value written on create and one written on
-        # edit can never diverge in casing.
         challenge.metric_type = metric_type.strip().lower()
     if target_type is not None:
         if target_type not in TARGET_TYPES:
@@ -58,15 +87,13 @@ async def edit_challenge(
         challenge.status = status_
 
     if challenge.target_type == "daily_minimum" and challenge.end_date is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "daily_minimum challenges require an end_date.",
-        )
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "daily_minimum challenges require an end_date.")
 
     await session.flush()
     await session.refresh(challenge)
     logger.info("Challenge updated", extra={"challenge_id": challenge_id})
     return challenge
+
 
 async def cancel_challenge(*, session: AsyncSession, organization_id: str, challenge_id: str):
     """Preferred over delete_challenge when the challenge has completions

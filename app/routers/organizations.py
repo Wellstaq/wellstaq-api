@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import logging
 from typing import Literal
+from datetime import date
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,7 +92,7 @@ async def send_invite_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/invites"):
-        
+
         await require_scoped_permission(
             db=db,
             current_user=current_user,
@@ -261,7 +262,6 @@ async def list_organization_clubs_route(
         )
 
 # ── Stats ────────────────────────────────────────────────────────────────────
-
 @router.get(
     "/stats",
     response_model=OrgStatsResponse,
@@ -275,21 +275,29 @@ async def list_organization_clubs_route(
 )
 async def org_stats_route(
     org_id: str,
+    user_status: Literal["pending", "active", "inactive", "suspended"] | None = Query(default=None),
+    challenge_status: Literal["draft", "active", "completed", "cancelled", "archived"] | None = Query(default=None),
+    event_status: Literal["scheduled", "ongoing", "completed", "cancelled"] | None = Query(default=None),
+    period: Literal["week", "month", "three_months", "six_months", "nine_months", "year", "custom"] | None = Query(
+        default=None, description="Omit for all-time stats (default). Set to compare against a baseline for trend %.",
+    ),
+    start_date: date | None = Query(default=None, description="Required when period='custom'."),
+    end_date: date | None = Query(default=None, description="Optional, defaults to today when period='custom'."),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> OrgStatsResponse:
     require_same_organization(org_id, current_user)
+    if period == "custom" and start_date is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "start_date is required when period='custom'.")
 
     async with request_guard(db, "/organizations/{org_id}/stats"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="org.stats",
-            target_branch_id=None,
+        await require_scoped_permission(db=db, current_user=current_user, permission="org.stats", target_branch_id=None)
+        stats = await get_org_stats(
+            session=db, organization_id=org_id,
+            user_status=user_status, challenge_status=challenge_status, event_status=event_status,
+            period=period, start_date=start_date, end_date=end_date,
         )
-        stats = await get_org_stats(session=db, organization_id=org_id)
         return OrgStatsResponse(**stats)
-
 
 @router.get(
     "/branches/{branch_id}/stats",
@@ -304,20 +312,26 @@ async def org_stats_route(
 )
 async def branch_stats_route(
     org_id: str, branch_id: str,
+    user_status: Literal["pending", "active", "inactive", "suspended"] | None = Query(default=None),
+    challenge_status: Literal["upcoming", "active", "completed", "cancelled", "archived"] | None = Query(default=None),
+    event_status: Literal["scheduled", "ongoing", "completed", "cancelled"] | None = Query(default=None),
+    period: Literal["week", "month", "three_months", "six_months", "nine_months", "year", "custom"] | None = Query(default=None),
+    start_date: date | None = Query(default=None, description="Required when period='custom'."),
+    end_date: date | None = Query(default=None, description="Optional, defaults to today when period='custom'."),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> BranchStatsResponse:
     require_same_organization(org_id, current_user)
     if current_user.role != "super_admin" and current_user.branch_id != branch_id:
-        from fastapi import HTTPException
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this branch's stats.")
+    if period == "custom" and start_date is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "start_date is required when period='custom'.")
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/stats"):
-        await require_scoped_permission(
-            db=db,
-            current_user=current_user,
-            permission="org.stats",
-            target_branch_id=branch_id,
+        await require_scoped_permission(db=db, current_user=current_user, permission="org.stats", target_branch_id=branch_id)
+        stats = await get_branch_stats(
+            session=db, organization_id=org_id, branch_id=branch_id,
+            user_status=user_status, challenge_status=challenge_status, event_status=event_status,
+            period=period, start_date=start_date, end_date=end_date,
         )
-        stats = await get_branch_stats(session=db, organization_id=org_id, branch_id=branch_id)
         return BranchStatsResponse(**stats)

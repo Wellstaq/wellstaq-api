@@ -31,10 +31,6 @@ class Category(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "Department",
         back_populates="category",
     )
-    clubs: Mapped[list["Club"]] = relationship(
-        "Club",
-        back_populates="category",
-    )
 
     __table_args__ = (
         UniqueConstraint("name", name="uq_categories_name"),

@@ -7,14 +7,14 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 class ChallengeCreateRequest(BaseModel):
     branch_id: str | None = Field(default=None, description="Null = org-level challenge.")
     wellbeing_challenge_id: str | None = None
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
-    start_date: date | None = None
-    end_date: date | None = None
+    image_url: str | None = Field(default=None, max_length=2048)  # new
+    start_date: date
+    end_date: date
     metric_type: str | None = None
     target_type: str = Field(default="cumulative", description="'cumulative' or 'daily_minimum'")
     target_value: Decimal | None = Field(default=None, gt=0)
@@ -27,16 +27,17 @@ class ChallengeCreateRequest(BaseModel):
             raise ValueError("daily_minimum challenges require an end_date to know the evaluation window.")
         return self
 
-
+        
 class ChallengeUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
+    image_url: str | None = Field(default=None, max_length=2048)  # new
     start_date: date | None = None
     end_date: date | None = None
     metric_type: str | None = None
     target_type: str | None = None
     target_value: Decimal | None = Field(default=None, gt=0)
-    status: str | None = None  # draft | active | completed | cancelled | archived
+    status: str | None = None
 
     @model_validator(mode="after")
     def validate_target_type(self):
@@ -46,23 +47,35 @@ class ChallengeUpdateRequest(BaseModel):
 
 
 class ChallengeResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: str
     organization_id: str
     branch_id: str | None
     wellbeing_challenge_id: str | None
     name: str
     description: str | None
+    image_url: str | None
     start_date: date | None
     end_date: date | None
     status: str
     metric_type: str | None
     target_type: str
-    target_value: Decimal | None
+    target_value: float | None
     created_by: str | None
     created_at: datetime
 
+    # Computed — set post-query in get_challenges, not persisted columns.
+    # completion_rate is None when participant_count is 0 (no divide-by-zero,
+    # and lets the frontend distinguish "0% completed" from "nobody joined yet").
+    participant_count: int = 0
+    completion_rate: float | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChallengeStatsResponse(BaseModel):
+    active_challenges: int
+    total_participants: int
+    completion_rate: float
 
 class ChallengeListResponse(BaseModel):
     items: list[ChallengeResponse]
@@ -96,7 +109,7 @@ class ParticipantListResponse(BaseModel):
 
 
 class ParticipantCompleteRequest(BaseModel):
-    """Manual admin override — see TODO(background-job) in
+    """Manual admin override — see (background-job) in
     participant_service.py for the real computation path."""
     rank: int | None = Field(default=None, gt=0)
 
@@ -132,3 +145,16 @@ class ParticipantProgressResponse(BaseModel):
     daily_entries: list[DailyProgressEntry]  # new
     days_met_target: int | None  # new — daily_minimum's real "progress" number
     days_logged: int  # new — how many days have any entry at all
+
+class TrendData(BaseModel):
+    current: int
+    previous: int
+    change_pct: float
+
+class ChallengeStatsResponse(BaseModel):
+    active_challenges: int
+    active_challenges_trend: TrendData | None
+    total_participants: int
+    total_participants_trend: TrendData | None
+    completion_rate: float
+    completion_rate_trend: TrendData | None

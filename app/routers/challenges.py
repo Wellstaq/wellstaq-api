@@ -13,14 +13,12 @@ Permission model:
   Join/leave/progress — self-service, gated only by visibility (can't
   join or submit progress for a challenge you can't see).
 
-  mark_participant_complete — manual admin override via challenge.update,
-  see TODO(background-job) in participant_service.py. Automatic
-  completion (cumulative target crossed) happens inline in
-  progress_service.submit_progress instead.
+  
 """
 
 from __future__ import annotations
 
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +45,7 @@ from app.schemas.challenge import (
     ProgressEntryResponse,
     ProgressSubmitRequest,
     ParticipantProgressResponse,
+    ChallengeStatsResponse,
 )
 from app.services.challenge import (
     create_challenge,
@@ -63,6 +62,10 @@ from app.services.challenge import (
 )
 from app.services.challenge._helpers import check_challenge_scope, check_challenge_visibility
 from app.services.challenge.progress_service import submit_progress
+from app.services.challenge.stats_service import get_challenge_stats
+from datetime import date as date_type
+
+from app.core.constants import CHALLENGE_STATUSES
 
 router = APIRouter(prefix="/organizations/{org_id}/challenges", tags=["challenges"])
 
@@ -115,18 +118,84 @@ async def create_challenge_route(
         challenge = await create_challenge(
             session=db, organization_id=org_id, branch_id=body.branch_id,
             wellbeing_challenge_id=body.wellbeing_challenge_id, name=body.name, description=body.description,
+            image_url=body.image_url,  # new
             start_date=body.start_date, end_date=body.end_date, metric_type=body.metric_type,
             target_type=body.target_type, target_value=body.target_value,
             created_by=current_user.user_id,
         )
         await db.commit()
         return ChallengeResponse.model_validate(challenge)
+
+
+@router.get("/stats", response_model=ChallengeStatsResponse, status_code=status.HTTP_200_OK)
+async def get_challenge_stats_route(
+    org_id: str,
+    branch_id: str | None = Query(default=None),
+    scope: Literal["organization", "all"] | None = Query(default=None),
+    period: Literal["week", "month", "six_months", "custom"] | None = Query(
+        default=None,
+        description="Omit for all-time stats (default, no trend). Set to compare against a baseline for trend %.",
+    ),
+    start_date: date_type | None = Query(default=None, description="Required when period='custom'."),
+    end_date: date_type | None = Query(default=None, description="Optional, defaults to today when period='custom'."),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ChallengeStatsResponse:
+    require_same_organization(org_id, current_user)
+    if branch_id is not None and current_user.role != "super_admin" and current_user.branch_id != branch_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this branch's challenges.")
+    if period == "custom" and start_date is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "start_date is required when period='custom'.")
+
+    async with request_guard(db, "/organizations/{org_id}/challenges/stats"):
+        stats = await get_challenge_stats(
+            session=db, organization_id=org_id, branch_id=branch_id, scope=scope,
+            viewer_branch_id=current_user.branch_id, is_super_admin=(current_user.role == "super_admin"),
+            period=period, start_date=start_date, end_date=end_date,
+        )
+        return ChallengeStatsResponse(**stats)
 # ── List ─────────────────────────────────────────────────────────────────────
 
-@router.get("", response_model=ChallengeListResponse, status_code=status.HTTP_200_OK)
+
+
+ChallengeStatus = Literal[*CHALLENGE_STATUSES]
+
+@router.get(
+    "",
+    response_model=ChallengeListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List challenges",
+    description=(
+        "List challenges for an organization.\n\n"
+        "- If `branch_id` is omitted and `scope` is omitted: default visibility "
+        "rules apply (super_admin sees everything; other roles see their own "
+        "branch's challenges plus org-wide ones).\n"
+        "- `scope=organization`: only org-wide challenges (`branch_id` is null). "
+        "If `branch_id` is also passed, returns that branch's challenges "
+        "PLUS the org-wide ones.\n"
+        "- `scope=all`: every challenge in the organization, ignoring branch "
+        "boundaries entirely. Ignored if `branch_id` is passed.\n"
+        "- `status`: filter by challenge status. If omitted, challenges of "
+        "all statuses are returned."
+    ),
+)
 async def list_challenges_route(
     org_id: str,
     branch_id: str | None = Query(default=None),
+    scope: Literal["organization", "all"] | None = Query(
+        default=None,
+        description=(
+            "'organization' = org-wide challenges only (branch_id is null); "
+            "combined with branch_id, also includes that branch's challenges. "
+            "'all' = every challenge in the org, ignoring branch boundaries "
+            "(ignored if branch_id is set)."
+        ),
+    ),
+    status_filter: ChallengeStatus | None = Query(
+        default=None,
+        alias="status",
+        description=f"Filter challenges by status: {', '.join(CHALLENGE_STATUSES)}. Omit to fetch all statuses.",
+    ),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -138,15 +207,13 @@ async def list_challenges_route(
 
     async with request_guard(db, "/organizations/{org_id}/challenges"):
         challenges, total = await get_challenges(
-            session=db, organization_id=org_id, branch_id=branch_id,
+            session=db, organization_id=org_id, branch_id=branch_id, scope=scope, status=status_filter,
             viewer_branch_id=current_user.branch_id, is_super_admin=(current_user.role == "super_admin"),
             offset=offset, limit=limit,
         )
         return ChallengeListResponse(
             items=[ChallengeResponse.model_validate(c) for c in challenges], total=total, offset=offset, limit=limit,
         )
-
-
 # ── Get one ──────────────────────────────────────────────────────────────────
 
 @router.get("/{challenge_id}", response_model=ChallengeResponse, status_code=status.HTTP_200_OK)
@@ -177,7 +244,8 @@ async def edit_challenge_route(
         await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
         updated = await edit_challenge(
             session=db, organization_id=org_id, challenge_id=challenge_id,
-            name=body.name, description=body.description, start_date=body.start_date, end_date=body.end_date,
+            name=body.name, description=body.description, image_url=body.image_url,  # new
+            start_date=body.start_date, end_date=body.end_date,
             metric_type=body.metric_type, target_type=body.target_type, target_value=body.target_value,
             status_=body.status,
         )
@@ -189,7 +257,7 @@ async def edit_challenge_route(
 
 @router.delete(
     "/{challenge_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
     summary="Permanently delete a challenge",
     description=(
         "Hard delete — also removes all participant and progress records. "
@@ -209,6 +277,8 @@ async def delete_challenge_route(
         await check_challenge_scope(db=db, current_user=current_user, permission="challenge.delete", branch_id=challenge.branch_id)
         await delete_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
         await db.commit()
+        return {"success": True}
+        
 
 
 # ── Join / Leave ─────────────────────────────────────────────────────────────
@@ -225,19 +295,17 @@ async def join_challenge_route(
         await db.commit()
         return ParticipantJoinResponse(challenge_id=challenge_id, user_id=current_user.user_id, message="Joined challenge.")
 
-
-@router.delete("/{challenge_id}/join", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{challenge_id}/join", status_code=status.HTTP_200_OK)
 async def leave_challenge_route(
     org_id: str, challenge_id: str,
     db: AsyncSession = Depends(get_db),
-     current_user: CurrentUser = Depends(require_active_subscription),
-   
-):
+    current_user: CurrentUser = Depends(require_active_subscription),
+) -> dict:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/join"):
         await leave_challenge(session=db, organization_id=org_id, challenge_id=challenge_id, current_user=current_user)
         await db.commit()
-
+        return {"success": True}
 
 # ── Progress ─────────────────────────────────────────────────────────────────
 
@@ -306,7 +374,7 @@ async def list_participants_route(
 @router.post(
     "/{challenge_id}/participants/{user_id}/complete",
     response_model=ParticipantInfo, status_code=status.HTTP_200_OK,
-    description="Manual admin override — see TODO(background-job) for the intended automated path.",
+    description="Manual admin override ",
 )
 async def mark_participant_complete_route(
     org_id: str, challenge_id: str, user_id: str, body: ParticipantCompleteRequest,

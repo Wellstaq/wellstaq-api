@@ -3,16 +3,18 @@ app/services/post/create_post.py
 """
 
 from __future__ import annotations
-from urllib.parse import urlparse
+
 import logging
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Post
-from app.services.post._helpers import validate_org_and_branch
-from app.services.hashtag import sync_post_hashtags
 from app.services.activity import log_activity
-from app.services.storage import confirm_upload
+from app.services.hashtag import sync_post_hashtags
+from app.services.post._helpers import validate_org_and_branch
+from app.services.storage import attach_media_asset, confirm_upload
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +34,10 @@ async def create_post(
     Both are optional and independent of each other.
     """
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
-    
+
+    object_key = None
     if media_url is not None:
-        object_key = urlparse(media_url).path.lstrip("/")
+        object_key = extract_object_key(media_url)
         if not confirm_upload(object_key=object_key):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
 
@@ -54,10 +57,16 @@ async def create_post(
     await sync_post_hashtags(session=session, organization_id=organization_id, post_id=post.id, content=post.content)
     await session.refresh(post)
 
+    # Mark the uploaded media (if any) as attached so the pending-asset
+    # sweep job leaves it alone. No-ops cleanly if object_key is None.
+    await attach_media_asset(
+        session=session, object_key=object_key,
+        attached_to_type="post", attached_to_id=post.id,
+    )
+
     # TODO(redis): bump a trending/recent-activity counter here if you add one.
     # TODO(background-job): enqueue feed fan-out job if you move to a
     # push/fan-out-on-write feed model instead of fan-out-on-read.
-   
 
     await log_activity(
         session=session, user_id=user_id, organization_id=organization_id,

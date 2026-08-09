@@ -30,7 +30,6 @@ class EventUpdateRequest(BaseModel):
     time: time_type | None = None
     status: str | None = None  # scheduled | ongoing | completed | cancelled
 
-
 class EventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -46,7 +45,7 @@ class EventResponse(BaseModel):
     organization_id: str
     branch_id: str
     created_by: str | None
-
+    participant_count: int = 0
 
 class EventListResponse(BaseModel):
     items: list[EventResponse]

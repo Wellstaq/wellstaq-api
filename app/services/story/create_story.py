@@ -10,13 +10,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
-from app.models import Story
-from app.services.story._helpers import  validate_org_and_branch
 from app.core.constants import MEDIA_TYPES
-from app.services.storage import confirm_upload
-from urllib.parse import urlparse
-
+from app.models import Story
+from app.services.story._helpers import validate_org_and_branch
+from app.services.storage import attach_media_asset, confirm_upload
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +29,10 @@ async def create_story(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"media_type must be one of {MEDIA_TYPES}.")
 
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
-    
-    object_key = urlparse(media_url).path.lstrip("/")
+
+    object_key = extract_object_key(media_url)
     if not confirm_upload(object_key=object_key):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
-
 
     now = datetime.now(timezone.utc)
     story = Story(
@@ -45,6 +42,15 @@ async def create_story(
     session.add(story)
     await session.flush()
     await session.refresh(story)
+
+    # Mark the uploaded media as attached so the pending-asset sweep
+    # leaves it alone. Stories are the one domain where media_url is
+    # required (not optional like posts/challenges/events), so this
+    # is always called, never conditionally skipped.
+    await attach_media_asset(
+        session=session, object_key=object_key,
+        attached_to_type="story", attached_to_id=story.id,
+    )
 
     logger.info("Story created", extra={"story_id": story.id, "org_id": organization_id, "branch_id": branch_id})
     return story

@@ -13,11 +13,7 @@ from datetime import datetime
 class PostCreateRequest(BaseModel):
     # None = org-level feed post. Set = branch-scoped post.
     branch_id: str | None = Field(default=None)
-   
     content: str | None = Field(default=None, max_length=10_000)
-    # TODO(s3): once S3 is wired up, this becomes a presigned-upload flow —
-    # client uploads directly to a presigned URL, then sends the resulting
-    # object URL here. For now this just accepts a URL as-is.
     media_url: str | None = Field(default=None, max_length=2048)
     media_type: str | None = Field(default=None, max_length=50)  # image | video | none
 
@@ -75,6 +71,12 @@ class PostLikersListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+class LikesGivenCountResponse(BaseModel):
+    """Count of posts the current user has liked, optionally restricted
+    to a period_start/period_end window. See /posts/likes/given/count."""
+    count: int
 
 
 # ── Comments ─────────────────────────────────────────────────────────────────

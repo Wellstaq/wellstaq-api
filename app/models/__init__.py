@@ -13,7 +13,7 @@ from app.models.chat import  GroupChatMessage
 from app.models.notification import Notification
 from app.models.post import Post, PostComment, PostSave, PostLike, PostShare, PostHashtag
 from app.models.hashtag import Hashtag, HashtagTrendSnapshot
-from app.models.challenge import Challenge, ChallengeParticipant,ChallengeProgressEntry
+from app.models.challenge import Challenge, ChallengeParticipant,ChallengeProgressEntry, ChallengeStatsSnapshot
 from app.models.category import Category, HealthCategory
 from app.models.wellbeing import(
     WellbeingDimension,
@@ -35,6 +35,7 @@ from app.models.wellbeing_survey import(
     WellbeingSurveyWindow,
     WellbeingSurveyResponse,
 ) 
+from app.models.media_asset import MediaAsset
 
 # this table should be erased and dropped after development
 from app.models.otp_code import OtpCode

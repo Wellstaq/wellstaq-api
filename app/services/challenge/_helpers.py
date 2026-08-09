@@ -6,10 +6,15 @@ from __future__ import annotations
 
 import logging
 
+
+from urllib.parse import urlparse
+
+from sqlalchemy.sql import Select
 from fastapi import HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.storage import confirm_upload
 from app.auth.dependencies import CurrentUser, require_scoped_permission
 from app.models import Branch, Challenge, Organization, ChallengeProgressEntry
 
@@ -176,3 +181,39 @@ async def notify_daily_goal_met(*, session: AsyncSession, challenge, participant
         reference_id=challenge.id, reference_type="challenge",
         body=f"You hit today's goal in the '{challenge.name}' challenge! Keep it up.",
     )
+
+
+def apply_challenge_visibility_filter(
+    query: Select, *, branch_id: str | None, scope: str | None,
+    viewer_branch_id: str | None, is_super_admin: bool,
+) -> Select:
+    """
+    Which CHALLENGES are visible/countable — same rule used for both the
+    list endpoint and stats. Does NOT filter participants.
+    """
+    if branch_id is not None:
+        if scope == "organization":
+            return query.where(or_(Challenge.branch_id == branch_id, Challenge.branch_id.is_(None)))
+        return query.where(Challenge.branch_id == branch_id)
+    if scope == "organization":
+        return query.where(Challenge.branch_id.is_(None))
+    if scope == "all":
+        return query
+    if not is_super_admin:
+        return query.where(or_(Challenge.branch_id.is_(None), Challenge.branch_id == viewer_branch_id))
+    return query
+
+
+
+def confirm_challenge_image(image_url: str | None) -> None:
+    """Same pattern as avatar_service.update_avatar — derive object_key
+    from the URL path and verify it actually exists in S3 before trusting
+    it, rather than accepting whatever URL the client sends."""
+    if not image_url:
+        return
+    object_key = urlparse(image_url).path.lstrip("/")
+    if not confirm_upload(object_key=object_key):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Challenge image upload not found — upload may have failed or not completed yet.",
+        )

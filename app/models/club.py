@@ -10,7 +10,16 @@ Design principles:
   and carries no uniqueness relaxation — one row, one branch, always.
 - privacy controls visibility: 'public' = anyone in org can see/join,
   'private' = invite only. Validated at app/schema layer (no DB enum).
-- category_id is a plain string stub — FK added when categories table exists.
+- category is a fixed, small enum — 'fitness', 'creativity',
+  'team_bonding', 'mental_health', 'nutrition'. Deliberately NOT a FK
+  to a shared/global categories table: club categories are a distinct,
+  small, hand-picked list that doesn't need to be shared with or
+  managed alongside other domains' categories (departments, challenges,
+  etc. have their own separate notions of "category" if any). A plain
+  validated string column avoids cross-domain coupling entirely —
+  no join, no shared table, no risk of a club referencing a category
+  meant for a different domain. Validated at app/schema layer (no DB
+  enum constraint), same pattern as `privacy`.
 - created_by is a plain audit string (no FK) — same pattern as Branch and
   Department. Preserved even if the creator user is later deleted.
 - member_count is denormalized — incremented/decremented by app layer or
@@ -44,18 +53,20 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Identity ──────────────────────────────────────────────────────────
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    
+
+    # Club profile/cover image — optional, uploaded via the shared
+    # presigned-upload flow (domain='clubs').
+    image_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # public (anyone can join) | private (invite only)
     # validated at app layer, no DB enum constraint
     privacy: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
 
-    category_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("categories.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    # fitness | creativity | team_bonding | mental_health | nutrition
+    # validated at app/schema layer, no DB enum constraint — same
+    # pattern as privacy. Plain string, not a FK — see module docstring.
+    category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+
     # Club leader — the user who created the club. Owns it fully.
     # SET NULL on delete so the club survives if the leader's account is removed.
     leader_id: Mapped[str | None] = mapped_column(
@@ -108,11 +119,6 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         "User",
         foreign_keys=[leader_id],
     )
-    category: Mapped["Category"] = relationship(
-        "Category",
-        back_populates="clubs",
-        foreign_keys=[category_id],
-    )
     members: Mapped[list["ClubMember"]] = relationship(
         "ClubMember",
         back_populates="club",
@@ -127,7 +133,8 @@ class Club(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return (
             f"<Club id={self.id} name={self.name} "
-            f"org={self.organization_id} branch={self.branch_id} privacy={self.privacy}>"
+            f"org={self.organization_id} branch={self.branch_id} "
+            f"category={self.category} privacy={self.privacy}>"
         )
 
 
@@ -182,9 +189,9 @@ class ClubMember(Base, UUIDPrimaryKeyMixin):
     )
 
     __table_args__ = (
-        
         # A user can now belong to multiple clubs — only prevent joining the same club twice.
         UniqueConstraint("club_id", "user_id", name="uq_club_members_club_user"),
     )
+
     def __repr__(self) -> str:
         return f"<ClubMember club_id={self.club_id} user_id={self.user_id}>"

@@ -36,6 +36,7 @@ Routes:
   POST   /organizations/{org_id}/posts                                    — create
   GET    /organizations/{org_id}/posts                                    — list (optional ?branch_id=)
   GET    /organizations/{org_id}/posts/saved                              — list my saved posts
+  GET    /organizations/{org_id}/posts/likes/given/count                  — count of posts I've liked
   GET    /organizations/{org_id}/posts/users/{user_id}                    — list posts by user
   GET    /organizations/{org_id}/posts/{post_id}                          — get one
   PATCH  /organizations/{org_id}/posts/{post_id}                          — edit (author only)
@@ -59,6 +60,7 @@ Routes:
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -74,6 +76,7 @@ from app.schemas.post import (
     CommentResponse,
     CommentUpdateRequest,
     LikeActionResponse,
+    LikesGivenCountResponse,
     PostCreateRequest,
     PostLikersListResponse,
     PostListResponse,
@@ -92,6 +95,7 @@ from app.services.post import (
     edit_comment,
     edit_post,
     get_comments,
+    get_likes_given_count,
     get_post,
     get_post_likers,
     get_posts,
@@ -157,17 +161,22 @@ async def create_post_route(
         return PostResponse.model_validate(post)
 
 # ── List ─────────────────────────────────────────────────────────────────────
-
 @router.get(
     "",
     response_model=PostListResponse,
     status_code=status.HTTP_200_OK,
     summary="List posts in the organization",
-    description="Optionally filter by ?branch_id=. Accessible to any authenticated org member.",
+    description=(
+        "scope='org_only' returns ONLY org-wide posts (branch_id IS NULL) — "
+        "use this for the Overview/org-wide space view. "
+        "scope='branch_and_org' (default) returns the given branch_id's "
+        "posts PLUS org-wide posts — use this for a branch's space view."
+    ),
 )
 async def list_posts_route(
     org_id: str,
     branch_id: str | None = Query(default=None),
+    scope: str = Query(default="branch_and_org", pattern="^(org_only|branch_and_org)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -176,15 +185,19 @@ async def list_posts_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/posts"):
+        org_only = scope == "org_only"
         viewable_branch_ids = await get_viewable_branch_ids(
             db=db, current_user=current_user, permission="post.view_all"
         )
-        check_branch_list_access(
-            current_user=current_user, branch_id=branch_id, viewable_branch_ids=viewable_branch_ids
-        )
+        if not org_only:
+            check_branch_list_access(
+                current_user=current_user, branch_id=branch_id, viewable_branch_ids=viewable_branch_ids
+            )
 
         posts, total = await get_posts(
-            session=db, organization_id=org_id, branch_id=branch_id,
+            session=db, organization_id=org_id,
+            branch_id=None if org_only else branch_id,
+            org_only=org_only,
             viewer_branch_id=current_user.branch_id,
             viewable_branch_ids=viewable_branch_ids,
             offset=offset, limit=limit,
@@ -192,7 +205,6 @@ async def list_posts_route(
         return PostListResponse(
             items=[PostResponse.model_validate(p) for p in posts], total=total, offset=offset, limit=limit,
         )
-
 
 # ── Saved posts (must be registered before /{post_id} to avoid path clash) ──
 
@@ -220,6 +232,34 @@ async def list_saved_posts_route(
         )
 
 
+# ── Likes given (must be registered before /{post_id} too) ──────────────────
+
+@router.get(
+    "/likes/given/count",
+    response_model=LikesGivenCountResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Count of posts I've liked",
+    description=(
+        "Current user only. Optionally restrict to a date window via "
+        "period_start/period_end (both inclusive) — e.g. 'likes given this week'."
+    ),
+)
+async def get_likes_given_count_route(
+    org_id: str,
+    period_start: date | None = Query(default=None),
+    period_end: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LikesGivenCountResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/posts/likes/given/count"):
+        count = await get_likes_given_count(
+            session=db, organization_id=org_id, user_id=current_user.user_id,
+            period_start=period_start, period_end=period_end,
+        )
+        return LikesGivenCountResponse(count=count)
+
+
 # ── Get posts by user (must be registered before /{post_id} too) ────────────
 
 @router.get(
@@ -227,11 +267,18 @@ async def list_saved_posts_route(
     response_model=PostListResponse,
     status_code=status.HTTP_200_OK,
     summary="List posts by a specific user",
-    description="All posts authored by the given user in this org, across branches.",
+    description=(
+        "All posts authored by the given user in this org, across branches. "
+        "Optionally restrict to a date window via period_start/period_end "
+        "(both inclusive) — e.g. for a 'posts this week' stat, pass this "
+        "week's Monday and Sunday."
+    ),
 )
 async def list_posts_by_user_route(
     org_id: str,
     user_id: str,
+    period_start: date | None = Query(default=None),
+    period_end: date | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -247,6 +294,7 @@ async def list_posts_by_user_route(
             session=db, organization_id=org_id, user_id=user_id,
             viewer_branch_id=current_user.branch_id,
             viewable_branch_ids=viewable_branch_ids,
+            period_start=period_start, period_end=period_end,
             offset=offset, limit=limit,
         )
         return PostListResponse(
@@ -479,7 +527,7 @@ async def share_post_route(
         )
         await db.commit()
         return ShareResponse(post_id=post_id, user_id=current_user.user_id, message="Shared.")
-        
+
 # ── Saves ────────────────────────────────────────────────────────────────────
 @router.post("/{post_id}/save", response_model=SaveActionResponse, status_code=status.HTTP_200_OK)
 async def save_post_route(

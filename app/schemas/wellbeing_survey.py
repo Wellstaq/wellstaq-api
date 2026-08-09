@@ -97,3 +97,7 @@ class MyResponseItem(BaseModel):
 
 class MyResponseListResponse(BaseModel):
     items: list[MyResponseItem]
+
+class PulseSourceResponse(LivePulseResponse):
+    is_live: bool
+    as_of: datetime | None  # None when is_live=True (it's current by definition); set when it's a historical snapshot

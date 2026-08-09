@@ -1,12 +1,8 @@
 """
 app/services/payment/trial_service.py
 
-start_trial — provisions a 7-day free trial subscription. Called once,
-automatically, at org creation — never a manual/user-triggered action.
-No payment or gateway interaction happens at this step; the org simply
-gets `status="trialing"` with no external_customer_id yet. That gets
-populated later, once actual payment collection is wired to a real
-gateway (see TODO(payment-gateway) throughout this module).
+start_trial — provisions a 7-day free trial subscription. Called once for an org
+
 """
 
 from __future__ import annotations
@@ -24,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 TRIAL_LENGTH = timedelta(days=7)
 
-# app/services/payment/trial_service.py
+
 
 async def start_trial(*, session: AsyncSession, organization_id: str) -> OrganizationSubscription:
     existing = await session.execute(

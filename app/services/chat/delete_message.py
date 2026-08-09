@@ -30,8 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import CurrentUser, require_scoped_permission
 from app.models import Club, Event, GroupChatMessage
 from app.services.chat._helpers import get_conversation_branch_id, get_message_or_404
+from app.services.storage import release_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
+
 
 async def _has_deletion_access(
     *,
@@ -40,7 +43,6 @@ async def _has_deletion_access(
     message: GroupChatMessage,
 ) -> bool:
     if message.conversation_type == "club":
-        # Club leader
         result = await session.execute(
             select(Club).where(Club.id == message.conversation_id)
         )
@@ -49,7 +51,6 @@ async def _has_deletion_access(
             return True
 
     elif message.conversation_type == "event":
-        # Event creator
         result = await session.execute(
             select(Event).where(Event.id == message.conversation_id)
         )
@@ -60,7 +61,6 @@ async def _has_deletion_access(
     return False
 
 
-    
 async def delete_message(
     *,
     session: AsyncSession,
@@ -75,9 +75,6 @@ async def delete_message(
     if not await _has_deletion_access(
         session=session, current_user=current_user, message=message
     ):
-        # Path 4 — scoped chat.moderate. require_scoped_permission raises
-        # 403 internally if the grant isn't found, so we don't need to
-        # raise here ourselves — just let it propagate.
         branch_id = await get_conversation_branch_id(
             session=session,
             conversation_type=message.conversation_type,
@@ -90,9 +87,21 @@ async def delete_message(
             target_branch_id=branch_id,
         )
 
+    media_url = message.media_url  # capture before delete
+
     await session.delete(message)
     await session.flush()
-    
+
+    if media_url:
+        try:
+            await release_media_asset(session=session, object_key=extract_object_key(media_url))
+        except Exception:
+            logger.error(
+                "Failed to release chat message media asset",
+                exc_info=True,
+                extra={"message_id": message.id},
+            )
+
     logger.info(
         "Group chat message deleted: "
         "message_id=%s user_id=%s conversation_type=%s conversation_id=%s",
@@ -101,5 +110,3 @@ async def delete_message(
         message.conversation_type,
         message.conversation_id,
     )
-
-    

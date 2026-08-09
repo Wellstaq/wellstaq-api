@@ -6,6 +6,11 @@ own branch always visible; any branch requires super_admin (no
 leaderboard.view_all permission exists yet — add one and mirror
 check_post_branch_access's approach if cross-branch viewing is needed).
 
+Empty leaderboards (no job run yet, or no qualifying participants) are
+a normal 200 with items: [] — period_start/period_end are always
+populated (see get_leaderboard.compute_period_bounds), so absence of
+data is never conflated with the route/resource not existing.
+
 Routes:
   GET /organizations/{org_id}/leaderboard/branch    — my branch, ranked
   GET /organizations/{org_id}/leaderboard/org        — org-wide, ranked
@@ -45,8 +50,6 @@ async def branch_leaderboard_route(
             session=db, organization_id=org_id, branch_id=target_branch_id,
             metric_type=metric_type.strip().lower(), period_type=period_type, limit=limit,
         )
-        if period_start is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No leaderboard data available yet for this metric/period.")
 
         items = [
             LeaderboardEntryResponse(
@@ -77,9 +80,6 @@ async def org_leaderboard_route(
             session=db, organization_id=org_id, metric_type=metric_type.strip().lower(),
             period_type=period_type, limit=limit,
         )
-        
-        if period_start is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No leaderboard data available yet for this metric/period.")
 
         items = [
             LeaderboardEntryResponse(

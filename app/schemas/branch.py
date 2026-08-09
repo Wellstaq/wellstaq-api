@@ -13,10 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class BranchCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
-  
+   
 # ── Update ───────────────────────────────────────────────────────────────────
 class BranchUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
+   
 
 # ── Response ─────────────────────────────────────────────────────────────────
 

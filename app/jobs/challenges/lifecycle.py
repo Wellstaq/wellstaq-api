@@ -16,11 +16,14 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.jobs.shared import get_job_session
-from app.models import Challenge, ChallengeParticipant, ChallengeProgressEntry
 from app.services.challenge._helpers import mark_challenge_complete
+from app.models import (
+    Challenge, ChallengeParticipant, ChallengeStatsSnapshot, Organization, Branch, User,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -111,3 +114,91 @@ async def _finalize_daily_minimum_challenge(session, challenge: Challenge) -> in
             passed_count += 1
 
     return passed_count
+
+
+
+
+async def compute_challenge_stats_snapshots(ctx: dict[str, Any]) -> None:
+    """
+    Daily snapshot, one row per org (branch_id=None, scope='all') and
+    one row per branch (branch_id=<id>, own-members-only) — mirrors
+    get_challenge_stats's two modes exactly, so trend deltas are always
+    comparing like-for-like.
+    """
+    today = date.today()
+    written = 0
+
+    async with get_job_session() as session:
+        org_ids = (await session.execute(select(Organization.id))).scalars().all()
+
+        for org_id in org_ids:
+            # Org-wide row (scope=all): every challenge, every participant
+            challenge_ids = (
+                select(Challenge.id).where(Challenge.organization_id == org_id).subquery()
+            )
+            active_count = (await session.execute(
+                select(func.count()).select_from(Challenge).where(
+                    Challenge.organization_id == org_id, Challenge.status == "active",
+                )
+            )).scalar_one()
+            total_p, completed_p = (await session.execute(
+                select(func.count(ChallengeParticipant.id), func.count(ChallengeParticipant.completed_at))
+                .where(ChallengeParticipant.challenge_id.in_(select(challenge_ids.c.id)))
+            )).one()
+
+            await _upsert_snapshot(session, org_id, None, today, active_count, total_p, completed_p)
+            written += 1
+
+            # Per-branch rows: challenges visible to that branch (own + org-wide),
+            # participants restricted to that branch's own members
+            branch_ids = (await session.execute(
+                select(Branch.id).where(Branch.organization_id == org_id)
+            )).scalars().all()
+
+            for branch_id in branch_ids:
+                visible_challenge_ids = (
+                    select(Challenge.id).where(
+                        Challenge.organization_id == org_id,
+                        (Challenge.branch_id == branch_id) | (Challenge.branch_id.is_(None)),
+                    ).subquery()
+                )
+                active_count = (await session.execute(
+                    select(func.count()).select_from(Challenge).where(
+                        Challenge.organization_id == org_id,
+                        (Challenge.branch_id == branch_id) | (Challenge.branch_id.is_(None)),
+                        Challenge.status == "active",
+                    )
+                )).scalar_one()
+                total_p, completed_p = (await session.execute(
+                    select(func.count(ChallengeParticipant.id), func.count(ChallengeParticipant.completed_at))
+                    .select_from(ChallengeParticipant)
+                    .join(User, User.id == ChallengeParticipant.user_id)
+                    .where(
+                        ChallengeParticipant.challenge_id.in_(select(visible_challenge_ids.c.id)),
+                        User.branch_id == branch_id,
+                    )
+                )).one()
+
+                await _upsert_snapshot(session, org_id, branch_id, today, active_count, total_p, completed_p)
+                written += 1
+
+        await session.commit()
+
+    logger.info("Challenge stats snapshots written", extra={"rows_written": written})
+
+
+async def _upsert_snapshot(session, org_id, branch_id, snapshot_date, active, total_p, completed_p):
+    existing = await session.execute(
+        select(ChallengeStatsSnapshot).where(
+            ChallengeStatsSnapshot.organization_id == org_id,
+            ChallengeStatsSnapshot.branch_id == branch_id,
+            ChallengeStatsSnapshot.snapshot_date == snapshot_date,
+        )
+    )
+    row = existing.scalar_one_or_none()
+    if row is None:
+        row = ChallengeStatsSnapshot(organization_id=org_id, branch_id=branch_id, snapshot_date=snapshot_date)
+        session.add(row)
+    row.active_challenges = active
+    row.total_participants = total_p
+    row.completed_participants = completed_p

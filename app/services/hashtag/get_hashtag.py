@@ -40,13 +40,6 @@ async def get_trending_hashtags(
 ) -> list[tuple[Hashtag, HashtagTrendSnapshot]]:
     """
     Returns the most recent trend snapshot per hashtag, ordered by score.
-
-    TODO(background-job): this reads whatever HashtagTrendSnapshot rows
-    exist. Until the scheduled trend-computation job is built (every 15/60
-    min per the model docstring), this will return an empty list — there's
-    nothing populating snapshots yet. Falling back to total_post_count
-    ordering isn't done here deliberately, so this function's behavior
-    doesn't silently change once the real job ships.
     """
     latest_window_subq = (
         select(

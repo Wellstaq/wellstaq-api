@@ -78,11 +78,12 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Identity ──────────────────────────────────────────────────────────
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     # ── Schedule / status ────────────────────────────────────────────────────
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="upcoming")
     metric_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     target_type: Mapped[str] = mapped_column(String(20), nullable=False, default="cumulative")
     # "cumulative" = sum across the whole challenge window, deadline-driven
@@ -147,7 +148,7 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ck_challenges_date_range",
         ),
         CheckConstraint(
-            "status IN ('draft', 'active', 'completed', 'cancelled', 'archived')",
+            "status IN ('upcoming', 'active', 'completed', 'cancelled', 'archived')",
             name="ck_challenges_status_valid",
         ),
         CheckConstraint("target_type IN ('cumulative', 'daily_minimum')", name="ck_challenges_target_type_valid"),
@@ -285,3 +286,32 @@ class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<ChallengeProgressEntry challenge={self.challenge_id} user={self.user_id} date={self.entry_date} value={self.value}>"
 
+class ChallengeStatsSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """
+    One row per (organization_id, branch_id, snapshot_date). branch_id is
+    nullable — null row = org-wide overview snapshot (scope='all'), a
+    non-null row = that branch's own-members snapshot (matching the same
+    branch-membership rule used in get_challenge_stats).
+
+    Written once daily by compute_challenge_stats_snapshots. Trend
+    comparisons look up the snapshot closest to N days ago; if none
+    exists yet (e.g. first week after this feature ships), trend is
+    omitted rather than guessed.
+    """
+    __tablename__ = "challenge_stats_snapshots"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    branch_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+
+    active_challenges: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_participants: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_participants: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "branch_id", "snapshot_date", name="uq_challenge_stats_snapshot_day"),
+    )

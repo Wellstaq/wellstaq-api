@@ -7,7 +7,7 @@ from .create_post import create_post
 from .delete_post import delete_post
 from .edit_post import edit_post
 from .get_post import get_post, get_posts, get_posts_by_user
-from .like_service import get_post_likers, like_post, unlike_post
+from .like_service import get_post_likers, like_post, unlike_post, get_likes_given_count
 from .save_service import get_saved_posts, save_post, unsave_post
 from .share_service import share_post
 
@@ -21,6 +21,7 @@ __all__ = [
     "like_post",
     "unlike_post",
     "get_post_likers",
+    "get_likes_given_count",
     "add_comment",
     "edit_comment",
     "delete_comment",

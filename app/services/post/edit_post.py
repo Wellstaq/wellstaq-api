@@ -8,12 +8,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
-
-from app.models import Post
-from app.services.post._helpers import get_post_or_404
-from app.services.hashtag import sync_post_hashtags
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.datetime import ensure_utc
+from app.models import Post
+from app.services.hashtag import sync_post_hashtags
+from app.services.post._helpers import get_post_or_404
+from app.services.storage import attach_media_asset, confirm_upload, release_media_asset
+from app.services.storage._helpers import extract_object_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +42,32 @@ async def edit_post(
     if content is not None:
         post.content = content.strip()
         await sync_post_hashtags(session=session, organization_id=organization_id, post_id=post.id, content=post.content)
+
     if media_url is not None:
+        object_key = extract_object_key(media_url)
+        if not confirm_upload(object_key=object_key):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
+
+        old_media_url = post.media_url
         post.media_url = media_url
+
+        # Mark the new upload as attached so the sweep job won't reap it.
+        await attach_media_asset(
+            session=session, object_key=object_key,
+            attached_to_type="post", attached_to_id=post.id,
+        )
+
+        # Release the old media now that it's no longer referenced —
+        # previously this was silently overwritten with no cleanup at all.
+        if old_media_url and old_media_url != media_url:
+            try:
+                await release_media_asset(session=session, object_key=extract_object_key(old_media_url))
+            except Exception:
+                logger.error(
+                    "Failed to release old post media asset", exc_info=True,
+                    extra={"post_id": post.id},
+                )
+
     if media_type is not None:
         post.media_type = media_type
 

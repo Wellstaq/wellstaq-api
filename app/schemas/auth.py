@@ -22,7 +22,14 @@ Setup / disable (requires a valid access token):
 """
 
 from typing import Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    EmailStr, 
+    Field, 
+    field_validator, 
+    model_validator,
+    ConfigDict,
+)
 
 from pydantic import BaseModel, Field, field_validator
 import re
@@ -180,23 +187,28 @@ class AccessTokenResponse(BaseModel):
 
 
 # ── /me ───────────────────────────────────────────────────────────────────────
+class PermissionGrantSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    name: str
+    branch_id: str | None = None
+
 
 class UserMeResponse(BaseModel):
     user_id: str
     email: str
     first_name: str
     last_name: str
-    role: str | None
+    role: str
     organization_id: str
-    branch_id: str | None
-    department_id: str | None   # None for super_admin, None if not in a department
-    permissions: list[str]
+    branch_id: str
+    department_id: str | None
+    location: str | None
+    phone_number: str | None
+    status: str
+    permissions: list[PermissionGrantSchema]  # was list[str]
     avatar_url: str | None
     two_fa_enabled: bool
     two_fa_method: str | None
-
-
-
 
 
 

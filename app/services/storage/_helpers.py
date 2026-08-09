@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import uuid
 
+from app.core.config import settings
+
 ALLOWED_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 ALLOWED_VIDEO_TYPES = ("video/mp4", "video/quicktime", "video/webm")
 ALLOWED_MEDIA_TYPES = ALLOWED_IMAGE_TYPES + ALLOWED_VIDEO_TYPES
@@ -23,8 +25,9 @@ MAX_VIDEO_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 def build_object_key(*, domain: str, organization_id: str, extension: str) -> str:
     """
-    domain: 'posts' | 'stories' | 'chat' | 'avatars' — keeps S3 objects
-    organized by feature, mirrors how  DB tables are separated.
+    domain: 'posts' | 'stories' | 'chat' | 'avatars' | 'challenges' | 'events'
+    — keeps S3 objects organized by feature, mirrors how DB tables are
+    separated.
     organization_id: included so objects are trivially attributable/
     auditable per-tenant even though S3 has no tenant concept itself.
     A random UUID, not the DB row's own id, is used as the filename —
@@ -40,3 +43,17 @@ def content_type_to_extension(content_type: str) -> str:
         "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm",
     }
     return mapping.get(content_type, "bin")
+
+def extract_object_key(media_url: str | None) -> str | None:
+    """Reverses get_object_url() — pulls the object_key back out of a
+    stored media_url so callers can look up its MediaAsset row without
+    re-deriving the URL shape everywhere. Works for both the current
+    CloudFront-style URL and legacy raw S3 URLs. Returns None if
+    media_url is falsy or doesn't match either expected shape."""
+    if not media_url:
+        return None
+    for marker in (f"{settings.STORAGE_CDN_DOMAIN}/", ".amazonaws.com/"):
+        idx = media_url.find(marker)
+        if idx != -1:
+            return media_url[idx + len(marker):]
+    return None

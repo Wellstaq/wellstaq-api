@@ -516,7 +516,10 @@ async def me(
             role=current_user.role,
             organization_id=current_user.organization_id,
             branch_id=current_user.branch_id,
+            phone_number=user.phone_number,
+            location=user.country,
             department_id=department_id,
+            status=user.status,          # <-- add this
             permissions=current_user.permissions,
             avatar_url=user.avatar_url,
             two_fa_enabled=settings_row.two_fa_enabled if settings_row else False,

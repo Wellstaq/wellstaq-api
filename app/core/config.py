@@ -24,8 +24,8 @@ class Settings(BaseSettings):
 
     # Auth / JWT
     # Generate a real secret with: openssl rand -hex 32
-    JWT_SECRET_KEY: str = "CHANGE_ME_BEFORE_PRODUCTION"
-    JWT_ALGORITHM: str = "HS256"
+    JWT_SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
@@ -36,12 +36,13 @@ class Settings(BaseSettings):
     # same S3 API, so swapping providers is just changing
     # these values, not the code) ─────────────────────────
     STORAGE_ENDPOINT_URL: str = ""  # leave blank for AWS S3; set for R2, e.g. https://<account_id>.r2.cloudflarestorage.com
-    STORAGE_REGION: str = "us-east-1"
+    STORAGE_REGION: str = ""
     STORAGE_ACCESS_KEY_ID: str = ""
     STORAGE_SECRET_ACCESS_KEY: str = ""
-    STORAGE_BUCKET_NAME: str = "wellstaq-media"
+    STORAGE_BUCKET_NAME: str = ""
     STORAGE_PUBLIC_BASE_URL: str = ""  # public CDN/base URL used to build media_url for clients
-    PRESIGNED_URL_EXPIRE_SECONDS: int = 300  # 5 minutes to complete the direct upload
+    PRESIGNED_URL_EXPIRY_SECONDS: int = 300  # 5 minutes to complete the direct upload
+    STORAGE_CDN_DOMAIN: str = ""
 
     # ── CORS ─────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
@@ -52,9 +53,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    SENDGRID_API_KEY: str ="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"
-    MAIL_FROM: str ="iyanue15@gmail.com"
-    MAIL_FROM_NAME: str ="Wellstaq"
+    SENDGRID_API_KEY: str =""
+    MAIL_FROM: str =""
+    MAIL_FROM_NAME: str =""
 
 
     # OAuth — Google/Apple verify against these
@@ -67,8 +68,8 @@ class Settings(BaseSettings):
     PERMISSION_CACHE_TTL_SECONDS: int = 300
 
     #payment gateway
-    PAYSTACK_SECRET_KEY: str="sk_test_297dcf2e70fb0eca803add3ad2326aa8956ae974"
-    PAYSTACK_PUBLIC_KEY: str="pk_test_11ad9587f1cbc366887884af0c2cf027e8498316"
+    PAYSTACK_SECRET_KEY: str=""
+    PAYSTACK_PUBLIC_KEY: str=""
 
 
 # Single shared settings instance — import this, never instantiate Settings() elsewhere

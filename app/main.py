@@ -22,11 +22,11 @@ from app.core.limiter import limiter
 from app.models.base import Base
 from app.routers import (
     auth, 
-    uploads, 
     departments,
     organizations,
     roles,
     branches,
+    branch_activities,
     clubs,
     permissions,
     events,
@@ -46,6 +46,7 @@ from app.routers import (
     engagements,
     storages,
     targets,
+    dashboards,
     
 )
 from app.routers.payments import(
@@ -96,11 +97,11 @@ app.add_middleware(
 # clubs, events, posts, ...) gets included here the same way.
 
 app.include_router(auth.router)
-app.include_router(uploads.router)
 app.include_router(departments.router)
 app.include_router(organizations.router)
 app.include_router(roles.router)
 app.include_router(branches.router)
+app.include_router(branch_activities.router)
 app.include_router(clubs.router)
 app.include_router(permissions.router)
 app.include_router(events.router)
@@ -120,6 +121,7 @@ app.include_router(engagements.router)
 app.include_router(engagement_logs.router)
 app.include_router(storages.router)
 app.include_router(targets.router)
+app.include_router(dashboards.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
 app.include_router(available_subscription_router)

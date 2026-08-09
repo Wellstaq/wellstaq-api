@@ -146,7 +146,7 @@ DIGIT_PATTERN = re.compile(r"[0-9]")
 HEADQUARTERS_BRANCH_NAME = "Headquarters"
 
 #challenge
-CHALLENGE_STATUSES = ("draft", "active", "completed", "cancelled", "archived")
+CHALLENGE_STATUSES = ("upcoming", "active", "completed", "cancelled", "archived")
 TARGET_TYPES = ("cumulative", "daily_minimum")
 
 #chat
