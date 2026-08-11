@@ -149,13 +149,13 @@ async def my_responses_route(
 
 
 # ── Admin/manager: pulse aggregates ──────────────────────────────────────────
-@router.get("/pulse/live", response_model=LivePulseResponse, status_code=status.HTTP_200_OK)
+@router.get("/pulse/live", response_model=LivePulseResponse | list[LivePulseResponse], status_code=status.HTTP_200_OK)
 async def live_pulse_route(
     org_id: str,
     branch_id: str | None = Query(default=None, description="Omit for org-wide, or scope to one branch."),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
-) -> LivePulseResponse:
+) -> LivePulseResponse | list[LivePulseResponse]:
     require_same_organization(org_id, current_user)
 
    
@@ -164,12 +164,13 @@ async def live_pulse_route(
     )
 
     async with request_guard(db, "/organizations/{org_id}/wellbeing-survey/pulse/live"):
-        window = await get_open_window_or_404(session=db, organization_id=org_id)
         aggregation = await get_live_pulse(session=db, organization_id=org_id, branch_id=branch_id)
+        if aggregation is None:
+            return []
 
         pq = aggregation["per_question"]
         return LivePulseResponse(
-            window_id=window.id, respondent_count=aggregation["respondent_count"],
+            window_id=aggregation["window_id"], respondent_count=aggregation["respondent_count"],
             stress_manageability=PulseQuestionResult(**pq["stress_manageability"]),
             energy_recovery=PulseQuestionResult(**pq["energy_recovery"]),
             connection_belonging=PulseQuestionResult(**pq["connection_belonging"]),

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
@@ -172,10 +172,13 @@ async def list_events_route(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> EventListResponse:
     require_same_organization(org_id, current_user)
+    # Swagger can submit an untouched optional text field as `branch_id=`.
+    # Treat blank/whitespace exactly like an omitted filter (org-wide list).
+    normalized_branch_id = branch_id.strip() if branch_id else None
 
     async with request_guard(db, "/organizations/{org_id}/events"):
         events, total = await get_events(
-            session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
+            session=db, organization_id=org_id, branch_id=normalized_branch_id, offset=offset, limit=limit,
         )
         return EventListResponse(
             items=[
@@ -215,7 +218,9 @@ async def get_event_route(
 ) -> EventResponse:
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}"):
-        event = await get_event(session=db, organization_id=org_id, event_id=event_id)
+        event, participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
         return EventResponse.model_validate(
             {
                 **event.__dict__,
@@ -265,7 +270,9 @@ async def edit_event_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}"):
-        event = await get_event(session=db, organization_id=org_id, event_id=event_id)
+        event, _participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.update", target_branch_id=event.branch_id,
         )
@@ -315,7 +322,9 @@ async def cancel_event_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}/cancel"):
-        event = await get_event(session=db, organization_id=org_id, event_id=event_id)
+        event, _participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.update", target_branch_id=event.branch_id,
         )
@@ -356,7 +365,9 @@ async def delete_event_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}"):
-        event = await get_event(session=db, organization_id=org_id, event_id=event_id)
+        event, _participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.delete", target_branch_id=event.branch_id,
         )
@@ -441,8 +452,7 @@ Any authenticated member of the organization. No special permission required
 for self-joins. Admins can use `is_invite: true` to add other users on their behalf.
 
 **Branch rule:**
-The user being added must belong to the **same branch** as the event.
-Cross-branch joins return `403 Forbidden`.
+The user being invited or joined must belong to the same organization as the event.
 
 **Request body:**
 | Field       | Type    | Required | Notes |
@@ -467,12 +477,26 @@ async def join_event_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}/participants"):
+        event, _participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
+        if body.is_invite:
+            if body.user_id == current_user.user_id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Use a self-join request instead of inviting yourself.")
+            await require_scoped_permission(
+                db=db, current_user=current_user, permission="event.update", target_branch_id=event.branch_id,
+            )
+        elif body.user_id != current_user.user_id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only join an event for yourself.")
+
         await join_event(
             session=db, organization_id=org_id, event_id=event_id,
             user_id=body.user_id, is_invite=body.is_invite,
+            inviter_id=current_user.user_id if body.is_invite else None,
         )
         await db.commit()
-        return ParticipantActionResponse(event_id=event_id, user_id=body.user_id, message="Joined event.")
+        message = "Invitation sent." if body.is_invite else "Joined event."
+        return ParticipantActionResponse(event_id=event_id, user_id=body.user_id, message=message)
 
 
 # ── Update RSVP status ────────────────────────────────────────────────────────
@@ -573,7 +597,9 @@ async def mark_attendance_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/events/{event_id}/participants/{user_id}/attendance"):
-        event = await get_event(session=db, organization_id=org_id, event_id=event_id)
+        event, _participant_count = await get_event(
+            session=db, organization_id=org_id, event_id=event_id,
+        )
         await require_scoped_permission(
             db=db, current_user=current_user, permission="event.update", target_branch_id=event.branch_id,
         )

@@ -16,21 +16,58 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Department, DepartmentMember, User
+from app.models import Branch, Department, DepartmentMember, User
 from app.services.leaderboard import get_org_leaderboard
 from app.services.organization.org_directory import get_organization_members
 from app.services.auth.session_service import get_me
 
 
-async def get_dashboard_bootstrap(*, session: AsyncSession, organization_id: str, user_id: str, metric_type: str = "steps") -> dict:
-    user = await get_me(session=session, user_id=user_id)
+async def get_dashboard_bootstrap(
+    *, session: AsyncSession, organization_id: str, user_id: str,
+    role: str | None, branch_id: str | None, permissions: list,
+    metric_type: str = "steps",
+) -> dict:
+    user, department_id = await get_me(session=session, user_id=user_id, role=role)
+    settings = user.settings
+    user_response = {
+        "user_id": user.id,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": role,
+        "organization_id": organization_id,
+        "branch_id": branch_id,
+        "department_id": department_id,
+        "location": user.country,
+        "phone_number": user.phone_number,
+        "status": user.status,
+        "permissions": permissions,
+        "avatar_url": user.avatar_url,
+        "two_fa_enabled": settings.two_fa_enabled if settings else False,
+        "two_fa_method": settings.two_fa_method if settings else None,
+    }
 
     members, _total = await get_organization_members(session=session, organization_id=organization_id, offset=0, limit=200)
 
+    branches_result = await session.execute(
+        select(Branch).where(Branch.organization_id == organization_id).order_by(Branch.created_at.asc())
+    )
+    branches = list(branches_result.scalars().all())
+
     departments = await _build_department_bootstrap(session=session, organization_id=organization_id)
 
-    from app.services.event import get_events  # adjust import path to match your real event service module
-    events, _ = await get_events(session=session, organization_id=organization_id, offset=0, limit=20)
+    from app.services.event import get_events
+    event_rows, _ = await get_events(
+        session=session, organization_id=organization_id, offset=0, limit=20,
+    )
+    # get_events returns (Event, participant_count) pairs.  Convert them to
+    # response-shaped mappings before DashboardBootstrapResponse validation;
+    # passing SQLAlchemy Row/tuple objects directly makes every EventResponse
+    # field appear missing to Pydantic.
+    events = [
+        {**event.__dict__, "participant_count": participant_count}
+        for event, participant_count in event_rows
+    ]
 
     from app.services.challenge import get_challenges
     challenges, _ = await get_challenges(
@@ -42,12 +79,21 @@ async def get_dashboard_bootstrap(*, session: AsyncSession, organization_id: str
     )
 
     return {
-        "user": user,
+        "user": user_response,
+        "branches": branches,
         "members": members,
         "departments": departments,
         "events": events,
         "challenges": challenges,
-        "leaderboard": leaderboard_rows,
+        "leaderboard": [
+            {
+                "user_id": user_row.id, "first_name": user_row.first_name, "last_name": user_row.last_name,
+                "avatar_url": user_row.avatar_url, "value": snapshot.value, "rank": snapshot.rank,
+                "previous_rank": snapshot.previous_rank, "org_rank": snapshot.org_rank,
+                "previous_org_rank": snapshot.previous_org_rank,
+            }
+            for snapshot, user_row in leaderboard_rows
+        ],
     }
 
 

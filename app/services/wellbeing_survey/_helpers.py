@@ -15,7 +15,7 @@ from app.models.wellbeing_survey import WellbeingSurveyWindow
 CADENCE_DAYS = {"weekly": 7, "biweekly": 14, "monthly": 30}
 
 
-async def get_open_window_or_404(*, session: AsyncSession, organization_id: str) -> WellbeingSurveyWindow:
+async def get_open_window(*, session: AsyncSession, organization_id: str) -> WellbeingSurveyWindow | None:
     result = await session.execute(
         select(WellbeingSurveyWindow).where(
             WellbeingSurveyWindow.organization_id == organization_id,
@@ -24,7 +24,12 @@ async def get_open_window_or_404(*, session: AsyncSession, organization_id: str)
         .order_by(WellbeingSurveyWindow.window_start.desc())
         .limit(1)
     )
-    window = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
+
+
+async def get_open_window_or_404(*, session: AsyncSession, organization_id: str) -> WellbeingSurveyWindow:
+    """Strict variant used by submission/member flows that require a window."""
+    window = await get_open_window(session=session, organization_id=organization_id)
     if window is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No open wellbeing survey window for this organization.")
     return window

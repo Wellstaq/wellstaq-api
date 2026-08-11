@@ -29,6 +29,12 @@ class TransactionListResponse(BaseModel):
     offset: int
     limit: int
 
+
+class PaymentVerificationResponse(BaseModel):
+    transaction: TransactionResponse
+    provider_status: str
+    reconciled: bool
+
 class CheckoutRequest(BaseModel):
     plan_id: str = Field(..., description="The plan to check out into — e.g. the id of the 'Standard' plan.")
     callback_url: str | None = None

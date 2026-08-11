@@ -30,12 +30,19 @@ class ActivityTypeCount(BaseModel):
     count: int
 
 
+class ActivityTrend(BaseModel):
+    current: int
+    previous: int | None
+    change_pct: float | None
+
+
 class ActivitySummaryResponse(BaseModel):
     """Aggregate counts only — never the underlying raw entries. Safe to
     expose broadly (org-wide or branch-wide) since no individual's
     specific actions are identifiable from a total."""
     total_count: int
     by_type: list[ActivityTypeCount]
+    trend: ActivityTrend | None = None
 
 
 class UserActivityCountResponse(BaseModel):

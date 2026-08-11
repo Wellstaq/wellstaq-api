@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import RSVP_STATUSES
 from app.models import Event, EventParticipant, User
 from app.services.activity import log_activity
+from app.services.notification import create_notification
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +43,7 @@ async def join_event(
     event_id: str,
     user_id: str,
     is_invite: bool = False,
-    initial_status: str | None = "pending",
+    inviter_id: str | None = None,
 ) -> EventParticipant:
     event = await _require_event(session, organization_id, event_id)
 
@@ -55,36 +56,54 @@ async def join_event(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found or does not belong to this organization.")
 
-    if user.branch_id != event.branch_id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "You can only join events that belong to your branch.",
-        )
-
     existing = await session.execute(
         select(EventParticipant).where(
             EventParticipant.event_id == event_id, EventParticipant.user_id == user_id
         )
     )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "User is already a participant in this event.")
+    existing_participant = existing.scalar_one_or_none()
+    if existing_participant is not None:
+        # An invitation is only an RSVP placeholder, not membership. When the
+        # invited user explicitly joins, accept that invitation in-place.
+        if not is_invite and existing_participant.status in ("invited", "declined"):
+            existing_participant.status = "accepted"
+            await session.flush()
+            await session.refresh(existing_participant)
+            await log_activity(
+                session=session, user_id=user_id, organization_id=organization_id,
+                activity_type="joined_event", reference_id=event_id, reference_type="event",
+            )
+            return existing_participant
+        raise HTTPException(status.HTTP_409_CONFLICT, "User already has an RSVP for this event.")
 
     participant = EventParticipant(
         event_id=event_id,
         user_id=user_id,
         invited_at=datetime.now(timezone.utc) if is_invite else None,
-        status="invited" if is_invite else initial_status,
+        status="invited" if is_invite else "accepted",
         attended=False,
     )
     session.add(participant)
     await session.flush()
     await session.refresh(participant)
 
-    #add to activity feed
-    await log_activity(
-        session=session, user_id=user_id, organization_id=organization_id,
-        activity_type="joined_event", reference_id=event_id, reference_type="event",
-    )
+    if is_invite:
+        await create_notification(
+            session=session,
+            user_id=user_id,
+            notification_type="event_reminder",
+            body=f"You were invited to join {event.title}.",
+            organization_id=organization_id,
+            actor_id=inviter_id,
+            reference_id=event.id,
+            reference_type="event",
+            image_url=event.image_url,
+        )
+    else:
+        await log_activity(
+            session=session, user_id=user_id, organization_id=organization_id,
+            activity_type="joined_event", reference_id=event_id, reference_type="event",
+        )
     logger.info(
     "User joined event event_id=%s user_id=%s",
     event.id,

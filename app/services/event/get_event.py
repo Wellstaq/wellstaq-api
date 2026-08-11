@@ -28,6 +28,7 @@ async def get_event(
             EventParticipant.event_id,
             func.count().label("cnt"),
         )
+        .where(EventParticipant.status.in_(("accepted", "pending")))
         .group_by(EventParticipant.event_id)
         .subquery()
     )
@@ -75,6 +76,7 @@ async def get_events(
 
     participant_count_sq = (
         select(EventParticipant.event_id, func.count().label("cnt"))
+        .where(EventParticipant.status.in_(("accepted", "pending")))
         .group_by(EventParticipant.event_id)
         .subquery()
     )

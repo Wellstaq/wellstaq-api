@@ -9,9 +9,10 @@ insert to avoid the UniqueConstraint's duplicate-key error).
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.snapshot_target import Target
@@ -59,3 +60,20 @@ async def delete_target(*, session: AsyncSession, organization_id: str, target_i
     target = await get_target_or_404(session=session, organization_id=organization_id, target_id=target_id)
     await session.delete(target)
     await session.flush()
+
+
+async def get_monthly_step_targets(
+    *, session: AsyncSession, organization_id: str, branch_id: str | None,
+    period_start: date, period_end: date,
+) -> dict[str, float]:
+    """Return monthly step targets, summing branch targets for org scope."""
+    query = select(Target.period, func.sum(Target.target_value)).where(
+        Target.organization_id == organization_id,
+        Target.metric_type == "steps",
+        Target.period >= period_start.strftime("%Y-%m"),
+        Target.period <= period_end.strftime("%Y-%m"),
+    )
+    if branch_id:
+        query = query.where(Target.branch_id == branch_id)
+    query = query.group_by(Target.period)
+    return {period: float(value) for period, value in (await session.execute(query)).all()}

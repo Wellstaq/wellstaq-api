@@ -10,6 +10,7 @@ class LeaderboardEntryResponse(BaseModel):
     user_id: str
     first_name: str
     last_name: str
+    avatar_url: str | None = None
     value: Decimal
     rank: int
     previous_rank: int | None

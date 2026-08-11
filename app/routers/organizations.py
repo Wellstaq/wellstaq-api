@@ -26,8 +26,8 @@ import logging
 from typing import Literal
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
@@ -156,16 +156,21 @@ async def list_invites_route(
     require_same_organization(org_id, current_user)
 
     async with request_guard(db, "/organizations/{org_id}/invites"):
+        filters = [OrganizationInvite.organization_id == org_id]
+        if status_filter is not None:
+            filters.append(OrganizationInvite.status == status_filter)
+
+        total = (await db.execute(
+            select(func.count()).select_from(OrganizationInvite).where(*filters)
+        )).scalar_one()
+
         query = (
             select(OrganizationInvite)
-            .where(OrganizationInvite.organization_id == org_id)
+            .where(*filters)
             .order_by(OrganizationInvite.created_at.desc())
             .offset(offset)
             .limit(limit)
         )
-
-        if status_filter is not None:
-            query = query.where(OrganizationInvite.status == status_filter)
 
         result = await db.execute(query)
         invites = result.scalars().all()
@@ -188,10 +193,52 @@ async def list_invites_route(
 
         return InviteListResponse(
             items=items,
-            total=len(items),
+            total=total,
             offset=offset,
             limit=limit,
         )
+
+
+@router.delete(
+    "/invites/{invite_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+    summary="Delete a pending organization invite",
+    description="Deletes an invite only while it is still pending. Accepted or otherwise used invites are retained for audit history.",
+)
+async def delete_pending_invite_route(
+    org_id: str,
+    invite_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_active_subscription),
+    _: CurrentUser = Depends(require_permission("member.invite")),
+):
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/invites/{invite_id}"):
+        result = await db.execute(
+            select(OrganizationInvite).where(
+                OrganizationInvite.id == invite_id,
+                OrganizationInvite.organization_id == org_id,
+            )
+        )
+        invite = result.scalar_one_or_none()
+        if invite is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found.")
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.invite",
+            target_branch_id=invite.branch_id,
+        )
+        if invite.status != "pending":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Only pending invitations can be deleted. This invitation has already been used or closed and must remain in the audit history.",
+            )
+        await db.delete(invite)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── Members ──────────────────────────────────────────────────────────────────

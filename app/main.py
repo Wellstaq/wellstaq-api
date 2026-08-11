@@ -45,8 +45,11 @@ from app.routers import (
     engagement_logs,
     engagements,
     storages,
+    kpi_snapshots,
     targets,
     dashboards,
+    department_ranks,
+   
     
 )
 from app.routers.payments import(
@@ -122,6 +125,8 @@ app.include_router(engagement_logs.router)
 app.include_router(storages.router)
 app.include_router(targets.router)
 app.include_router(dashboards.router)
+app.include_router(department_ranks.router)
+app.include_router(kpi_snapshots.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
 app.include_router(available_subscription_router)

@@ -11,14 +11,16 @@ backed by a real grant.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.activity import ActivitySummaryResponse, ActivityTypeCount
-from app.services.activity import get_branch_activity_summary
+from app.services.activity import get_activity_trend, get_branch_activity_summary
 
 router = APIRouter(tags=["activities"])
 
@@ -30,6 +32,9 @@ router = APIRouter(tags=["activities"])
 )
 async def branch_activity_summary_route(
     org_id: str, branch_id: str,
+    period: str | None = Query(default=None, pattern="^(week|month|three_months|six_months|nine_months|year|custom)$"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ActivitySummaryResponse:
@@ -39,6 +44,7 @@ async def branch_activity_summary_route(
 
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/activities/summary"):
         total, by_type = await get_branch_activity_summary(session=db, organization_id=org_id, branch_id=branch_id)
+        trend = await get_activity_trend(session=db, organization_id=org_id, branch_id=branch_id, period=period, start_date=start_date, end_date=end_date)
         return ActivitySummaryResponse(
-            total_count=total, by_type=[ActivityTypeCount(activity_type=t, count=c) for t, c in by_type],
+            total_count=total, by_type=[ActivityTypeCount(activity_type=t, count=c) for t, c in by_type], trend=trend,
         )

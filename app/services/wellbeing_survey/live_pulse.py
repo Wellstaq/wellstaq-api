@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User
 from app.models.wellbeing_survey import PULSE_QUESTION_KEYS, WellbeingSurveyResponse, score_to_status
-from app.services.wellbeing_survey._helpers import get_open_window_or_404
+from app.services.wellbeing_survey._helpers import get_open_window
 
 
 async def compute_pulse_aggregation(
@@ -85,6 +85,10 @@ async def compute_pulse_aggregation(
     }
 
 
-async def get_live_pulse(*, session: AsyncSession, organization_id: str, branch_id: str | None = None) -> dict:
-    window = await get_open_window_or_404(session=session, organization_id=organization_id)
-    return await compute_pulse_aggregation(session=session, window_id=window.id, branch_id=branch_id)
+async def get_live_pulse(*, session: AsyncSession, organization_id: str, branch_id: str | None = None) -> dict | None:
+    """Return None when there is no open window; that is a normal empty state."""
+    window = await get_open_window(session=session, organization_id=organization_id)
+    if window is None:
+        return None
+    aggregation = await compute_pulse_aggregation(session=session, window_id=window.id, branch_id=branch_id)
+    return {"window_id": window.id, **aggregation}

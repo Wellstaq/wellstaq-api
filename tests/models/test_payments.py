@@ -716,7 +716,7 @@ async def test_transaction_negative_amount_raises(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["succeeded", "failed", "refunded", "pending"])
+@pytest.mark.parametrize("status", ["succeeded", "failed", "refunded", "pending", "cancelled"])
 async def test_transaction_valid_statuses(db_session: AsyncSession, status: str):
     _, org = await setup_org(
         db_session, email=f"{status}@example.com", slug=f"org-{status}"
@@ -737,6 +737,17 @@ async def test_transaction_invalid_status_raises(db_session: AsyncSession):
 
     txn = make_transaction(org.id, sub.id, status="processing")
     db_session.add(txn)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_transaction_external_reference_is_unique(db_session: AsyncSession):
+    _, org = await setup_org(db_session)
+    _, sub = await setup_plan_and_sub(db_session, org.id)
+    db_session.add(make_transaction(org.id, sub.id, external_reference="wellstaq_unique_reference"))
+    await db_session.flush()
+    db_session.add(make_transaction(org.id, sub.id, external_reference="wellstaq_unique_reference"))
     with pytest.raises(IntegrityError):
         await db_session.flush()
 

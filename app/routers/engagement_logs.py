@@ -39,7 +39,8 @@ async def get_engagement_trend_route(
     async with request_guard(db, "/engagement-log/trend"):
         points = await get_engagement_trend(session=db, user_id=current_user.user_id, metric_type=normalized, limit=limit)
         return EngagementTrendResponse(
-            metric_type=normalized, points=[EngagementTrendPoint(date=d, value=v) for d, v in points],
+            metric_type=normalized,
+            points=[EngagementTrendPoint(date=d, value=v, previous_value=p, trend_direction=t) for d, v, p, t in points],
         )
 
 

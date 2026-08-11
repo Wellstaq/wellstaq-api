@@ -2,6 +2,9 @@
 app/schemas/dashboard.py
 """
 
+from datetime import date
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.schemas.challenge import ChallengeResponse
@@ -29,3 +32,18 @@ class DashboardBootstrapResponse(BaseModel):
     events: list[EventResponse]
     challenges: list[ChallengeResponse]
     leaderboard: list[LeaderboardEntryResponse]
+
+
+class EngagementWellbeingTrendPoint(BaseModel):
+    date: date
+    stress_level: float | None
+    energy_level: float | None
+    social_interaction: float | None
+    productivity: float | None
+
+
+class EngagementWellbeingTrendsResponse(BaseModel):
+    period: Literal["week", "month", "three_months"]
+    start_date: date
+    end_date: date
+    points: list[EngagementWellbeingTrendPoint]

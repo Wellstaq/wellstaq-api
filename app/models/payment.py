@@ -223,7 +223,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     only created_at is needed for an immutable ledger entry.
 
     - amount in smallest currency unit (same convention as SubscriptionPlan).
-    - status: succeeded | failed | refunded | pending
+    - status: succeeded | failed | refunded | pending | cancelled
     - payment_method: card | bank_transfer | ussd | etc — free string,
       app-validated, no enum so adding a new method never needs a migration.
     - external_reference: gateway's charge/payment ID (e.g. Stripe ch_xxx
@@ -256,7 +256,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     # Smallest currency unit (kobo, cents, etc.) — never use float for money
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
-    # succeeded | failed | refunded | pending
+    # succeeded | failed | refunded | pending | cancelled
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     # card | bank_transfer | ussd | etc — free string, app-validated
     payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -264,7 +264,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
 
     # ── Gateway references ─────────────────────────────────────────────────
     # e.g. Stripe ch_xxx or pi_xxx — queried on every webhook
-    external_reference: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    external_reference: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     # NULL on success — gateway's decline code or error message on failure
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
@@ -288,7 +288,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('succeeded', 'failed', 'refunded', 'pending')",
+            "status IN ('succeeded', 'failed', 'refunded', 'pending', 'cancelled')",
             name="ck_payment_transactions_status",
         ),
         CheckConstraint("amount > 0", name="ck_payment_transactions_amount_positive"),

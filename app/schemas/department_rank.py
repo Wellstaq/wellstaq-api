@@ -9,6 +9,7 @@ class DepartmentRankResponse(BaseModel):
 
     department_id: str
     department_name: str
+    branch_id: str
     rank: int | None
     total_activities: int | None
     avg_daily_steps: Decimal | None

@@ -21,7 +21,7 @@ async def get_engagement_trend(
     *, session: AsyncSession, user_id: str, metric_type: str, limit: int = 30
 ) -> list[tuple]:
     query = (
-        select(EngagementLog.date, EngagementLog.value)
+        select(EngagementLog.date, EngagementLog.value, EngagementLog.previous_value, EngagementLog.trend_direction)
         .where(EngagementLog.user_id == user_id, EngagementLog.metric_type == metric_type)
         .order_by(EngagementLog.date.desc())
         .limit(limit)
@@ -33,11 +33,14 @@ async def get_engagement_trend(
 async def get_latest_snapshot(*, session: AsyncSession, user_id: str) -> dict:
     """One row per metric_type, most recent date each — used for the
     4-column 'current state' view rather than a full trend line."""
-    result: dict = {"date": None, "checkins": None, "participation": None, "social": None, "productivity": None}
+    result: dict = {"date": None}
+    for metric_type in ENGAGEMENT_METRIC_TYPES:
+        result[metric_type] = None
+        result[f"{metric_type}_trend"] = None
 
     for metric_type in ENGAGEMENT_METRIC_TYPES:
         query = (
-            select(EngagementLog.date, EngagementLog.value)
+            select(EngagementLog.date, EngagementLog.value, EngagementLog.trend_direction)
             .where(EngagementLog.user_id == user_id, EngagementLog.metric_type == metric_type)
             .order_by(EngagementLog.date.desc())
             .limit(1)
@@ -45,6 +48,7 @@ async def get_latest_snapshot(*, session: AsyncSession, user_id: str) -> dict:
         row = (await session.execute(query)).first()
         if row is not None:
             result[metric_type] = row[1]
+            result[f"{metric_type}_trend"] = row[2]
             if result["date"] is None:
                 result["date"] = row[0]
 

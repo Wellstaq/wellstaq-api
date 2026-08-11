@@ -30,6 +30,17 @@ from app.models import OrganizationSubscription, PaymentTransaction, Subscriptio
 logger = logging.getLogger(__name__)
 
 
+def _parse_gateway_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.warning("Paystack returned an invalid datetime", extra={"value": value})
+        return None
+
+
 def verify_paystack_signature(*, payload_body: bytes, signature_header: str | None) -> bool:
     if not signature_header:
         return False
@@ -72,7 +83,7 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
         await session.flush()
         return
 
-    if webhook_currency and webhook_currency != transaction.currency:
+    if webhook_currency and str(webhook_currency).upper() != transaction.currency.upper():
         logger.error(
             "Currency mismatch on charge.success webhook — refusing to mark succeeded",
             extra={"reference": reference, "expected_currency": transaction.currency, "webhook_currency": webhook_currency},
@@ -98,19 +109,24 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
     subscription = subscription_result.scalar_one_or_none()
 
     if subscription is not None:
-        now = datetime.now(timezone.utc)
+        paid_at = _parse_gateway_datetime(event_data.get("paid_at")) or datetime.now(timezone.utc)
 
         plan_result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == transaction.plan_id))
         paid_plan = plan_result.scalar_one_or_none()
+        if paid_plan is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "The paid subscription plan no longer exists.")
         billing_period = timedelta(days=30) if paid_plan.billing_interval == "monthly" else timedelta(days=365)
+        subscription_data = event_data.get("subscription") or {}
+        next_payment_date = _parse_gateway_datetime(
+            subscription_data.get("next_payment_date") or event_data.get("next_payment_date")
+        )
 
         subscription.status = "active"
-        subscription.current_period_start = now
-        subscription.current_period_end = now + billing_period
+        subscription.current_period_start = paid_at
+        subscription.current_period_end = next_payment_date or paid_at + billing_period
         subscription.plan_id = transaction.plan_id
 
         if subscription.external_subscription_id is None:
-            subscription_data = event_data.get("subscription", {})
             subscription_code = subscription_data.get("subscription_code")
             if subscription_code:
                 subscription.external_subscription_id = subscription_code

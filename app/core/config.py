@@ -6,6 +6,7 @@ during development). Copy .env.example to .env and fill in real
 values locally — never commit real secrets.
 """
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +71,9 @@ class Settings(BaseSettings):
     #payment gateway
     PAYSTACK_SECRET_KEY: str=""
     PAYSTACK_PUBLIC_KEY: str=""
+    PAYMENT_PENDING_EXPIRY_MINUTES: int = Field(default=60, ge=5, le=1440)
+    PAYMENT_WEBHOOK_MAX_BODY_BYTES: int = Field(default=1_000_000, ge=1024, le=10_000_000)
+    PAYMENT_CALLBACK_ALLOWED_ORIGINS: list[str] = []
 
 
 # Single shared settings instance — import this, never instantiate Settings() elsewhere

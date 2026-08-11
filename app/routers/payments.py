@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, require_permission, require_same_organization, get_current_user
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.guards import request_guard
-from app.models import User
+from app.models import PaymentTransaction, User
 from app.schemas.payment import (
     CheckoutRequest,
     CheckoutResponse,
@@ -29,7 +30,8 @@ from app.schemas.payment import (
     TransactionListResponse,
     TransactionResponse,
     PlanListResponse,
-    PlanResponse
+    PlanResponse,
+    PaymentVerificationResponse,
 )
 from app.services.payment import (get_subscription, 
     get_transaction_history, 
@@ -39,6 +41,8 @@ from app.services.payment import (get_subscription,
     handle_charge_failed,
     verify_paystack_signature,
     handle_charge_success,  
+    handle_invoice_payment_failed,
+    handle_subscription_disable,
     
 )
 
@@ -74,6 +78,69 @@ async def list_transactions_route(
     async with request_guard(db, "/organizations/{org_id}/transactions"):
         transactions, total = await get_transaction_history(session=db, organization_id=org_id, offset=offset, limit=limit)
         return TransactionListResponse(items=[TransactionResponse.model_validate(t) for t in transactions], total=total, offset=offset, limit=limit)
+
+
+async def _get_scoped_transaction(db: AsyncSession, org_id: str, reference: str) -> PaymentTransaction:
+    result = await db.execute(
+        select(PaymentTransaction).where(
+            PaymentTransaction.organization_id == org_id,
+            PaymentTransaction.external_reference == reference,
+        )
+    )
+    transaction = result.scalar_one_or_none()
+    if transaction is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Payment reference was not found for this organization.")
+    return transaction
+
+
+@router.get("/transactions/{reference}", response_model=TransactionResponse, status_code=status.HTTP_200_OK)
+async def get_transaction_by_reference_route(
+    org_id: str,
+    reference: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("org.billing.manage")),
+) -> TransactionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/transactions/{reference}"):
+        transaction = await _get_scoped_transaction(db, org_id, reference)
+        return TransactionResponse.model_validate(transaction)
+
+
+@router.post("/transactions/{reference}/verify", response_model=PaymentVerificationResponse, status_code=status.HTTP_200_OK)
+async def verify_transaction_by_reference_route(
+    org_id: str,
+    reference: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("org.billing.manage")),
+) -> PaymentVerificationResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/transactions/{reference}/verify"):
+        transaction = await _get_scoped_transaction(db, org_id, reference)
+        try:
+            verified_data = await verify_transaction(reference=reference)
+        except PaystackError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Payment provider verification failed: {exc.message}") from exc
+
+        if verified_data.get("reference") != reference:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Payment provider returned a mismatched reference.")
+
+        previous_status = transaction.status
+        provider_status = str(verified_data.get("status") or "unknown").lower()
+        if provider_status == "success":
+            await handle_charge_success(session=db, event_data=verified_data)
+        elif provider_status == "failed":
+            await handle_charge_failed(session=db, event_data=verified_data)
+        elif provider_status in {"abandoned", "reversed"} and transaction.status == "pending":
+            transaction.status = "cancelled"
+            transaction.failure_reason = f"Paystack reported the payment as {provider_status}."
+
+        await db.commit()
+        await db.refresh(transaction)
+        return PaymentVerificationResponse(
+            transaction=TransactionResponse.model_validate(transaction),
+            provider_status=provider_status,
+            reconciled=transaction.status != previous_status,
+        )
 
 
 @router.post("/checkout", response_model=CheckoutResponse, status_code=status.HTTP_200_OK)
@@ -113,7 +180,16 @@ webhook_router = APIRouter(tags=["payment-webhooks"])
 
 @webhook_router.post("/webhooks/paystack", status_code=status.HTTP_200_OK)
 async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(get_db)):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > settings.PAYMENT_WEBHOOK_MAX_BODY_BYTES:
+                raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Webhook payload is too large.")
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid Content-Length header.")
     payload_body = await request.body()
+    if len(payload_body) > settings.PAYMENT_WEBHOOK_MAX_BODY_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Webhook payload is too large.")
     signature = request.headers.get("x-paystack-signature")
 
     if not verify_paystack_signature(payload_body=payload_body, signature_header=signature):
@@ -144,6 +220,7 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
                 extra={"reference": reference, "webhook_event": event_type, "verified_status": verified_data.get("status")},
             )
             return {"status": "ignored"}
+        event_data = verified_data
 
     async with request_guard(db, "/webhooks/paystack"):
         if event_type == "charge.success":

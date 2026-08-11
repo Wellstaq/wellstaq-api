@@ -53,7 +53,7 @@ async def branch_leaderboard_route(
 
         items = [
             LeaderboardEntryResponse(
-                user_id=u.id, first_name=u.first_name, last_name=u.last_name, value=s.value,
+                user_id=u.id, first_name=u.first_name, last_name=u.last_name, avatar_url=u.avatar_url, value=s.value,
                 rank=s.rank, previous_rank=s.previous_rank, org_rank=s.org_rank, previous_org_rank=s.previous_org_rank,
             )
             for s, u in rows
@@ -83,7 +83,7 @@ async def org_leaderboard_route(
 
         items = [
             LeaderboardEntryResponse(
-                user_id=u.id, first_name=u.first_name, last_name=u.last_name, value=s.value,
+                user_id=u.id, first_name=u.first_name, last_name=u.last_name, avatar_url=u.avatar_url, value=s.value,
                 rank=s.rank, previous_rank=s.previous_rank, org_rank=s.org_rank, previous_org_rank=s.previous_org_rank,
             )
             for s, u in rows

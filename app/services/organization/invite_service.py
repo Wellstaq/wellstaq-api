@@ -167,7 +167,7 @@ async def send_invite(
     )
     if duplicate.scalar_one_or_none():
         raise AuthError(
-            "A pending invite has already been sent to this email address.",
+            "This person already has a pending invitation. Ask them to check their inbox and spam folder, or wait for the invitation to expire before sending another one.",
             status.HTTP_409_CONFLICT,
         )
 

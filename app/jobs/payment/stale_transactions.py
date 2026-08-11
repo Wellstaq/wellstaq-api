@@ -3,7 +3,7 @@ app/jobs/payment/stale_transactions.py
 
 expire_stale_pending_transactions — flips PaymentTransaction rows stuck
 in 'pending' for too long (abandoned checkouts — customer closed the
-tab, never completed payment) to 'failed'. Without this, the
+tab, never completed payment) to 'cancelled'. Without this, the
 idempotency guard in checkout_service.initiate_checkout would
 permanently block a retry, since it refuses a new checkout while a
 pending transaction for the same org+plan already exists.
@@ -19,14 +19,12 @@ from sqlalchemy import select
 
 from app.jobs.shared import get_job_session
 from app.models.payment import PaymentTransaction
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-STALE_PENDING_THRESHOLD = timedelta(hours=1)
-
-
 async def expire_stale_pending_transactions(ctx: dict[str, Any]) -> None:
-    cutoff = datetime.now(timezone.utc) - STALE_PENDING_THRESHOLD
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.PAYMENT_PENDING_EXPIRY_MINUTES)
     expired = 0
 
     async with get_job_session() as session:
@@ -37,8 +35,8 @@ async def expire_stale_pending_transactions(ctx: dict[str, Any]) -> None:
             )
         )
         for transaction in result.scalars().all():
-            transaction.status = "failed"
-            transaction.failure_reason = "Checkout abandoned — no payment confirmation received within 1 hour."
+            transaction.status = "cancelled"
+            transaction.failure_reason = f"Checkout expired — no payment confirmation received within {settings.PAYMENT_PENDING_EXPIRY_MINUTES} minutes."
             expired += 1
 
         await session.commit()

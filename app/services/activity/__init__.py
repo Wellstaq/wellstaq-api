@@ -1,4 +1,5 @@
 from .get_activities import (
+    get_activity_trend,
     get_branch_activity_summary,
     get_organization_activity_summary,
     get_user_activities,
@@ -8,6 +9,7 @@ from .log_activity import log_activity
 
 __all__ = [
     "log_activity",
+    "get_activity_trend",
     "get_user_activities",
     "get_user_activity_count",
     "get_organization_activity_summary",

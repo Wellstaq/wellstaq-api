@@ -4,10 +4,51 @@ app/services/activity/get_activities.py
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, timedelta, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, UserActivityFeed
+
+PERIOD_DAYS = {"week": 7, "month": 30, "three_months": 91, "six_months": 182, "nine_months": 273, "year": 365}
+
+
+def _window(period: str | None, start_date: date | None, end_date: date | None):
+    if period is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if period == "custom" and start_date:
+        start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        end = datetime.combine(end_date, time.max, tzinfo=timezone.utc) if end_date else now
+        duration = max(timedelta(days=1), end - start)
+        return start, end, start - duration
+    duration = timedelta(days=PERIOD_DAYS.get(period, 30))
+    return now - duration, now, now - (duration * 2)
+
+
+async def get_activity_trend(*, session: AsyncSession, organization_id: str, branch_id: str | None = None,
+                             period: str | None = None, start_date: date | None = None,
+                             end_date: date | None = None) -> dict | None:
+    bounds = _window(period, start_date, end_date)
+    if bounds is None:
+        return None
+    start, end, previous_start = bounds
+    filters = [UserActivityFeed.organization_id == organization_id]
+    query_from = UserActivityFeed
+    if branch_id is not None:
+        query_from = UserActivityFeed.__table__.join(User, User.id == UserActivityFeed.user_id)
+        filters.append(User.branch_id == branch_id)
+
+    async def count_between(lower, upper, include_upper: bool) -> int:
+        upper_filter = UserActivityFeed.created_at <= upper if include_upper else UserActivityFeed.created_at < upper
+        query = select(func.count()).select_from(query_from).where(*filters, UserActivityFeed.created_at >= lower, upper_filter)
+        return (await session.execute(query)).scalar_one()
+
+    current = await count_between(start, end, True)
+    previous = await count_between(previous_start, start, False)
+    change_pct = None if previous == 0 else round(((current - previous) / previous) * 100, 1)
+    return {"current": current, "previous": previous, "change_pct": change_pct}
 
 
 async def get_user_activities(
