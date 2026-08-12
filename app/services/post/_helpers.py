@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/post/_helpers.py
 """
 
@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, require_scoped_permission
-from app.models import Branch, Organization, Post, Permission, UserPermission
+from app.models import Branch, Organization, Post
 
 
 async def get_post_or_404(*, session: AsyncSession, organization_id: str, post_id: str) -> Post:
@@ -92,17 +92,7 @@ async def get_viewable_branch_ids(
     if current_user.role == "super_admin":
         return None
 
-    query = (
-        select(UserPermission.branch_id)
-        .join(Permission, Permission.id == UserPermission.permission_id)
-        .where(
-            UserPermission.user_id == current_user.user_id,
-            UserPermission.organization_id == current_user.organization_id,
-            Permission.name == permission,
-        )
-    )
-    result = await db.execute(query)
-    branch_ids = [row[0] for row in result.all()]
+    branch_ids = [grant.branch_id for grant in current_user.permissions if grant.name == permission]
 
     if None in branch_ids:  # org-wide grant present — inherits everywhere
         return None

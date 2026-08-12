@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/organization/org_directory.py
 
 Read-only "organization directory" queries — members, clubs, and
@@ -17,7 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Club, Organization, User
+from app.models import Club, DepartmentMember, Organization, Role, User, UserRoleAssignment, UserSettings
 
 logger = logging.getLogger(__name__)
 
@@ -39,25 +39,42 @@ async def get_organization_members(
     *,
     session: AsyncSession,
     organization_id: str,
+    branch_id: str | None = None,
     offset: int = 0,
     limit: int = 50,
-) -> tuple[list[User], int]:
-    """All users belonging to the organization, regardless of branch/department."""
+) -> tuple[list[dict], int]:
+    """Members with the role belonging to the requested org/branch slot."""
     await _require_org(session, organization_id)
 
-    count_result = await session.execute(
-        select(func.count()).select_from(User).where(User.organization_id == organization_id)
-    )
+    member_filters = [User.organization_id == organization_id]
+    if branch_id is not None:
+        member_filters.append(User.branch_id == branch_id)
+    count_result = await session.execute(select(func.count()).select_from(User).where(*member_filters))
     total = count_result.scalar_one()
 
+    query = select(User, DepartmentMember.department_id, Role.id.label("scoped_role_id"), Role.name.label("role_name"), UserSettings.public_profile).outerjoin(
+        DepartmentMember, DepartmentMember.user_id == User.id,
+    )
+    if branch_id is None:
+        query = query.outerjoin(Role, Role.id == User.role_id)
+    else:
+        query = query.outerjoin(UserRoleAssignment, (
+            (UserRoleAssignment.user_id == User.id)
+            & (UserRoleAssignment.organization_id == organization_id)
+            & (UserRoleAssignment.branch_id == branch_id)
+        )).outerjoin(Role, Role.id == UserRoleAssignment.role_id)
     result = await session.execute(
-        select(User)
-        .where(User.organization_id == organization_id)
+        query.outerjoin(UserSettings, UserSettings.user_id == User.id)
+        .where(*member_filters)
         .order_by(User.first_name, User.last_name)
         .offset(offset)
         .limit(limit)
     )
-    members = result.scalars().all()
+    members = [
+        {**user.__dict__, "department_id": department_id, "role_id": scoped_role_id, "role_name": role_name,
+         "public_profile": bool(public_profile)}
+        for user, department_id, scoped_role_id, role_name, public_profile in result.all()
+    ]
     return members, total
 
 
@@ -85,4 +102,3 @@ async def get_organization_clubs(
     )
     clubs = result.scalars().all()
     return clubs, total
-

@@ -161,6 +161,7 @@ async def _load_user_with_settings(
 # ── 1. Issue 2FA challenge ─────────────────────────────────────────────────────
 
 async def issue_two_fa_challenge(
+    session: AsyncSession,
     user: User,
     method: str,
     device_name: str | None,
@@ -171,6 +172,13 @@ async def issue_two_fa_challenge(
     Create a short-lived challenge token after password login.
     Client exchanges it at /auth/2fa/verify.
     """
+    if method == TwoFaMethod.EMAIL:
+        from app.services.auth.otp_service import request_otp
+        await request_otp(session, user.email, purpose="2fa_email")
+    elif method == TwoFaMethod.SMS:
+        from app.services.auth.otp_service import request_otp
+        await request_otp(session, user.email, purpose="2fa_sms")
+
     challenge_token = _create_challenge_token(
         user_id=user.id,
         method=method,
@@ -286,7 +294,7 @@ async def confirm_two_fa_setup(
     elif method in (TwoFaMethod.SMS, TwoFaMethod.EMAIL):
         from app.services.auth.otp_service import OtpError, verify_otp
         try:
-            await verify_otp(session, user.email, code)
+            await verify_otp(session, user.email, code, purpose="2fa_sms" if method == TwoFaMethod.SMS else "2fa_email")
         except OtpError as exc:
             raise _auth_error(exc.message, exc.status_code) from exc
         settings_row.two_fa_secret = None
@@ -349,7 +357,12 @@ async def verify_two_fa_challenge(
     elif method in (TwoFaMethod.EMAIL, TwoFaMethod.SMS):
         from app.services.auth.otp_service import OtpError, verify_otp
         try:
-            await verify_otp(session, user.email, code)
+            await verify_otp(
+                session,
+                user.email,
+                code,
+                purpose="2fa_sms" if method == TwoFaMethod.SMS else "2fa_email",
+            )
         except OtpError as exc:
             raise _auth_error(exc.message, exc.status_code) from exc
 

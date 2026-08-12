@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/auth.py
 
 Authentication routes.
@@ -44,8 +44,9 @@ import logging
 import time
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user
@@ -57,6 +58,7 @@ from app.schemas.auth import (
     InviteOtpRequestSchema,
     InviteOtpVerifySchema,
     InviteRegisterRequest,
+    InviteRegistrationResponse,
     LoginRequest,
     OAuthRequest,
     OrgOwnerRegisterRequest,
@@ -66,6 +68,9 @@ from app.schemas.auth import (
     TokenResponse,
     TwoFaChallengeResponse,
     TwoFaDisableRequest,
+    TwoFaConfirmRequest,
+    SessionItemResponse,
+    SessionListResponse,
     TwoFaSetupRequest,
     TwoFaSetupResponse,
     TwoFaVerifyRequest,
@@ -91,6 +96,8 @@ from app.services.auth import (
     verify_two_fa_challenge,
 )
 from app.services.errors import AuthError
+from app.services.auth.two_factor_service import confirm_two_fa_setup
+from app.models import UserDevice
 from app.core.limiter import limiter, key_by_email_or_ip
 
 logger = logging.getLogger(__name__)
@@ -297,7 +304,7 @@ async def invite_otp_verify(payload: InviteOtpVerifySchema, db: AsyncSession = D
         return {"invite_verification_token": token}
 
 
-@router.post("/register/invite", response_model=TokenResponse, status_code=status.HTTP_201_CREATED,
+@router.post("/register/invite", response_model=InviteRegistrationResponse, status_code=status.HTTP_201_CREATED,
              summary="Invite Step 3 — complete registration with wellbeing baseline")
 async def register_invited(payload: InviteRegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -472,6 +479,59 @@ async def two_fa_disable(
     async with request_guard(db, "/auth/2fa/disable", user_id=str(current_user.user_id)):
         await disable_two_fa(session=db, user_id=current_user.user_id, password=payload.password)
         await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.post("/2fa/confirm", status_code=status.HTTP_204_NO_CONTENT,
+             summary="Confirm and activate a pending 2FA enrollment")
+async def two_fa_confirm(
+    payload: TwoFaConfirmRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    async with request_guard(db, "/auth/2fa/confirm", user_id=str(current_user.user_id)):
+        await confirm_two_fa_setup(session=db, user_id=current_user.user_id, code=payload.code)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.get("/sessions", response_model=SessionListResponse, summary="List active login sessions")
+async def list_sessions(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    async with request_guard(db, "/auth/sessions", user_id=str(current_user.user_id)):
+        rows = (await db.execute(
+            select(UserDevice).where(UserDevice.user_id == current_user.user_id, UserDevice.revoked.is_(False))
+            .order_by(UserDevice.last_seen_at.desc())
+        )).scalars().all()
+        return SessionListResponse(items=[
+            SessionItemResponse(
+                id=row.id,
+                device_name=row.device_name,
+                ip_address=row.ip_address,
+                location_label=row.location_label,
+                last_seen_at=row.last_seen_at,
+                created_at=row.created_at,
+                is_current=row.id == current_user.session_id,
+            )
+            for row in rows
+        ])
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Revoke a login session")
+async def revoke_session(
+    session_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    async with request_guard(db, "/auth/sessions/{session_id}", user_id=str(current_user.user_id)):
+        row = (await db.execute(select(UserDevice).where(
+            UserDevice.id == session_id, UserDevice.user_id == current_user.user_id,
+        ))).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+        row.revoked = True
+        row.refresh_token_hash = None
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── Session ────────────────────────────────────────────────────────────────────

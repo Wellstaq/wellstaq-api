@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/routers/organizations.py
 
 Organization management routes.
@@ -143,6 +143,7 @@ async def send_invite_route(
 )
 async def list_invites_route(
     org_id: str,
+    branch_id: str | None = Query(default=None),
     status_filter: Literal["pending", "accepted", "expired", "cancelled"] | None = Query(
         default=None,
         alias="status",
@@ -157,6 +158,11 @@ async def list_invites_route(
 
     async with request_guard(db, "/organizations/{org_id}/invites"):
         filters = [OrganizationInvite.organization_id == org_id]
+        if branch_id is not None:
+            filters.append(OrganizationInvite.branch_id == branch_id)
+        await require_scoped_permission(
+            db=db, current_user=current_user, permission="member.invite", target_branch_id=branch_id,
+        )
         if status_filter is not None:
             filters.append(OrganizationInvite.status == status_filter)
 
@@ -256,6 +262,7 @@ async def delete_pending_invite_route(
 )
 async def list_organization_members_route(
     org_id: str,
+    branch_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -265,7 +272,7 @@ async def list_organization_members_route(
 
     async with request_guard(db, "/organizations/{org_id}/members"):
         members, total = await get_organization_members(
-            session=db, organization_id=org_id, offset=offset, limit=limit,
+            session=db, organization_id=org_id, branch_id=branch_id, offset=offset, limit=limit,
         )
         return OrganizationMembersListResponse(
             items=[OrganizationMemberInfo.model_validate(m) for m in members],

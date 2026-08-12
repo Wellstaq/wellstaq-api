@@ -49,6 +49,8 @@ from app.routers import (
     targets,
     dashboards,
     department_ranks,
+    support_tickets,
+    integrations,   
    
     
 )
@@ -64,13 +66,8 @@ from app.routers.user_settings import(
 )
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic: Create database tables if they don't exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
     yield
     
     # Shutdown logic (if you need to clean up resources later, put it here)
@@ -127,6 +124,8 @@ app.include_router(targets.router)
 app.include_router(dashboards.router)
 app.include_router(department_ranks.router)
 app.include_router(kpi_snapshots.router)
+app.include_router(support_tickets.router)
+app.include_router(integrations.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
 app.include_router(available_subscription_router)

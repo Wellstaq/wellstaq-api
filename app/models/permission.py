@@ -1,4 +1,4 @@
-"""
+﻿"""
 Permission model — role and permission are SEPARATE and UNRELATED.
 
 Design decisions:
@@ -133,6 +133,9 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="permission",
         cascade="all, delete-orphan",
     )
+    role_permissions: Mapped[list["RolePermission"]] = relationship(
+        "RolePermission", back_populates="permission", cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<Permission id={self.id} name={self.name} scope={self.scope}>"
@@ -140,8 +143,7 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
-    A label assigned to a user — system or custom (always branch-scoped
-    now). Purely descriptive. Carries NO permissions of its own.
+    A system role or an organization-owned custom role.
 
     See module docstring for the full scope-tier explanation and why
     the org-wide custom tier was removed.
@@ -153,7 +155,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # NULL  = system/platform role
-    # SET   = custom role — branch_id must ALSO be set (see constraint below)
+    # SET   = organization-owned custom role
     organization_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -161,14 +163,18 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
-    # NULL  = system role (organization_id must also be NULL)
-    # SET   = custom role — every custom role is branch-scoped, no
-    #         exceptions. There is no org-wide custom tier anymore.
+    # Roles are never branch-owned. Permission assignments carry scope.
     branch_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("branches.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
+    )
+
+    # Organization roles cloned from a platform template point back to it.
+    # NULL means either a platform template or a fully custom org role.
+    template_role_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=True, index=True,
     )
 
     # True = platform default. Read-only — cannot be edited, deleted,
@@ -226,6 +232,12 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="role",
         cascade="all, delete-orphan",
     )
+    permissions: Mapped[list["RolePermission"]] = relationship(
+        "RolePermission", back_populates="role", cascade="all, delete-orphan",
+    )
+    template: Mapped[Optional["Role"]] = relationship(
+        "Role", remote_side="Role.id", foreign_keys=[template_role_id],
+    )
 
     __table_args__ = (
         # ── Name uniqueness ──────────────────────────────────────────────────
@@ -236,11 +248,19 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # now has branch_id SET, so only the branch-scoped index below
         # applies.
         Index(
-            "uq_role_name_org_branch",
-            "name", "organization_id", "branch_id",
+            "uq_role_name_org",
+            "name", "organization_id",
             unique=True,
-            sqlite_where=text("branch_id IS NOT NULL"),
-            postgresql_where=text("branch_id IS NOT NULL"),
+            sqlite_where=text("organization_id IS NOT NULL AND branch_id IS NULL"),
+            postgresql_where=text("organization_id IS NOT NULL AND branch_id IS NULL"),
+        ),
+        Index(
+            "uq_role_name_org_branch", "name", "organization_id", "branch_id", unique=True,
+            sqlite_where=text("branch_id IS NOT NULL"), postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_role_org_branch_template", "organization_id", "branch_id", "template_role_id", unique=True,
+            sqlite_where=text("template_role_id IS NOT NULL"), postgresql_where=text("template_role_id IS NOT NULL"),
         ),
 
         # ── Structural invariants ──────────────────────────────────────────────
@@ -252,7 +272,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         #             previously branch_id was optional for custom roles)
         CheckConstraint(
             "(is_system = 1 AND organization_id IS NULL AND branch_id IS NULL) "
-            "OR (is_system = 0 AND organization_id IS NOT NULL AND branch_id IS NOT NULL)",
+            "OR (is_system = 0 AND organization_id IS NOT NULL)",
             name="ck_role_system_org_consistent",
         ),
 
@@ -282,6 +302,34 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             scope = f"branch={self.branch_id}"
         unique_tag = f" unique_scope={self.unique_scope}" if self.is_unique else ""
         return f"<Role id={self.id} name={self.name} scope={scope}{unique_tag}>"
+
+
+class RolePermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Permission template attached to a role.
+
+    System-role rows are platform seeded and immutable. ``scope`` describes
+    how the template resolves for its holder: ``org`` becomes an org-wide
+    grant; ``branch`` resolves to the role/user assignment branch. Custom
+    roles are branch-scoped and therefore only accept ``branch`` rows.
+    """
+
+    __tablename__ = "role_permissions"
+
+    role_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("roles.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    permission_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("permissions.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    scope: Mapped[str] = mapped_column(String(10), nullable=False, default="branch")
+
+    role: Mapped["Role"] = relationship("Role", back_populates="permissions")
+    permission: Mapped["Permission"] = relationship("Permission", back_populates="role_permissions")
+
+    __table_args__ = (
+        UniqueConstraint("role_id", "permission_id", name="uq_role_permission"),
+        CheckConstraint("scope IN ('org', 'branch')", name="ck_role_permission_scope"),
+    )
 
 
 class UserRoleAssignment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -429,6 +477,13 @@ class UserRoleAssignment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index(
             "uq_user_role_assignment_branch_no_duplicate",
             "user_id", "role_id", "branch_id",
+            unique=True,
+            sqlite_where=text("branch_id IS NOT NULL"),
+            postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_user_one_branch_role_per_organization",
+            "user_id", "organization_id",
             unique=True,
             sqlite_where=text("branch_id IS NOT NULL"),
             postgresql_where=text("branch_id IS NOT NULL"),

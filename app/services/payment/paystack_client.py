@@ -50,3 +50,7 @@ async def verify_transaction(*, reference: str) -> dict:
 
 async def disable_subscription(*, subscription_code: str, email_token: str) -> None:
     await _request("POST", "/subscription/disable", payload={"code": subscription_code, "token": email_token})
+
+
+async def enable_subscription(*, subscription_code: str, email_token: str) -> None:
+    await _request("POST", "/subscription/enable", payload={"code": subscription_code, "token": email_token})

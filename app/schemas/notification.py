@@ -4,7 +4,24 @@ app/schemas/notification.py
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class PushTokenRegisterRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=512)
+    provider: Literal["expo", "fcm", "apns"] = "expo"
+    platform: Literal["ios", "android"]
+    device_id: str | None = Field(default=None, max_length=255)
+
+
+class PushTokenResponse(BaseModel):
+    id: str
+    provider: str
+    platform: str
+    device_id: str | None
+    is_active: bool
 
 
 class NotificationResponse(BaseModel):

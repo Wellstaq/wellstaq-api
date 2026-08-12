@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/token_service.py
 
 Owns everything that touches JWTs and UserDevice rows:
@@ -34,7 +34,7 @@ from app.auth.jwt import (
     create_refresh_token,
     hash_refresh_token,   # re-use jwt.py's implementation — no local duplicate
 )
-from app.models import Permission, Role, User, UserDevice, UserPermission
+from app.models import Permission, Role, RolePermission, User, UserDevice, UserPermission, UserRoleAssignment
 
 from dataclasses import dataclass
 
@@ -51,18 +51,40 @@ class UserPermissionGrant:
 async def load_user_permissions(
     session: AsyncSession, user_id: str, organization_id: str
 ) -> list[UserPermissionGrant]:
-    """Load every permission directly granted to this user in this org,
-    along with the branch it's scoped to (None = org-wide grant)."""
-    result = await session.execute(
-        select(Permission.name, UserPermission.branch_id)
-        .join(UserPermission, UserPermission.permission_id == Permission.id)
+    """Resolve permissions exclusively from one org role and one branch role."""
+    user_row = (await session.execute(select(User).where(User.id == user_id))).scalar_one()
+    role_rows = []
+    if user_row.role_id:
+        role_rows.extend((await session.execute(
+            select(Permission.name, RolePermission.scope, Role.branch_id)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .join(Role, Role.id == RolePermission.role_id)
+            .where(Role.id == user_row.role_id, Role.branch_id.is_(None))
+        )).all())
+    role_rows.extend((await session.execute(
+        select(Permission.name, RolePermission.scope, UserRoleAssignment.branch_id)
+        .join(RolePermission, RolePermission.permission_id == Permission.id)
+        .join(Role, Role.id == RolePermission.role_id)
+        .join(UserRoleAssignment, UserRoleAssignment.role_id == Role.id)
         .where(
-            UserPermission.user_id == user_id,
-            UserPermission.organization_id == organization_id,
+            UserRoleAssignment.user_id == user_id,
+            UserRoleAssignment.organization_id == organization_id,
+            UserRoleAssignment.branch_id.is_not(None),
+            Role.branch_id == UserRoleAssignment.branch_id,
         )
-        .distinct()
-    )
-    return [UserPermissionGrant(name=name, branch_id=branch_id) for name, branch_id in result.all()]
+    )).all())
+
+    resolved: set[tuple[str, str | None]] = set()
+    for name, scope, role_branch_id in role_rows:
+        if scope == "org":
+            resolved.add((name, None))
+        else:
+            if role_branch_id:
+                resolved.add((name, role_branch_id))
+
+    org_wide_names = {name for name, branch_id in resolved if branch_id is None}
+    normalized = {(name, branch_id) for name, branch_id in resolved if branch_id is None or name not in org_wide_names}
+    return [UserPermissionGrant(name=name, branch_id=branch_id) for name, branch_id in sorted(normalized, key=lambda value: (value[0], value[1] or ""))]
     
 async def _load_role_name(session: AsyncSession, user: User) -> str | None:
     if not user.role_id:
@@ -118,7 +140,7 @@ async def _upsert_device(
     device_name: str | None,
     device_fingerprint: str | None,
     ip_address: str | None,
-) -> None:
+) -> UserDevice:
     """
     Upsert the UserDevice row for this session.
 
@@ -146,7 +168,7 @@ async def _upsert_device(
         device.refresh_token_hash = refresh_hash
         device.ip_address = ip_address
     else:
-        session.add(UserDevice(
+        device = UserDevice(
             user_id=user.id,
             organization_id=user.organization_id,
             device_name=device_name,
@@ -155,7 +177,11 @@ async def _upsert_device(
             refresh_token_hash=refresh_hash,
             last_seen_at=now,
             revoked=False,
-        ))
+        )
+        session.add(device)
+
+    await session.flush()
+    return device
 
 
 #  Issue (initial login / signup) 
@@ -178,18 +204,18 @@ async def issue_tokens(
     """
     claims = await build_claims(session, user)
 
+    raw_refresh = create_refresh_token(user.id)
+    refresh_hash = hash_refresh_token(raw_refresh)
+
+    device = await _upsert_device(session, user, refresh_hash, device_name, device_fingerprint, ip_address)
     access_token = create_access_token(
         user_id=user.id,
         organization_id=claims["organization_id"],
         branch_id=claims["branch_id"],
         role=claims["role"],
         permissions=claims["permissions"],
+        session_id=device.id,
     )
-    raw_refresh = create_refresh_token(user.id)
-    refresh_hash = hash_refresh_token(raw_refresh)
-
-    await _upsert_device(session, user, refresh_hash, device_name, device_fingerprint, ip_address)
-    await session.flush()
 
     return token_pair_response(access_token, raw_refresh)
 
@@ -217,6 +243,7 @@ async def rotate_refresh_token(
         branch_id=claims["branch_id"],
         role=claims["role"],
         permissions=claims["permissions"],
+        session_id=old_device.id,
     )
     new_raw_refresh = create_refresh_token(user.id)
     new_hash = hash_refresh_token(new_raw_refresh)

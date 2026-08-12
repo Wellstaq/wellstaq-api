@@ -3,7 +3,7 @@ SQLAlchemy models live here, one file per domain group.
 """
 
 from app.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin
-from app.models.user import User, UserSettings, UserDevice, UserAuthProvider
+from app.models.user import User, UserSettings, UserDevice, UserAuthProvider, MobilePushToken
 from app.models.organization import Organization, OrganizationInvite
 from app.models.branch import Branch
 from app.models.department import Department, DepartmentMember, DepartmentRankSnapshot
@@ -25,7 +25,7 @@ from app.models.wellbeing import(
 )
 from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
 from app.models.story import Story
-from app.models.permission import Permission, Role, UserPermission
+from app.models.permission import Permission, Role, RolePermission, UserPermission, UserRoleAssignment
 from app.models.engagement import ActivityLog, EngagementLog
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
 from app.models.payment import SubscriptionPlan, PaymentTransaction, OrganizationSubscription
@@ -36,7 +36,9 @@ from app.models.wellbeing_survey import(
     WellbeingSurveyResponse,
 ) 
 from app.models.media_asset import MediaAsset
-
-# this table should be erased and dropped after development
-from app.models.otp_code import OtpCode
+from app.models.integration import (
+    HealthDataConsent, HealthMeasurement, IntegrationExternalRecord,
+    OrganizationIntegration, UserIntegration,
+)
+from app.models.support_ticket import SupportTicket
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

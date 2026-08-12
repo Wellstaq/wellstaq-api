@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/organization/invite_service.py
 
 Organization invite management.
@@ -81,6 +81,7 @@ from app.models.department import Department
 from app.models.permission import UserRoleAssignment
 from app.services.errors import AuthError
 from app.core.constants import INVITE_TTL_DAYS, ESCALATION_RESTRICTED_ROLES
+from app.core.config import settings
 from app.services.payment import enforce_plan_limit
 
 logger = logging.getLogger(__name__)
@@ -191,16 +192,7 @@ async def send_invite(
     permitted_branch_ids: set[str] = set()
 
     if not is_super_admin:
-        grant_result = await session.execute(
-            select(UserPermission)
-            .join(Permission, UserPermission.permission_id == Permission.id)
-            .where(
-                UserPermission.user_id == invited_by_user_id,
-                UserPermission.organization_id == org_id,
-                Permission.name == "member.invite",
-            )
-        )
-        grants = grant_result.scalars().all()
+        grants = [grant for grant in invited_by_permissions if getattr(grant, "name", grant) == "member.invite"]
 
         if not grants:
             raise AuthError(
@@ -209,10 +201,10 @@ async def send_invite(
             )
 
         # Org-wide grant (branch_id=NULL) supersedes all branch-level grants.
-        if any(g.branch_id is None for g in grants):
+        if any(getattr(g, "branch_id", None) is None for g in grants):
             invite_is_org_wide = True
         else:
-            permitted_branch_ids = {g.branch_id for g in grants}
+            permitted_branch_ids = {getattr(g, "branch_id", None) for g in grants if getattr(g, "branch_id", None)}
 
     # ── Guard 5: branch must exist and belong to this org ─────────────────────
     # Validated before Guards 6 and 7 because both compare against
@@ -262,26 +254,11 @@ async def send_invite(
     if role is None:
         raise AuthError("Role not found.", status.HTTP_404_NOT_FOUND)
 
-    if role.is_system:
-        # System roles are platform-shared — usable by any branch/org,
-        # never branch-owned.
-        pass
-    else:
-        if role.organization_id != org_id:
-            raise AuthError(
-                "Role does not belong to this organization.",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        # Custom roles are ALWAYS branch-owned and isolated to that branch.
-        # Every custom role has a branch_id — there is no org-wide custom tier.
-        if role.branch_id != branch_id:
-            raise AuthError(
-                f'The role "{role.name}" belongs to a different branch and '
-                "cannot be used for this invite. Branches cannot share "
-                "custom roles — create an equivalent role in this branch "
-                "if needed.",
-                status.HTTP_400_BAD_REQUEST,
-            )
+    if role.is_system or role.organization_id != org_id:
+        raise AuthError(
+            "Select a role belonging to this organization.",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── Guard 7a: privilege escalation gate ─────────────────────────────────────
     #
@@ -429,7 +406,7 @@ async def _send_invite_email(
     Raises AuthError on delivery failure so the caller can rollback —
     an undelivered invite should leave no DB trace.
     """
-    invite_url = f"https://app.wellstaq.com/invite?code={invite_code}"
+    invite_url = f"{settings.PUBLIC_APP_ORIGIN.rstrip('/')}/invite/register?code={invite_code}"
 
     html_body = f"""
     <html>

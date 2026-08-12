@@ -467,6 +467,27 @@ revoked:
 """
 
 
+class MobilePushToken(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A registered mobile push destination (Expo, FCM, or APNs)."""
+
+    __tablename__ = "mobile_push_tokens"
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, default="expo")
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("provider IN ('expo', 'fcm', 'apns')", name="ck_mobile_push_provider"),
+        CheckConstraint("platform IN ('ios', 'android')", name="ck_mobile_push_platform"),
+        Index("ix_mobile_push_user_active", "user_id", "is_active"),
+    )
+
+
 class UserDevice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "user_devices"
 

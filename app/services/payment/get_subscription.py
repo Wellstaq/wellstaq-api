@@ -29,9 +29,20 @@ async def get_transaction_history(*, session: AsyncSession, organization_id: str
     return list(transactions), total
 
 
-async def get_available_plans(*, session: AsyncSession):
-    from app.models.payment import SubscriptionPlan
-    result = await session.execute(
-        select(SubscriptionPlan).where(SubscriptionPlan.is_active.is_(True)).order_by(SubscriptionPlan.amount.asc())
-    )
+async def get_available_plans(*, session: AsyncSession, organization_id: str | None = None):
+    from app.models.payment import OrganizationSubscription, SubscriptionPlan
+
+    query = select(SubscriptionPlan).where(SubscriptionPlan.is_active.is_(True))
+    if organization_id is not None:
+        trial_ends_at = (
+            await session.execute(
+                select(OrganizationSubscription.trial_ends_at).where(
+                    OrganizationSubscription.organization_id == organization_id
+                )
+            )
+        ).scalar_one_or_none()
+        if trial_ends_at is not None:
+            query = query.where(SubscriptionPlan.name != "Trial")
+
+    result = await session.execute(query.order_by(SubscriptionPlan.amount.asc()))
     return list(result.scalars().all())

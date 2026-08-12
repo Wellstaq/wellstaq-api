@@ -1,4 +1,4 @@
-"""
+﻿"""
 Central application configuration.
 
 All values are read from environment variables (or a local .env file
@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    APP_ADMIN_API_KEY: str = ""
    
     APP_NAME: str = "Wellstaq API"
     APP_ENV: str = "development"  # development | staging | production
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
 
     # ── CORS ─────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    PUBLIC_APP_ORIGIN: str = "https://app.wellstaq.com"
 
     model_config = SettingsConfigDict(
         env_file=".env",

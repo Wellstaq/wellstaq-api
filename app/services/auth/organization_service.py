@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/organization_service.py
 
 Organization-scoped helpers:
@@ -124,16 +124,6 @@ async def seed_super_admin_permissions(
         - granted_by=None marks every row as system-seeded.
         - One-time call at org creation — never called again for the same user.
     """
-    result = await session.execute(select(Permission))
-    permissions = result.scalars().all()
-
-    print("I got here and print this")
-
-    for perm in permissions:
-        session.add(UserPermission(
-            user_id=user.id,
-            permission_id=perm.id,
-            organization_id=user.organization_id,
-            branch_id=None,   # org-wide — owner has authority across the whole org
-            granted_by=None,  # system-seeded, not manually granted
-        ))
+    # Permissions are inherited exclusively through RolePermission.
+    # Kept as a compatibility hook for existing signup callers.
+    return

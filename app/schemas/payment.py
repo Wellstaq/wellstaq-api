@@ -40,6 +40,9 @@ class CheckoutRequest(BaseModel):
     callback_url: str | None = None
     auto_renew: bool = Field(default=False, description="If true, saves the payment method and auto-charges every renewal period. If false, this is a one-time charge only — no future charges without the customer explicitly initiating checkout again.")
 
+class AutoRenewUpdateRequest(BaseModel):
+    enabled: bool
+
 class CheckoutResponse(BaseModel):
     authorization_url: str
     reference: str

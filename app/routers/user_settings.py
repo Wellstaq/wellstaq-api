@@ -16,7 +16,8 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user
@@ -30,7 +31,10 @@ from app.schemas.user_setting import (
     ProfileResponse,
     ProfileUpdateRequest,
     ResetPasswordRequest,
+    PreferencesResponse,
+    PreferencesUpdateRequest,
 )
+from app.models import UserSettings
 from app.services.user_setting import (
     change_password,
     get_profile,
@@ -41,6 +45,54 @@ from app.services.user_setting import (
 )
 
 router = APIRouter(prefix="/user-settings", tags=["user-settings"])
+
+
+def _preferences_response(settings_row: UserSettings) -> PreferencesResponse:
+    return PreferencesResponse(
+        email_notifications=settings_row.email_notifications,
+        push_notifications=settings_row.push_notifications,
+        challenge_reminders=settings_row.challenge_reminders,
+        public_profile=settings_row.public_profile,
+        show_activity=settings_row.show_wellness_to_team,
+        theme=settings_row.theme,
+    )
+
+
+@router.get("/preferences", response_model=PreferencesResponse, status_code=status.HTTP_200_OK)
+async def get_preferences_route(
+    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(get_current_user),
+) -> PreferencesResponse:
+    async with request_guard(db, "/user-settings/preferences"):
+        row = (await db.execute(
+            select(UserSettings).where(UserSettings.user_id == current_user.user_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "User settings not found.")
+        return _preferences_response(row)
+
+
+@router.patch("/preferences", response_model=PreferencesResponse, status_code=status.HTTP_200_OK)
+async def update_preferences_route(
+    body: PreferencesUpdateRequest,
+    db: AsyncSession = Depends(get_db), current_user: CurrentUser = Depends(get_current_user),
+) -> PreferencesResponse:
+    async with request_guard(db, "/user-settings/preferences"):
+        row = (await db.execute(
+            select(UserSettings).where(UserSettings.user_id == current_user.user_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "User settings not found.")
+
+        updates = body.model_dump(exclude_unset=True)
+        for field in ("email_notifications", "push_notifications", "challenge_reminders", "public_profile", "theme"):
+            if field in updates:
+                setattr(row, field, updates[field])
+        if "show_activity" in updates:
+            row.show_wellness_to_team = updates["show_activity"]
+
+        await db.commit()
+        await db.refresh(row)
+        return _preferences_response(row)
 
 
 @router.get("/profile", response_model=ProfileResponse, status_code=status.HTTP_200_OK)

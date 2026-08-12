@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Notification
+from app.models import Notification, UserSettings
 from app.models.notification import NOTIFICATION_TYPES, REFERENCE_TYPES
+from app.services.notification.push_delivery import send_mobile_push
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ async def create_notification(
     reference_id: str | None = None,
     reference_type: str | None = None,
     image_url: str | None = None,
-) -> Notification:
+) -> Notification | None:
     """
     Fire-and-forget style: caller is responsible for its own transaction —
     this only adds + flushes, never commits. If the caller's action fails
@@ -55,6 +57,13 @@ async def create_notification(
     if (reference_id is None) != (reference_type is None):
         raise ValueError("reference_id and reference_type must both be set, or both omitted.")
 
+    settings_row = (await session.execute(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    )).scalar_one_or_none()
+    if notification_type.startswith("challenge_") and settings_row and not settings_row.challenge_reminders:
+        logger.info("Challenge reminder skipped by user preference", extra={"user_id": user_id, "type": notification_type})
+        return None
+
     notification = Notification(
         user_id=user_id,
         organization_id=organization_id,
@@ -70,8 +79,12 @@ async def create_notification(
     session.add(notification)
     await session.flush()
 
-    # TODO(redis/websocket): push a real-time notification here once
-    # that infra exists, instead of relying purely on poll/refresh.
+    if settings_row and settings_row.push_notifications:
+        await send_mobile_push(
+            session=session, user_id=user_id, title="Wellstaq", body=notification.body,
+            data={"notification_id": notification.id, "type": notification_type,
+                  "reference_id": reference_id, "reference_type": reference_type},
+        )
 
     logger.info(
         "Notification created",

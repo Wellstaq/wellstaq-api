@@ -107,6 +107,7 @@ async def password_login(
     settings_row = user.settings
     if settings_row and settings_row.two_fa_enabled:
         return await issue_two_fa_challenge(
+            session=session,
             user=user,
             method=settings_row.two_fa_method,
             device_name=device_name,

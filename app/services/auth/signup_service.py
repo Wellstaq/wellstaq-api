@@ -58,6 +58,7 @@ from ._helpers import (
     _validate_password_strength,
 )
 from app.services.payment import start_trial
+from app.services.organization_roles import ensure_organization_roles
 from app.core.constants import HEADQUARTERS_BRANCH_NAME
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,9 @@ async def org_owner_signup(
     ))
     session.add(_create_user_settings(user))
 
-    super_admin_role = await _get_or_self_heal_super_admin_role(session)
+    await _get_or_self_heal_super_admin_role(session)
+    organization_roles = await ensure_organization_roles(session, org.id)
+    super_admin_role = organization_roles[RoleName.SUPER_ADMIN]
     assign_role(user, super_admin_role)
     await session.flush()
     await seed_super_admin_permissions(session, user)

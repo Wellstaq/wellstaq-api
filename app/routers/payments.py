@@ -25,6 +25,7 @@ from app.core.guards import request_guard
 from app.models import PaymentTransaction, User
 from app.schemas.payment import (
     CheckoutRequest,
+    AutoRenewUpdateRequest,
     CheckoutResponse,
     SubscriptionResponse,
     TransactionListResponse,
@@ -36,7 +37,8 @@ from app.schemas.payment import (
 from app.services.payment import (get_subscription, 
     get_transaction_history, 
     initiate_checkout,
-    cancel_auto_renew, 
+    cancel_auto_renew,
+    set_auto_renew,
     get_available_plans,
     handle_charge_failed,
     verify_paystack_signature,
@@ -173,6 +175,19 @@ async def cancel_auto_renew_route(
         await db.commit()
         return SubscriptionResponse.model_validate(subscription)
 
+@router.patch("/subscription/auto-renew", response_model=SubscriptionResponse, status_code=status.HTTP_200_OK)
+async def update_auto_renew_route(
+    org_id: str,
+    body: AutoRenewUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("org.billing.manage")),
+) -> SubscriptionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/subscription/auto-renew"):
+        subscription = await set_auto_renew(session=db, organization_id=org_id, enabled=body.enabled)
+        await db.commit()
+        return SubscriptionResponse.model_validate(subscription)
+
 
 # ── Webhook — separate router, no org_id prefix ─────────────────────────────
 
@@ -250,5 +265,5 @@ async def list_available_plans_route(
     same as WellbeingDimension. Registered outside the org-prefixed
     router since it isn't org-specific data."""
     async with request_guard(db, "/plans"):
-        plans = await get_available_plans(session=db)
+        plans = await get_available_plans(session=db, organization_id=current_user.organization_id)
         return PlanListResponse(items=[PlanResponse.model_validate(p) for p in plans])

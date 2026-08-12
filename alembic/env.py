@@ -16,9 +16,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import settings
 
-# from app.models.base import Base  # uncomment once models exist
-# target_metadata = Base.metadata
-target_metadata = None
+from app.models.base import Base  # uncomment once models exist
+target_metadata = Base.metadata
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

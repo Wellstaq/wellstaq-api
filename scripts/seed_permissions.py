@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.jobs.shared import get_job_session
-from app.models.permission import Permission, Role
+from app.models.permission import Permission, Role, RolePermission
 
 logger = logging.getLogger(__name__)
 
@@ -160,13 +160,32 @@ PERMISSIONS: list[dict] = [
     {"name": "wellbeing.view_team", "description": "View aggregated wellbeing scores for a team or branch", "category": "wellbeing", "scope": "both"},
     {"name": "wellbeing.export", "description": "Export wellbeing reports to CSV or PDF", "category": "wellbeing", "scope": "both"},
     {"name": "overview", "description": "overview a branch or the org entirely", "category": "org", "scope": "both"},
+    {"name": "org.stats", "description": "Organization statistics(total users count, total department count etc)", "category": "org", "scope": "both"},
     {"name": "org.settings.update", "description": "Update organization-level settings and profile", "category": "org", "scope": "org"},
     {"name": "org.billing.manage", "description": "Manage subscription, billing, and payment methods", "category": "org", "scope": "org"},
-    {"name": "org.stats", "description": "Organization statistics(total users count, total department count etc)", "category": "org", "scope": "both"},
     {"name": "org.deactivate", "description": "Deactivate the entire organization", "category": "org", "scope": "org"},
 
 
 ]
+
+
+ADMIN_EXCLUSIONS = {"org.billing.manage", "org.deactivate", "org.settings.update"}
+BRANCH_ADMIN_EXCLUSIONS = {
+    "member.role.assign", "member.permission.grant", "branch.update",
+    "member.permission.revoke", "member.role.revoke",
+}
+TEAM_LEADER_PERMISSIONS = {"overview", "wellbeing.view_team", "wellbeing.export"}
+
+
+def system_role_permission_templates() -> dict[str, dict[str, str]]:
+    all_permissions = {entry["name"]: entry["scope"] for entry in PERMISSIONS}
+    return {
+        "super_admin": {name: "org" for name in all_permissions},
+        "admin": {name: "org" for name in all_permissions if name not in ADMIN_EXCLUSIONS},
+        "branch_manager": {name: "branch" for name, catalogue_scope in all_permissions.items() if catalogue_scope == "both"},
+        "team_leader": {name: "branch" for name in TEAM_LEADER_PERMISSIONS},
+        "member": {},
+    }
 
 
 # ── Seeders ────────────────────────────────────────────────────────────────────
@@ -217,7 +236,11 @@ async def seed_permissions(session: AsyncSession) -> None:
         result = await session.execute(
             select(Permission).where(Permission.name == entry["name"])
         )
-        if result.scalar_one_or_none():
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.description = entry["description"]
+            existing.category = entry["category"]
+            existing.scope = entry.get("scope", "both")
             skipped += 1
             continue
 
@@ -237,11 +260,48 @@ async def seed_permissions(session: AsyncSession) -> None:
     print(f"✓ Permissions: inserted {inserted}, skipped {skipped} existing.")
 
 
+async def seed_system_role_permissions(session: AsyncSession) -> None:
+    """Synchronize immutable platform role templates to the catalogue."""
+    roles = {
+        role.name: role
+        for role in (await session.execute(select(Role).where(Role.is_system == True))).scalars().all()  # noqa: E712
+    }
+    permissions = {
+        permission.name: permission
+        for permission in (await session.execute(select(Permission))).scalars().all()
+    }
+    templates = system_role_permission_templates()
+    for role_name, desired in templates.items():
+        role = roles.get(role_name)
+        if role is None:
+            continue
+        existing = {
+            row.permission_id: row
+            for row in (await session.execute(select(RolePermission).where(RolePermission.role_id == role.id))).scalars().all()
+        }
+        desired_ids = {permissions[name].id for name in desired if name in permissions}
+        for permission_id, row in existing.items():
+            if permission_id not in desired_ids:
+                await session.delete(row)
+        for permission_name, scope in desired.items():
+            permission = permissions.get(permission_name)
+            if permission is None:
+                continue
+            row = existing.get(permission.id)
+            if row is None:
+                session.add(RolePermission(role_id=role.id, permission_id=permission.id, scope=scope))
+            else:
+                row.scope = scope
+    await session.flush()
+    print("✓ System role permission templates synchronized.")
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     async with get_job_session() as session:
         await seed_roles(session)
         await seed_permissions(session)
+        await seed_system_role_permissions(session)
         await session.commit()
 
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/schemas/auth.py
 
 Pydantic schemas for auth request/response validation.
@@ -22,6 +22,7 @@ Setup / disable (requires a valid access token):
 """
 
 from typing import Literal
+from datetime import datetime
 from pydantic import (
     BaseModel,
     EmailStr, 
@@ -170,6 +171,21 @@ class TwoFaDisableRequest(BaseModel):
     """Disable 2FA. Requires the current password as confirmation."""
     password: str
 
+class TwoFaConfirmRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=8)
+
+class SessionItemResponse(BaseModel):
+    id: str
+    device_name: str | None
+    ip_address: str | None
+    location_label: str | None
+    last_seen_at: datetime
+    created_at: datetime
+    is_current: bool = False
+
+class SessionListResponse(BaseModel):
+    items: list[SessionItemResponse]
+
 
 # ── Token responses ────────────────────────────────────────────────────────────
 
@@ -178,6 +194,15 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class InviteRegistrationResponse(BaseModel):
+    message: str
+    role: str
+    requires_app: bool
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
 
 
 class AccessTokenResponse(BaseModel):

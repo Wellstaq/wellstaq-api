@@ -72,6 +72,9 @@ class OrganizationMemberInfo(BaseModel):
     status: str
     role_id: str | None
     branch_id: str | None
+    department_id: str | None = None
+    role_name: str | None = None
+    public_profile: bool = False
 
 
 class OrganizationMembersListResponse(BaseModel):

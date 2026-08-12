@@ -3,6 +3,27 @@ app/schemas/user_setting.py
 """
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from typing import Literal
+
+
+class PreferencesResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    email_notifications: bool
+    push_notifications: bool
+    challenge_reminders: bool
+    public_profile: bool
+    show_activity: bool
+    theme: Literal["light", "dark"]
+
+
+class PreferencesUpdateRequest(BaseModel):
+    email_notifications: bool | None = None
+    push_notifications: bool | None = None
+    challenge_reminders: bool | None = None
+    public_profile: bool | None = None
+    show_activity: bool | None = None
+    theme: Literal["light", "dark"] | None = None
 
 
 # ── Avatar ───────────────────────────────────────────────────────────────────

@@ -55,7 +55,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.jwt import TokenError, decode_token
 from app.core.constants import TokenType, UserStatus
 from app.core.database import get_db
-from app.models import User, ClubMember, EventParticipant
+from app.models import User, UserDevice, ClubMember, EventParticipant
 from app.models.permission import Permission, UserPermission
 from app.services.auth.token_service import load_user_permissions
 from app.services.auth.token_service import UserPermissionGrant, load_user_permissions
@@ -82,6 +82,7 @@ class CurrentUser:
     organization_id: str
     branch_id: str | None
     permissions: list[UserPermissionGrant] = field(default_factory=list)
+    session_id: str | None = None
 
     def has_permission(self, permission: str) -> bool:
         return any(p.name == permission for p in self.permissions)
@@ -122,6 +123,27 @@ async def get_current_user(
     if not user_id:
         raise credentials_exception
 
+    session_id: str | None = payload.get("sid")
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This login session is no longer valid. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    active_session = (await db.execute(
+        select(UserDevice.id).where(
+            UserDevice.id == session_id,
+            UserDevice.user_id == user_id,
+            UserDevice.revoked.is_(False),
+        )
+    )).scalar_one_or_none()
+    if active_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This login session has been revoked.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     # Load user fresh from DB. Eager-load role so we can read role.name
     # without a second query.
     # NOTE: User has no deleted_at column — hard-delete only.
@@ -158,6 +180,7 @@ async def get_current_user(
         organization_id=user.organization_id,
         branch_id=user.branch_id,
         permissions=permissions,
+        session_id=session_id,
     )
 
 
@@ -266,30 +289,14 @@ async def require_scoped_permission(
     if current_user.role == "super_admin":
         return
 
-    query = (
-        select(UserPermission.id)          # only need existence, not the row
-        .join(Permission, Permission.id == UserPermission.permission_id)
-        .where(
-            UserPermission.user_id == current_user.user_id,
-            UserPermission.organization_id == current_user.organization_id,
-            Permission.name == permission,
+    allowed = any(
+        grant.name == permission and (
+            grant.branch_id is None
+            or (target_branch_id is not None and grant.branch_id == target_branch_id)
         )
+        for grant in current_user.permissions
     )
-
-    if target_branch_id is not None:
-        query = query.where(
-            or_(
-                UserPermission.branch_id.is_(None),
-                UserPermission.branch_id == target_branch_id,
-            )
-        )
-    else:
-        query = query.where(UserPermission.branch_id.is_(None))
-
-    query = query.limit(1)  # ← only ever need to know "at least one exists"
-
-    result = await db.execute(query)
-    if result.scalar_one_or_none() is None:
+    if not allowed:
         scope_detail = (
             f"for branch '{target_branch_id}'"
             if target_branch_id

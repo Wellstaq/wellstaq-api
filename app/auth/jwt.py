@@ -79,6 +79,7 @@ def create_access_token(
     branch_id: str | None,
     role: str,
     permissions: list[str],
+    session_id: str | None = None,
 ) -> str:
     """
     Create a short-lived access token with embedded identity + permissions.
@@ -95,6 +96,7 @@ def create_access_token(
             "branch_id": branch_id,
             "role": role,
             "permissions": permissions,
+            "sid": session_id,
         },
     )
 

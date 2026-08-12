@@ -197,6 +197,7 @@ async def get_user_permissions_route(
             viewer=current_user,
             organization_id=org_id,
             target_user_id=user_id,
+            branch_id=branch_id,
         )
         return UserPermissionsResponse(
             user_id=user_id,

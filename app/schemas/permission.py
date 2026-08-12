@@ -58,7 +58,7 @@ class PermissionRevokeResponse(BaseModel):
 class PermissionGrantDetail(BaseModel):
     """Single permission grant with full scope detail."""
     permission_name: str
-    category: str
+    category: str | None
     catalogue_scope: str      # "org" | "both" — from Permission catalogue
     grant_scope: str          # "org_wide" | "branch" — how this grant is scoped
     branch_id: str | None

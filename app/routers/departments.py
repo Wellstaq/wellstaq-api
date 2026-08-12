@@ -239,7 +239,7 @@ async def edit_department_route(
     body: DepartmentUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(require_active_subscription),
-    _: CurrentUser = Depends(require_permission("department.update")),
+    _: CurrentUser = Depends(require_permission("member.department.assign")),
 ) -> DepartmentResponse:
     require_same_organization(org_id, current_user)
 
@@ -252,7 +252,7 @@ async def edit_department_route(
         await require_scoped_permission(
             db=db,
             current_user=current_user,
-            permission="department.update",
+            permission="member.department.assign",
             target_branch_id=department.branch_id,
         )
         department = await edit_department(

@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/auth/invite_service.py
 
 Invite-based registration flows:
@@ -167,25 +167,9 @@ async def _create_role_assignment_if_needed(
     department consistency at invite-creation time, but a second invite
     for the same unique slot could still be accepted concurrently.
     """
-    if role.unique_scope is None:
-        return  # e.g. "member" — no assignment row needed
-
-    if role.unique_scope == "branch":
-        scope_filter = UserRoleAssignment.branch_id == branch_id
-        assignment_kwargs = dict(branch_id=branch_id, department_id=None)
-        conflict_msg = "This role is already held by someone else in this branch."
-    elif role.unique_scope == "department":
-        scope_filter = UserRoleAssignment.department_id == department_id
-        assignment_kwargs = dict(branch_id=None, department_id=department_id)
-        conflict_msg = "This role is already held by someone else in this department."
-    else:
-        # Defensive — the DB CheckConstraint already restricts
-        # unique_scope to ('branch', 'department', NULL), so this
-        # should be unreachable outside of a data-integrity bug.
-        raise AuthError(
-            f"Role has an unrecognized unique_scope: {role.unique_scope!r}.",
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    scope_filter = UserRoleAssignment.branch_id == branch_id
+    assignment_kwargs = dict(branch_id=branch_id, department_id=None)
+    conflict_msg = "This role is already held by someone else in this branch."
 
     if role.is_unique:
         existing = await session.execute(
@@ -381,6 +365,19 @@ async def invite_register(
 
     _validate_password_strength(password)
 
+    role = (await session.execute(select(Role).where(Role.id == invite.invited_role_id))).scalar_one_or_none()
+    if role is None or role.branch_id != invite.branch_id:
+        raise AuthError("The invited branch role is no longer available.", status.HTTP_409_CONFLICT)
+    if role.name == RoleName.SUPER_ADMIN:
+        raise AuthError("The super_admin role cannot be assigned via invite registration.", status.HTTP_403_FORBIDDEN)
+    org_member_role = (await session.execute(select(Role).where(
+        Role.organization_id == invite.organization_id,
+        Role.branch_id.is_(None),
+        Role.name == RoleName.MEMBER,
+    ))).scalar_one_or_none()
+    if org_member_role is None:
+        raise AuthError("The organization Member role is unavailable.", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     # ── Step 5: create user as PENDING ────────────────────────────────────────
     user = User(
         first_name=first_name.strip(),
@@ -389,7 +386,7 @@ async def invite_register(
         hashed_password=hash_password(password),
         organization_id=invite.organization_id,
         branch_id=invite.branch_id,        # now always required — home branch
-        role_id=invite.invited_role_id,
+        role_id=org_member_role.id,
         country=country.strip() if country else None,
         state=state.strip() if state else None,
         status=UserStatus.PENDING,
@@ -415,30 +412,6 @@ async def invite_register(
     ))
 
     # ── Step 7a: role lookup + super_admin guard ────────────────────────────────
-    role_result = await session.execute(select(Role).where(Role.id == invite.invited_role_id))
-    role = role_result.scalar_one_or_none()
-    if role is None:
-        # send_invite() already validated this at invite-creation time;
-        # reaching here means the role was deleted after the invite was
-        # sent but before it was accepted.
-        raise AuthError(
-            "The role assigned to this invite no longer exists. "
-            "Please ask for a new invite.",
-            status.HTTP_409_CONFLICT,
-        )
-
-    # Defensive checkpoint — send_invite() already prevents super_admin
-    # invites from ever being created (see organization/invite_service.py
-    # Guard 7a), but this is the last gate before a user account is
-    # actually created and activated with that role. The super_admin
-    # role must never be assignable through the invite flow.
-    if role.name == RoleName.SUPER_ADMIN:
-        raise AuthError(
-            "This invite cannot be completed: the super_admin role "
-            "cannot be assigned via invite registration.",
-            status.HTTP_403_FORBIDDEN,
-        )
-
     # ── Step 7b: role assignment (where the role applies) ──────────────────────
     await _create_role_assignment_if_needed(
         session,
@@ -504,7 +477,18 @@ async def invite_register(
     )
     await session.flush()
 
-    # ── Step 11: issue tokens ─────────────────────────────────────────────────
+    # ── Step 11: members continue in the mobile app; admins enter web ─────────
     await session.refresh(user, ["role"])
-
-    return await issue_tokens(session, user, device_name, device_fingerprint, ip_address)
+    if role.name == RoleName.MEMBER:
+        return {
+            "message": "Registration successful. Download the Wellstaq app to continue.",
+            "role": role.name,
+            "requires_app": True,
+        }
+    tokens = await issue_tokens(session, user, device_name, device_fingerprint, ip_address)
+    return {
+        "message": "Registration successful.",
+        "role": role.name,
+        "requires_app": False,
+        **tokens,
+    }

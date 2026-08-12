@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/branch/update_branch.py
 
 Update operations for branches.
@@ -50,8 +50,9 @@ from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch, Permission, User, UserPermission
+from app.models import Branch, Permission, Role, User, UserPermission, UserRoleAssignment
 from app.core.constants import SEEDED_PERMISSION_SCOPE
+from app.services.organization_roles import ensure_branch_roles
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,10 @@ async def seed_role_permissions_for_branch(
     this exact branch, or org-wide (branch_id=NULL, which supersedes
     a branch-level grant). Safe to call again on manager reassignment.
     """
+    # RolePermission is resolved dynamically by load_user_permissions().
+    # Never duplicate inherited permissions into UserPermission, which is
+    # reserved exclusively for personal grants.
+    return
     perms_result = await session.execute(
         select(Permission).where(Permission.scope == SEEDED_PERMISSION_SCOPE)
     )
@@ -140,6 +145,7 @@ async def unseed_role_permissions_for_branch(
         UserPermission.user_id == user_id,
         UserPermission.organization_id == organization_id,
         UserPermission.branch_id == branch_id,
+        UserPermission.granted_by.is_(None),
         UserPermission.permission_id.in_(perm_ids_subquery),
     )
     result = await session.execute(delete_stmt)
@@ -404,12 +410,41 @@ async def assign_branch_manager(
             User.organization_id == organization_id,
         )
     )
-    if manager_result.scalar_one_or_none() is None:
+    manager = manager_result.scalar_one_or_none()
+    if manager is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found or does not belong to this organization.",
         )
+    if manager.branch_id != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A branch manager must belong to the branch they manage.",
+        )
 
+    await ensure_branch_roles(session, organization_id, branch_id)
+    await session.flush()
+    manager_role = (await session.execute(select(Role).where(
+        Role.organization_id == organization_id,
+        Role.branch_id == branch_id,
+        Role.name == "branch_manager",
+    ))).scalar_one_or_none()
+    if manager_role is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Branch Manager role is unavailable.")
+    await session.execute(delete(UserRoleAssignment).where(
+        UserRoleAssignment.user_id == manager_id,
+        UserRoleAssignment.organization_id == organization_id,
+        UserRoleAssignment.branch_id.is_not(None),
+    ))
+    await session.execute(delete(UserPermission).where(
+        UserPermission.user_id == manager_id,
+        UserPermission.organization_id == organization_id,
+        UserPermission.branch_id == branch_id,
+    ))
+    session.add(UserRoleAssignment(
+        user_id=manager_id, role_id=manager_role.id, organization_id=organization_id,
+        branch_id=branch_id, department_id=None,
+    ))
     branch.manager_id = manager_id
     await session.flush()
 
@@ -468,14 +503,30 @@ async def unassign_branch_manager(
 
     old_manager_id = branch.manager_id
     branch.manager_id = None
+    await ensure_branch_roles(session, organization_id, branch_id)
     await session.flush()
-
-    await unseed_role_permissions_for_branch(
-        session,
-        user_id=old_manager_id,
-        organization_id=organization_id,
-        branch_id=branch_id,
-    )
+    member_role = (await session.execute(select(Role).where(
+        Role.organization_id == organization_id,
+        Role.branch_id == branch_id,
+        Role.name == "member",
+    ))).scalar_one_or_none()
+    if member_role is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Member role is unavailable.")
+    await session.execute(delete(UserRoleAssignment).where(
+        UserRoleAssignment.user_id == old_manager_id,
+        UserRoleAssignment.organization_id == organization_id,
+        UserRoleAssignment.branch_id.is_not(None),
+    ))
+    await session.execute(delete(UserPermission).where(
+        UserPermission.user_id == old_manager_id,
+        UserPermission.organization_id == organization_id,
+        UserPermission.branch_id == branch_id,
+    ))
+    session.add(UserRoleAssignment(
+        user_id=old_manager_id, role_id=member_role.id, organization_id=organization_id,
+        branch_id=branch_id, department_id=None,
+    ))
+    await session.flush()
 
     await session.refresh(branch)
 

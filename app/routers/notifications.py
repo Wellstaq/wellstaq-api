@@ -18,7 +18,10 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user, require_active_subscription
@@ -30,7 +33,10 @@ from app.schemas.notification import (
     NotificationListResponse,
     NotificationResponse,
     UnreadCountResponse,
+    PushTokenRegisterRequest,
+    PushTokenResponse,
 )
+from app.models import MobilePushToken
 from app.services.notification import (
     delete_notification,
     get_notifications,
@@ -40,6 +46,50 @@ from app.services.notification import (
 )
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+@router.put("/push-tokens", response_model=PushTokenResponse)
+async def register_push_token_route(
+    body: PushTokenRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> PushTokenResponse:
+    async with request_guard(db, "/notifications/push-tokens"):
+        row = (await db.execute(select(MobilePushToken).where(MobilePushToken.token == body.token))).scalar_one_or_none()
+        if row is None:
+            row = MobilePushToken(
+                user_id=current_user.user_id, organization_id=current_user.organization_id,
+                token=body.token, provider=body.provider, platform=body.platform,
+                device_id=body.device_id, is_active=True,
+            )
+            db.add(row)
+        else:
+            row.user_id = current_user.user_id
+            row.organization_id = current_user.organization_id
+            row.provider = body.provider
+            row.platform = body.platform
+            row.device_id = body.device_id
+            row.is_active = True
+            row.last_used_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(row)
+        return PushTokenResponse(id=row.id, provider=row.provider, platform=row.platform, device_id=row.device_id, is_active=row.is_active)
+
+
+@router.delete("/push-tokens", status_code=status.HTTP_204_NO_CONTENT)
+async def unregister_push_token_route(
+    token: str = Query(..., min_length=16, max_length=512),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    async with request_guard(db, "/notifications/push-tokens"):
+        row = (await db.execute(select(MobilePushToken).where(
+            MobilePushToken.token == token, MobilePushToken.user_id == current_user.user_id,
+        ))).scalar_one_or_none()
+        if row is not None:
+            row.is_active = False
+            await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("", response_model=NotificationListResponse, status_code=status.HTTP_200_OK)

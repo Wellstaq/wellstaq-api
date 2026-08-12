@@ -192,7 +192,7 @@ async def edit_branch_route(
     body: BranchUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(require_active_subscription),
-    _: CurrentUser = Depends(require_permission("branch.update")),
+    _: CurrentUser = Depends(require_permission("member.branch.assign")),
 ) -> BranchResponse:
     require_same_organization(org_id, current_user)
 
@@ -200,7 +200,7 @@ async def edit_branch_route(
         await require_scoped_permission(
             db=db,
             current_user=current_user,
-            permission="branch.update",
+            permission="member.branch.assign",
             target_branch_id=branch_id,
         )
         branch = await edit_branch(

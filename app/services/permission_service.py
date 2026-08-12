@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/permission_service.py
 
 Grants and revokes UserPermission rows.
@@ -29,8 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, require_scoped_permission
 from app.core.constants import SUPER_ADMIN_ONLY_PERMISSIONS
-from app.models import User, Branch
+from app.models import User, Branch, Role
 from app.models.permission import Permission, UserPermission
+from app.services.auth.token_service import load_user_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,19 @@ async def grant_permission(
       409 — target user already holds the org-wide version of this
              permission (when branch_id is provided).
     """
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        "Permissions are managed through organization and branch roles; direct user grants are disabled.",
+    )
+    if target_user_id == granter.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot grant permissions to your own account.")
+    target_role_name = (await session.execute(
+        select(Role.name).join(User, User.role_id == Role.id).where(
+            User.id == target_user_id, User.organization_id == organization_id,
+        )
+    )).scalar_one_or_none()
+    if target_role_name == "super_admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin permissions are protected and cannot be changed.")
     if permission_name in SUPER_ADMIN_ONLY_PERMISSIONS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -233,6 +247,19 @@ async def revoke_permission(
       403 — revoker doesn't hold this permission at (at least) this scope.
       404 — no matching grant exists to revoke.
     """
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        "Permissions are managed through organization and branch roles; direct user revocation is disabled.",
+    )
+    if target_user_id == revoker.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot revoke permissions from your own account.")
+    target_role_name = (await session.execute(
+        select(Role.name).join(User, User.role_id == Role.id).where(
+            User.id == target_user_id, User.organization_id == organization_id,
+        )
+    )).scalar_one_or_none()
+    if target_role_name == "super_admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin permissions are protected and cannot be changed.")
     perm_result = await session.execute(
         select(Permission).where(Permission.name == permission_name)
     )
@@ -285,6 +312,7 @@ async def get_user_permissions(
     viewer: CurrentUser,
     organization_id: str,
     target_user_id: str,
+    branch_id: str | None = None,
 ) -> list[dict]:
     """
     Return all permission grants for target_user_id, with scope details.
@@ -313,70 +341,19 @@ async def get_user_permissions(
             detail="User not found or does not belong to this organization.",
         )
 
-    # Resolve viewer's member.role.assign grant to determine what they can see
-    # super_admin sees everything
-    if viewer.role == "super_admin":
-        viewer_branch_filter = None  # no restriction
-        viewer_is_org_wide = True
-    else:
-        viewer_grant_result = await session.execute(
-            select(UserPermission)
-            .join(Permission, Permission.id == UserPermission.permission_id)
-            .where(
-                UserPermission.user_id == viewer.user_id,
-                UserPermission.organization_id == organization_id,
-                Permission.name == "member.role.assign",
-            )
-            .order_by(UserPermission.branch_id.is_(None).desc())  # org-wide first
-        )
-        viewer_grants = viewer_grant_result.scalars().all()
-
-        if not viewer_grants:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Missing required permission: 'member.role.assign'.",
-            )
-
-        # Check if any grant is org-wide
-        viewer_is_org_wide = any(g.branch_id is None for g in viewer_grants)
-        viewer_branch_filter = (
-            None if viewer_is_org_wide
-            else [g.branch_id for g in viewer_grants if g.branch_id is not None]
-        )
-
-    # Build the target user's permissions query
-    query = (
-        select(UserPermission, Permission)
-        .join(Permission, Permission.id == UserPermission.permission_id)
-        .where(
-            UserPermission.user_id == target_user_id,
-            UserPermission.organization_id == organization_id,
-        )
-    )
-
-    # If viewer only has branch-scoped access, restrict what they can see
-    if not viewer_is_org_wide and viewer_branch_filter:
-        from sqlalchemy import or_
-        query = query.where(
-            or_(
-                UserPermission.branch_id.is_(None),  # org-wide grants are visible
-                UserPermission.branch_id.in_(viewer_branch_filter),
-            )
-        )
-
-    query = query.order_by(Permission.category, Permission.name)
-    result = await session.execute(query)
-    rows = result.all()
-
-    return [
-        {
-            "permission_name": perm.name,
-            "category": perm.category,
-            "catalogue_scope": perm.scope,  # "org" or "both" — from Permission catalogue
-            "grant_scope": "org_wide" if grant.branch_id is None else "branch",
-            "branch_id": grant.branch_id,
-            "granted_by": grant.granted_by,
-            "granted_at": grant.created_at,
-        }
-        for grant, perm in rows
-    ]
+    effective = await load_user_permissions(session, target_user_id, organization_id)
+    effective = [grant for grant in effective if grant.branch_id == branch_id]
+    names = {grant.name for grant in effective}
+    catalogue = (await session.execute(
+        select(Permission).where(Permission.name.in_(names)).order_by(Permission.category, Permission.name)
+    )).scalars().all() if names else []
+    grants_by_name = {grant.name: grant for grant in effective}
+    return [{
+        "permission_name": permission.name,
+        "category": permission.category,
+        "catalogue_scope": permission.scope,
+        "grant_scope": "org_wide" if grants_by_name[permission.name].branch_id is None else "branch",
+        "branch_id": grants_by_name[permission.name].branch_id,
+        "granted_by": None,
+        "granted_at": None,
+    } for permission in catalogue]
