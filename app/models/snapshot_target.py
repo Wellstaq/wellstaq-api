@@ -129,13 +129,13 @@ class LeaderboardSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     period_type: Mapped[str] = mapped_column(String(10), nullable=False)  # daily | weekly | monthly
 
     # ── Computed timestamp ────────────────────────────────────────────────────
+   
     computed_at: Mapped[datetime] = mapped_column(
         DateTime,
-        nullable=False,
         server_default=func.now(),
+        nullable=False,
     )
-
-    # ── Relationships ──────────────────────────────────────────────────────────
+        # ── Relationships ──────────────────────────────────────────────────────────
     organization: Mapped["Organization"] = relationship(
         "Organization",
         back_populates="leaderboard_snapshots",

@@ -1,8 +1,8 @@
 """baseline schema
 
-Revision ID: 3cb520a7f5af
+Revision ID: b91a510a2103
 Revises: 
-Create Date: 2026-08-13 10:13:14.544986
+Create Date: 2026-08-13 11:31:58.224002
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '3cb520a7f5af'
+revision: str = 'b91a510a2103'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -604,7 +604,7 @@ def upgrade() -> None:
     op.create_index('ix_group_chat_messages_org_conversation_created_at', 'group_chat_messages', ['organization_id', 'conversation_type', 'conversation_id', 'created_at'], unique=False)
     op.create_index(op.f('ix_group_chat_messages_organization_id'), 'group_chat_messages', ['organization_id'], unique=False)
     op.create_index(op.f('ix_group_chat_messages_user_id'), 'group_chat_messages', ['user_id'], unique=False)
-    op.create_index('uq_one_pinned_per_conversation', 'group_chat_messages', ['conversation_type', 'conversation_id'], unique=True, postgresql_where=sa.text('is_pinned = true'), sqlite_where=sa.text('is_pinned = true'))
+    op.create_index('uq_one_pinned_per_conversation', 'group_chat_messages', ['conversation_type', 'conversation_id'], unique=True, postgresql_where=sa.text('is_pinned = 1'), sqlite_where=sa.text('is_pinned = 1'))
     op.create_table('health_data_consents',
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('organization_id', sa.String(length=36), nullable=False),
@@ -636,7 +636,7 @@ def upgrade() -> None:
     sa.Column('period_start', sa.Date(), nullable=False),
     sa.Column('period_end', sa.Date(), nullable=False),
     sa.Column('period_type', sa.String(length=10), nullable=False),
-    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -1010,7 +1010,7 @@ def upgrade() -> None:
     sa.Column('challenge_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('organization_id', sa.String(length=36), nullable=False),
-    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('rank', sa.Integer(), nullable=True),
     sa.Column('completed_at', sa.DateTime(), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
@@ -1062,7 +1062,7 @@ def upgrade() -> None:
     sa.Column('department_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('role', sa.String(length=50), nullable=True),
-    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -1081,7 +1081,7 @@ def upgrade() -> None:
     sa.Column('performance_score', sa.Numeric(precision=5, scale=2), nullable=True),
     sa.Column('period_start', sa.Date(), nullable=True),
     sa.Column('period_end', sa.Date(), nullable=True),
-    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -1452,7 +1452,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_health_data_consents_provider'), table_name='health_data_consents')
     op.drop_index(op.f('ix_health_data_consents_organization_id'), table_name='health_data_consents')
     op.drop_table('health_data_consents')
-    op.drop_index('uq_one_pinned_per_conversation', table_name='group_chat_messages', postgresql_where=sa.text('is_pinned = true'), sqlite_where=sa.text('is_pinned = true'))
+    op.drop_index('uq_one_pinned_per_conversation', table_name='group_chat_messages', postgresql_where=sa.text('is_pinned = 1'), sqlite_where=sa.text('is_pinned = 1'))
     op.drop_index(op.f('ix_group_chat_messages_user_id'), table_name='group_chat_messages')
     op.drop_index(op.f('ix_group_chat_messages_organization_id'), table_name='group_chat_messages')
     op.drop_index('ix_group_chat_messages_org_conversation_created_at', table_name='group_chat_messages')
