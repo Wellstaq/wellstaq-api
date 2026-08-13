@@ -162,21 +162,12 @@ class Notification(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "OR (reference_id IS NOT NULL AND reference_type IS NOT NULL)",
             name="ck_notification_reference_id_type_together",
         ),
-        # is_read=True requires read_at to be set; is_read=False requires
-        # read_at to be NULL. Prevents silent inconsistent state that
-        # would corrupt unread counts and "last read at" displays.
-        # SQLite stores booleans as 0/1 integers, so the constraint uses
-        # integer literals for cross-DB portability with aiosqlite tests.
+       
         CheckConstraint(
-            "(is_read = 0 AND read_at IS NULL) OR (is_read = 1 AND read_at IS NOT NULL)",
+            "(is_read = false AND read_at IS NULL) OR (is_read = true AND read_at IS NOT NULL)",
             name="ck_notification_read_consistency",
         ),
-        # SQLite does not enforce VARCHAR lengths — this constraint makes
-        # the 500-char business rule explicit and enforced on both SQLite
-        # (tests) and PostgreSQL (production). Other string columns use
-        # whitelist constraints (notification_type, reference_type) or
-        # have no hard business rule (image_url); body is the only one
-        # where the length limit is a real product constraint.
+       
         CheckConstraint(
             "length(body) <= 500",
             name="ck_notification_body_max_length",

@@ -187,7 +187,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Boolean,
         nullable=False,
         default=False,
-        server_default="0",
+        server_default="false",
     )
 
     # "branch" | "department" | NULL. "org" is no longer a valid value —
@@ -240,13 +240,6 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # ── Name uniqueness ──────────────────────────────────────────────────
-        #
-        # REMOVED: uq_role_name_org_no_branch (the org-wide-custom-role
-        # uniqueness index). There's no org-wide custom tier left, so
-        # that index no longer has a valid target — every custom role
-        # now has branch_id SET, so only the branch-scoped index below
-        # applies.
         Index(
             "uq_role_name_org",
             "name", "organization_id",
@@ -263,38 +256,16 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             sqlite_where=text("template_role_id IS NOT NULL"), postgresql_where=text("template_role_id IS NOT NULL"),
         ),
 
-        # ── Structural invariants ──────────────────────────────────────────────
-
-        # Invariant 1 (REVISED): system flag and org/branch columns
-        # must be consistent.
-        #   system  → org NULL,     branch NULL
-        #   custom  → org NOT NULL, branch NOT NULL  (both required now —
-        #             previously branch_id was optional for custom roles)
-        CheckConstraint(
-            "(is_system = 1 AND organization_id IS NULL AND branch_id IS NULL) "
-            "OR (is_system = 0 AND organization_id IS NOT NULL)",
-            name="ck_role_system_org_consistent",
-        ),
-
-        # Invariant 2 (REMOVED): "branch_id may only be set when
-        # organization_id is set" — now redundant, since Invariant 1
-        # already requires both together for custom roles and both
-        # NULL for system roles. No longer a separate case to guard.
-
-        # Invariant 3 (REVISED): unique_scope drops 'org' as a valid value.
         CheckConstraint(
             "unique_scope IN ('branch', 'department') OR unique_scope IS NULL",
             name="ck_role_unique_scope_valid",
         ),
 
-        # Invariant 4: unchanged — is_unique and unique_scope must agree.
         CheckConstraint(
-            "(is_unique = 0 AND unique_scope IS NULL) "
-            "OR (is_unique = 1 AND unique_scope IS NOT NULL)",
+            "(is_unique = false AND unique_scope IS NULL) OR (is_unique = true AND unique_scope IS NOT NULL)",
             name="ck_role_unique_scope_consistency",
         ),
     )
-
     def __repr__(self) -> str:
         if self.is_system:
             scope = "system"

@@ -1,8 +1,8 @@
 """baseline schema
 
-Revision ID: 0e687089ae53
+Revision ID: 3cb520a7f5af
 Revises: 
-Create Date: 2026-08-12 23:42:03.756463
+Create Date: 2026-08-13 10:13:14.544986
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0e687089ae53'
+revision: str = '3cb520a7f5af'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -307,14 +307,13 @@ def upgrade() -> None:
     sa.Column('branch_id', sa.String(length=36), nullable=True),
     sa.Column('template_role_id', sa.String(length=36), nullable=True),
     sa.Column('is_system', sa.Boolean(), nullable=False),
-    sa.Column('is_unique', sa.Boolean(), server_default='0', nullable=False),
+    sa.Column('is_unique', sa.Boolean(), server_default='false', nullable=False),
     sa.Column('unique_scope', sa.String(length=20), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("unique_scope IN ('branch', 'department') OR unique_scope IS NULL", name='ck_role_unique_scope_valid'),
-    sa.CheckConstraint('(is_system = 1 AND organization_id IS NULL AND branch_id IS NULL) OR (is_system = 0 AND organization_id IS NOT NULL)', name='ck_role_system_org_consistent'),
-    sa.CheckConstraint('(is_unique = 0 AND unique_scope IS NULL) OR (is_unique = 1 AND unique_scope IS NOT NULL)', name='ck_role_unique_scope_consistency'),
+    sa.CheckConstraint('(is_unique = false AND unique_scope IS NULL) OR (is_unique = true AND unique_scope IS NOT NULL)', name='ck_role_unique_scope_consistency'),
     sa.ForeignKeyConstraint(['branch_id'], ['branches.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['template_role_id'], ['roles.id'], ondelete='RESTRICT'),
@@ -595,7 +594,7 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("conversation_type IN ('club', 'event')", name='ck_group_chat_message_conversation_type'),
-    sa.CheckConstraint('(is_pinned = 0 AND pinned_by IS NULL AND pinned_at IS NULL) OR (is_pinned = 1 AND pinned_by IS NOT NULL AND pinned_at IS NOT NULL)', name='ck_group_chat_message_pin_consistency'),
+    sa.CheckConstraint('(is_pinned = false AND pinned_by IS NULL AND pinned_at IS NULL) OR (is_pinned = true AND pinned_by IS NOT NULL AND pinned_at IS NOT NULL)', name='ck_group_chat_message_pin_consistency'),
     sa.CheckConstraint('content IS NOT NULL OR media_url IS NOT NULL', name='ck_group_chat_message_content_or_media'),
     sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['pinned_by'], ['users.id'], ondelete='SET NULL'),
@@ -605,7 +604,7 @@ def upgrade() -> None:
     op.create_index('ix_group_chat_messages_org_conversation_created_at', 'group_chat_messages', ['organization_id', 'conversation_type', 'conversation_id', 'created_at'], unique=False)
     op.create_index(op.f('ix_group_chat_messages_organization_id'), 'group_chat_messages', ['organization_id'], unique=False)
     op.create_index(op.f('ix_group_chat_messages_user_id'), 'group_chat_messages', ['user_id'], unique=False)
-    op.create_index('uq_one_pinned_per_conversation', 'group_chat_messages', ['conversation_type', 'conversation_id'], unique=True, postgresql_where=sa.text('is_pinned = 1'), sqlite_where=sa.text('is_pinned = 1'))
+    op.create_index('uq_one_pinned_per_conversation', 'group_chat_messages', ['conversation_type', 'conversation_id'], unique=True, postgresql_where=sa.text('is_pinned = true'), sqlite_where=sa.text('is_pinned = true'))
     op.create_table('health_data_consents',
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('organization_id', sa.String(length=36), nullable=False),
@@ -637,7 +636,7 @@ def upgrade() -> None:
     sa.Column('period_start', sa.Date(), nullable=False),
     sa.Column('period_end', sa.Date(), nullable=False),
     sa.Column('period_type', sa.String(length=10), nullable=False),
-    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -696,7 +695,7 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("notification_type IN ('liked_post', 'commented_post', 'new_message', 'joined_club', 'joined_department', 'event_reminder', 'challenge_completed', 'challenge_daily_goal_met', 'announcement')", name='ck_notification_type'),
     sa.CheckConstraint("reference_type IS NULL OR reference_type IN ('post', 'comment', 'message', 'event', 'challenge', 'club', 'department', 'survey')", name='ck_notification_reference_type'),
-    sa.CheckConstraint('(is_read = 0 AND read_at IS NULL) OR (is_read = 1 AND read_at IS NOT NULL)', name='ck_notification_read_consistency'),
+    sa.CheckConstraint('(is_read = false AND read_at IS NULL) OR (is_read = true AND read_at IS NOT NULL)', name='ck_notification_read_consistency'),
     sa.CheckConstraint('(reference_id IS NULL AND reference_type IS NULL) OR (reference_id IS NOT NULL AND reference_type IS NOT NULL)', name='ck_notification_reference_id_type_together'),
     sa.CheckConstraint('length(body) <= 500', name='ck_notification_body_max_length'),
     sa.ForeignKeyConstraint(['actor_id'], ['users.id'], ondelete='SET NULL'),
@@ -949,7 +948,7 @@ def upgrade() -> None:
     sa.CheckConstraint("(two_fa_method = 'totp' AND two_fa_secret IS NOT NULL) OR (two_fa_method != 'totp' AND two_fa_secret IS NULL) OR (two_fa_method IS NULL AND two_fa_secret IS NULL)", name='ck_user_settings_2fa_totp_secret_consistent'),
     sa.CheckConstraint("theme IN ('light', 'dark')", name='ck_user_settings_theme'),
     sa.CheckConstraint("two_fa_method IS NULL OR two_fa_method IN ('totp', 'sms', 'email')", name='ck_user_settings_2fa_method'),
-    sa.CheckConstraint('(two_fa_enabled = 0 AND two_fa_method IS NULL) OR (two_fa_enabled = 1 AND two_fa_method IS NOT NULL)', name='ck_user_settings_2fa_enabled_method_consistent'),
+    sa.CheckConstraint('(two_fa_enabled = false AND two_fa_method IS NULL) OR (two_fa_enabled = true AND two_fa_method IS NOT NULL)', name='ck_user_settings_2fa_enabled_method_consistent'),
     sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
@@ -1011,7 +1010,7 @@ def upgrade() -> None:
     sa.Column('challenge_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('organization_id', sa.String(length=36), nullable=False),
-    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
     sa.Column('rank', sa.Integer(), nullable=True),
     sa.Column('completed_at', sa.DateTime(), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
@@ -1063,7 +1062,7 @@ def upgrade() -> None:
     sa.Column('department_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('role', sa.String(length=50), nullable=True),
-    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('joined_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -1082,7 +1081,7 @@ def upgrade() -> None:
     sa.Column('performance_score', sa.Numeric(precision=5, scale=2), nullable=True),
     sa.Column('period_start', sa.Date(), nullable=True),
     sa.Column('period_end', sa.Date(), nullable=True),
-    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('computed_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -1453,7 +1452,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_health_data_consents_provider'), table_name='health_data_consents')
     op.drop_index(op.f('ix_health_data_consents_organization_id'), table_name='health_data_consents')
     op.drop_table('health_data_consents')
-    op.drop_index('uq_one_pinned_per_conversation', table_name='group_chat_messages', postgresql_where=sa.text('is_pinned = 1'), sqlite_where=sa.text('is_pinned = 1'))
+    op.drop_index('uq_one_pinned_per_conversation', table_name='group_chat_messages', postgresql_where=sa.text('is_pinned = true'), sqlite_where=sa.text('is_pinned = true'))
     op.drop_index(op.f('ix_group_chat_messages_user_id'), table_name='group_chat_messages')
     op.drop_index(op.f('ix_group_chat_messages_organization_id'), table_name='group_chat_messages')
     op.drop_index('ix_group_chat_messages_org_conversation_created_at', table_name='group_chat_messages')

@@ -147,9 +147,9 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ck_group_chat_message_conversation_type",
         ),
         CheckConstraint(
-            "(is_pinned = 0 AND pinned_by IS NULL AND pinned_at IS NULL)"
+            "(is_pinned = false AND pinned_by IS NULL AND pinned_at IS NULL)"
             " OR "
-            "(is_pinned = 1 AND pinned_by IS NOT NULL AND pinned_at IS NOT NULL)",
+            "(is_pinned = true AND pinned_by IS NOT NULL AND pinned_at IS NOT NULL)",
             name="ck_group_chat_message_pin_consistency",
         ),
     )

@@ -406,11 +406,9 @@ class UserSettings(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # two_fa_enabled and two_fa_method must be consistent.
-        # SQLite stores booleans as 0/1 integers.
         CheckConstraint(
-            "(two_fa_enabled = 0 AND two_fa_method IS NULL) "
-            "OR (two_fa_enabled = 1 AND two_fa_method IS NOT NULL)",
+            "(two_fa_enabled = false AND two_fa_method IS NULL) "
+            "OR (two_fa_enabled = true AND two_fa_method IS NOT NULL)",
             name="ck_user_settings_2fa_enabled_method_consistent",
         ),
         # two_fa_method='totp' requires a secret; sms/email must have
