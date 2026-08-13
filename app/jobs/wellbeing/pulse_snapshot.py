@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.jobs.shared import get_job_session
 from app.models import Branch
 from app.models.wellbeing_survey import WellbeingPulseSnapshot, WellbeingSurveyWindow
-from app.services.wellbeing_survey.live_pulse_service import compute_pulse_aggregation
+from app.services.wellbeing_survey.live_pulse import compute_pulse_aggregation
 
 logger = logging.getLogger(__name__)
 

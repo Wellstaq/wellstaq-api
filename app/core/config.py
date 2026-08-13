@@ -19,10 +19,8 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./app.db"
+    DATABASE_URL: str = ""
 
-    #PRODUCTION PURPOSE
-    #DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/wellstaq"
 
     # Auth / JWT
     # Generate a real secret with: openssl rand -hex 32

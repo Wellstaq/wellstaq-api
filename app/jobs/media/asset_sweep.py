@@ -27,7 +27,7 @@ from sqlalchemy import select
 
 from app.core.storage import delete_object
 from app.jobs.shared import get_job_session
-from app.models import MediaAsset, Post, Story, GroupChatMessage, User, Challenge, Event
+from app.models import MediaAsset, Post, Story, GroupChatMessage, User, Challenge, Event, Club
 
 logger = logging.getLogger(__name__)
 
