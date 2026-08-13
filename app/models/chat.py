@@ -51,7 +51,7 @@ writing any route that touches GroupChatMessage):
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, text, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -130,13 +130,14 @@ class GroupChatMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "conversation_id",
             "created_at",
         ),
+      
         Index(
             "uq_one_pinned_per_conversation",
             "conversation_type",
             "conversation_id",
             unique=True,
-            postgresql_where=(is_pinned == True),  # noqa: E712
-            sqlite_where=(is_pinned == True),  # noqa: E712
+            postgresql_where=text("is_pinned = true"),
+            sqlite_where=text("is_pinned = true"),
         ),
         CheckConstraint(
             "content IS NOT NULL OR media_url IS NOT NULL",
