@@ -2,7 +2,8 @@
 
 FastAPI backend for the Wellstaq corporate wellness platform.
 
-Important Notice: The script folder contains script that run the deafault/platform wide permission, role etc
+The `scripts/` folder seeds platform defaults, including roles, permissions,
+categories, wellbeing lookups, and subscription plans.
 
 ## Stack
 
@@ -23,36 +24,98 @@ Important Notice: The script folder contains script that run the deafault/platfo
 
 ## Setup
 
+Run all commands below from the project root (the directory containing
+`app/`, `scripts/`, and `requirements.txt`). The development startup order is:
+install dependencies → configure environment and database → start the API →
+run the seeds → use the application endpoints.
+
 1. Create a virtual environment and install dependencies:
 
    ```bash
    python -m venv venv
    source venv/bin/activate   # on Windows: venv\Scripts\activate
-   pip install -r requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
-2. A `.env` file is already included with working development defaults
-   so the app boots immediately. Update `DATABASE_URL` once Postgres is
-   running locally, fill in real `STORAGE_*` credentials once you've
-   created an S3 bucket or R2 bucket, and replace `JWT_SECRET_KEY`
-   before any real deployment (generate one with `openssl rand -hex 32`).
+2. Create `.env` using `.env.example` as a guideline, unless you already
+   have a configured `.env`. Do not overwrite an existing configuration.
+   Set the environment variables for your environment, including
+   `DATABASE_URL`, `REDIS_URL`, a private `JWT_SECRET_KEY`, and the storage,
+   email, and payment credentials needed for the features you will test.
+   The Paystack seed requires `PAYSTACK_SECRET_KEY`; add it to `.env`
+   even if it is not listed in the example. Never commit `.env` or real keys.
 
-3. Run the API:
+   Before starting the API, finish setting up the database, apply the
+   project's database migrations, and ensure the configured database and
+   Redis services are available. Seeding supplies default records; it is
+   not a replacement for database/schema setup.
+
+3. Start the API for local development/testing and leave it running:
 
    ```bash
-   uvicorn app.main:app --reload --port 8000
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-4. Run the background worker (separate process, needs Redis running):
+   You can change `--port` to an available port of your choice. To listen
+   only on your own machine, use `--host 127.0.0.1` instead of `0.0.0.0`.
+   `0.0.0.0` listens on all network interfaces; open
+   `http://localhost:8000` or `http://127.0.0.1:8000` in your browser.
+   Adjust URLs and tunnel ports if you select a different port.
+   `--reload` is for development, not production.
+
+4. Once the API is running, open a second terminal, activate the same
+   virtual environment, and run this command from the project root:
+
+   ```bash
+   python -m scripts.seed_all
+   ```
+
+   This runs the permissions/roles, categories, wellbeing, subscription
+   plans, and Paystack plan seeds in dependency order. Wait for
+   `All seed scripts completed successfully` before using the application
+   endpoints. If any seed fails, fix the reported error and rerun the
+   command. Keep the API running in the first terminal.
+
+5. Run the background worker in another terminal with the same environment
+   activated (requires Redis):
 
    ```bash
    arq app.jobs.worker.WorkerSettings
    ```
 
-5. Visit:
+6. After successful seeding, access the API:
    - `http://localhost:8000/` — hello-world root route
    - `http://localhost:8000/health` — public health check
    - `http://localhost:8000/docs` — interactive Swagger UI
+
+### Local Paystack testing and webhooks
+
+The Paystack plan seed makes outbound requests to Paystack. It can run
+locally with internet access and a valid `PAYSTACK_SECRET_KEY`; it does
+not itself require a public address. Receiving payment webhooks is the
+part that requires a public URL: Paystack cannot reach your machine's
+`localhost` or `127.0.0.1` address.
+
+For local payment testing, keep Uvicorn running and expose its port with
+ngrok in a separate terminal:
+
+```bash
+ngrok http 8000
+```
+
+Configure the webhook URL in your Paystack dashboard for the matching
+test/live environment as:
+
+```text
+https://<your-ngrok-domain>/webhooks/paystack
+```
+
+Keep both Uvicorn and ngrok running while testing payments so the backend
+can receive Paystack's payment events. Update the configured webhook URL
+whenever your ngrok URL changes. Use test credentials for local tests;
+do not disable webhook signature verification. The tunnel exposes the
+API port publicly, not just the webhook path, so use it only as needed
+and do not expose sensitive development endpoints unnecessarily.
 
 ## Auth & scoping status
 
@@ -145,4 +208,3 @@ app/
 │   └── worker.py
 └── main.py        app entry point
 alembic/           database migrations
-

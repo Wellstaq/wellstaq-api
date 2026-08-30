@@ -50,27 +50,25 @@ class OtpVerifySchema(BaseModel):
 
 
 class OrgOwnerRegisterRequest(BaseModel):
-    """
-    Step 3 — self-serve org-owner signup.
-
-    email_verification_token comes from /auth/signup/otp/verify and
-    proves the email was OTP-verified. The email itself is recovered
-    server-side from the token — it is NOT re-supplied here, preventing
-    substitution attacks.
-    """
     email_verification_token: str
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
     password: str = Field(..., min_length=8)
     business_name: str = Field(..., min_length=1, max_length=255)
-    phone_number: str = Field(..., min_length=7, max_length=20)
+    phone_number: str = Field(..., min_length=11, max_length=11)
 
-    # NEW fields (map directly to Organization columns)
     employee_count: int = Field(..., ge=1)
     organization_type: str = Field(..., min_length=1, max_length=100)
     work_model: str = Field(..., min_length=1, max_length=50)
 
-    
+    @field_validator("phone_number")
+    @classmethod
+    def phone_number_must_be_11_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("Phone number must contain only digits.")
+        if len(v) != 11:
+            raise ValueError("Phone number must be exactly 11 digits.")
+        return v
 
     @field_validator("password")
     @classmethod
@@ -80,7 +78,6 @@ class OrgOwnerRegisterRequest(BaseModel):
         if not re.search(r"[0-9]", v):
             raise ValueError("Password must contain at least one digit.")
         return v
-
 
 # ── Login ──────────────────────────────────────────────────────────────────────
 

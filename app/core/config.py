@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     # ── CORS ─────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "https://appwellstaq6.vercel.app"]
-    PUBLIC_APP_ORIGIN: str = "https://appwellstaq6.vercel.app"
+    PUBLIC_APP_ORIGIN: str = "http//localhost:3000"
 
     model_config = SettingsConfigDict(
         env_file=".env",
