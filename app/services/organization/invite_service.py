@@ -88,8 +88,29 @@ logger = logging.getLogger(__name__)
 
 
 
+_INVITE_CODE_LIMIT = 1_000_000
+_INVITE_CODE_GENERATION_ATTEMPTS = 20
+
+
 def _generate_invite_code() -> str:
-    return secrets.token_urlsafe(32)
+    """Return a cryptographically secure, zero-padded six-digit code."""
+    return f"{secrets.randbelow(_INVITE_CODE_LIMIT):06d}"
+
+
+async def _generate_unique_invite_code(session: AsyncSession) -> str:
+    """Generate a code that is not already assigned to another invite."""
+    for _ in range(_INVITE_CODE_GENERATION_ATTEMPTS):
+        code = _generate_invite_code()
+        result = await session.execute(
+            select(OrganizationInvite.id).where(OrganizationInvite.invite_code == code)
+        )
+        if result.scalar_one_or_none() is None:
+            return code
+
+    raise AuthError(
+        "Could not generate a unique invite code. Please try again.",
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 async def send_invite(
@@ -350,7 +371,7 @@ async def send_invite(
             )
 
     # ── Create invite ──────────────────────────────────────────────────────────
-    invite_code = _generate_invite_code()
+    invite_code = await _generate_unique_invite_code(session)
 
     invite = OrganizationInvite(
         organization_id=org_id,
@@ -416,6 +437,10 @@ async def _send_invite_email(
           You have been invited to join <strong>{org_name}</strong> as a
           <strong>{role_name}</strong> in the <strong>{department_name}</strong> department.
         </p>
+        <p style="color:#555;">Your six-digit invite code is:</p>
+        <div style="display:inline-block;padding:12px 20px;background:#f4f4f4;
+          border-radius:8px;font-size:30px;font-weight:bold;letter-spacing:8px;
+          margin:8px 0 20px;">{invite_code}</div>
         <p style="color:#555;">
           Click the button below to accept your invite and set up your account.
           This link expires in <strong>{expires_days} days</strong>.

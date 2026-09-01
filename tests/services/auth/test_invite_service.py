@@ -74,12 +74,12 @@ def make_invite(
 ) -> OrganizationInvite:
     """
     Build an OrganizationInvite (not yet persisted). invite_code is a
-    real token_urlsafe value (matches what send_invite() generates) so
+    real six-digit value (matches what send_invite() generates) so
     tests exercise the real lookup-by-code path rather than a fake string.
     """
     now = datetime.now(timezone.utc)
     defaults = dict(
-        invite_code=secrets.token_urlsafe(32),
+        invite_code=f"{secrets.randbelow(1_000_000):06d}",
         invited_email=invited_email.lower().strip(),
         branch_id=branch_id,  # Now guaranteed to be provided
         status=status,
