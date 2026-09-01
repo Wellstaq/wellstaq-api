@@ -139,6 +139,12 @@ async def root():
     return {"message": "Hello from Wellstaq API"}
 
 
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Lightweight liveness endpoint for the Railway health check."""
+    return {"status": "ok"}
+
+
 if __name__ == "__main__":
     import uvicorn
 
