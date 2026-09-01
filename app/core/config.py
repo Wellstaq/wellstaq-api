@@ -6,7 +6,7 @@ during development). Copy .env.example to .env and fill in real
 values locally — never commit real secrets.
 """
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,18 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = ""
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def use_asyncpg_driver(cls, value: object) -> object:
+        """Make provider-style PostgreSQL URLs compatible with async SQLAlchemy."""
+        if not isinstance(value, str):
+            return value
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
 
 
     # Auth / JWT
