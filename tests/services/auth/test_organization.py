@@ -194,7 +194,7 @@ class TestAssignRole:
             email="assign@example.com",
             organization_id="fake-org-id",
         )
-        role = Role(id="fake-role-id", name="employee", is_system=True)
+        role = Role(id="fake-role-id", name="member", is_system=True)
 
         assign_role(user, role)
 
@@ -208,7 +208,7 @@ class TestAssignRole:
             email="noperm@example.com",
             organization_id="fake-org-id",
         )
-        role = Role(id="fake-role-id-2", name="employee", is_system=True)
+        role = Role(id="fake-role-id-2", name="member", is_system=True)
 
         assign_role(user, role)
 
@@ -220,126 +220,49 @@ class TestAssignRole:
 # ── seed_super_admin_permissions() ──────────────────────────────────────────────
 
 class TestSeedSuperAdminPermissions:
+    """The legacy hook cannot re-create direct grants after role-only access."""
 
     @pytest.mark.asyncio
-    async def test_grants_every_permission_in_db(self, db_session: AsyncSession):
+    async def test_compatibility_hook_does_not_add_direct_grants(self, db_session):
         org, user = await make_org_with_owner(db_session)
-
-        perm1 = Permission(name="department.create", category="department", scope="org")
-        perm2 = Permission(name="post.delete", category="content", scope="both")
-        perm3 = Permission(name="branch.create", category="branch", scope="org")
-        db_session.add_all([perm1, perm2, perm3])
+        db_session.add(Permission(name="overview", category="dashboard", scope="both"))
         await db_session.flush()
-
         await seed_super_admin_permissions(db_session, user)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        grants = result.scalars().all()
-        assert len(grants) == 3
-
-        granted_permission_ids = {g.permission_id for g in grants}
-        assert granted_permission_ids == {perm1.id, perm2.id, perm3.id}
+        await seed_super_admin_permissions(db_session, user)
+        assert (await db_session.execute(select(UserPermission).where(UserPermission.user_id == user.id))).scalars().all() == []
 
     @pytest.mark.asyncio
-    async def test_all_grants_are_org_wide(self, db_session: AsyncSession):
+    async def test_organization_copy_inherits_template_permissions(self, db_session):
+        from app.models import RolePermission
+        from app.services.organization_roles import ensure_organization_roles
+        from app.services.auth.token_service import load_user_permissions
+
         org, user = await make_org_with_owner(db_session)
-
-        perm = Permission(name="member.invite", category="member", scope="both")
-        db_session.add(perm)
+        permission = Permission(name="overview", category="dashboard", scope="both")
+        db_session.add(permission)
         await db_session.flush()
-
-        await seed_super_admin_permissions(db_session, user)
+        db_session.add(RolePermission(role_id=user.role_id, permission_id=permission.id, scope="org"))
         await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        grants = result.scalars().all()
-        assert all(g.branch_id is None for g in grants), (
-            "Super admin permission grants must always be org-wide"
-        )
+        roles = await ensure_organization_roles(db_session, org.id)
+        copied = roles["super_admin"]
+        assert copied.id != user.role_id
+        assert copied.template_role_id == user.role_id
+        assert copied.organization_id == org.id
+        user.role_id = copied.id
+        await db_session.flush()
+        grants = await load_user_permissions(db_session, user.id, org.id)
+        assert [(g.name, g.branch_id) for g in grants] == [("overview", None)]
 
     @pytest.mark.asyncio
-    async def test_all_grants_are_system_seeded(self, db_session: AsyncSession):
+    async def test_reprovision_preserves_existing_copy_and_discovers_new_template(self, db_session):
+        from app.services.organization_roles import ensure_organization_roles
         org, user = await make_org_with_owner(db_session)
-
-        perm = Permission(name="org.deactivate", category="org", scope="org")
-        db_session.add(perm)
+        first = await ensure_organization_roles(db_session, org.id)
+        copied_id = first["super_admin"].id
+        first["super_admin"].description = "Organization-specific description"
+        db_session.add(Role(name="new-system-role", is_system=True))
         await db_session.flush()
-
-        await seed_super_admin_permissions(db_session, user)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        grants = result.scalars().all()
-        assert all(g.granted_by is None for g in grants), (
-            "System-seeded grants must have granted_by=None"
-        )
-
-    @pytest.mark.asyncio
-    async def test_grants_correct_organization_id(self, db_session: AsyncSession):
-        org, user = await make_org_with_owner(db_session)
-
-        perm = Permission(name="club.create", category="club", scope="both")
-        db_session.add(perm)
-        await db_session.flush()
-
-        await seed_super_admin_permissions(db_session, user)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        grants = result.scalars().all()
-        assert all(g.organization_id == org.id for g in grants)
-
-    @pytest.mark.asyncio
-    async def test_no_permissions_in_db_grants_nothing(self, db_session: AsyncSession):
-        """If the permissions table is empty (seed script not run yet),
-        seed_super_admin_permissions must not error — just grant nothing."""
-        org, user = await make_org_with_owner(db_session)
-
-        await seed_super_admin_permissions(db_session, user)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        assert result.scalars().all() == []
-
-    @pytest.mark.asyncio
-    async def test_new_permission_added_later_is_picked_up(
-        self, db_session: AsyncSession
-    ):
-        """
-        Confirms the function fetches ALL permissions live from the DB
-        rather than a hardcoded list — adding a permission to the seed
-        catalogue means every future org owner gets it automatically,
-        with zero code change to this function.
-        """
-        org, user = await make_org_with_owner(db_session)
-
-        perm1 = Permission(name="event.create", category="event", scope="both")
-        db_session.add(perm1)
-        await db_session.flush()
-
-        # Simulate a NEW permission being added to the catalogue after
-        # this point, but BEFORE seeding runs for this user
-        perm2 = Permission(name="challenge.create", category="challenge", scope="both")
-        db_session.add(perm2)
-        await db_session.flush()
-
-        await seed_super_admin_permissions(db_session, user)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(UserPermission).where(UserPermission.user_id == user.id)
-        )
-        granted_ids = {g.permission_id for g in result.scalars().all()}
-        assert perm1.id in granted_ids
-        assert perm2.id in granted_ids
+        second = await ensure_organization_roles(db_session, org.id)
+        assert second["super_admin"].id == copied_id
+        assert second["super_admin"].description == "Organization-specific description"
+        assert second["new-system-role"].organization_id == org.id

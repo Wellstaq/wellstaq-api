@@ -14,7 +14,7 @@ Coverage:
 from __future__ import annotations
 
 import pytest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from unittest.mock import patch, AsyncMock
 from fastapi import HTTPException, status as http_status
 from sqlalchemy import select
@@ -50,7 +50,7 @@ def make_challenge(
        end_date=date(2025, 1, 31),
        target_type=target_type,
        target_value=target_value,
-       created_by="test-user-id",
+       created_by=None,  # optional audit FK; do not invent a nonexistent user
    )
    return Challenge(
        organization_id=organization_id,
@@ -209,7 +209,7 @@ class TestCheckChallengeVisibility:
        # Mock current_user
        class MockUser:
            branch_id = "some-other-branch"
-           role = "employee"
+           role = "member"
 
        # Should not raise for org-wide
        check_challenge_visibility(current_user=MockUser(), challenge=challenge)
@@ -223,7 +223,7 @@ class TestCheckChallengeVisibility:
 
        class MockUser:
            branch_id = owner.branch_id
-           role = "employee"
+           role = "member"
 
        check_challenge_visibility(current_user=MockUser(), challenge=challenge)
 
@@ -263,7 +263,7 @@ class TestCheckChallengeVisibility:
 
        class MockUser:
            branch_id = owner.branch_id  # Different branch
-           role = "employee"
+           role = "member"
 
        with pytest.raises(HTTPException) as exc_info:
            check_challenge_visibility(current_user=MockUser(), challenge=challenge)
@@ -284,7 +284,7 @@ class TestCheckParticipationEligibility:
 
        class MockUser:
            branch_id = "any-branch"
-           role = "employee"
+           role = "member"
 
        # Should not raise for org-wide
        check_participation_eligibility(current_user=MockUser(), challenge=challenge)
@@ -304,13 +304,13 @@ class TestCheckChallengeCompletion:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
        # Add progress entries totaling 100
-       db_session.add(make_progress_entry(challenge.id, owner.id, 40))
-       db_session.add(make_progress_entry(challenge.id, owner.id, 60))
+       db_session.add(make_progress_entry(challenge.id, owner.id, 40, date.today() - timedelta(days=1), organization_id=org.id))
+       db_session.add(make_progress_entry(challenge.id, owner.id, 60, organization_id=org.id))
        await db_session.flush()
 
        with patch(
@@ -332,11 +332,11 @@ class TestCheckChallengeCompletion:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
-       db_session.add(make_progress_entry(challenge.id, owner.id, 100))
+       db_session.add(make_progress_entry(challenge.id, owner.id, 100, organization_id=org.id))
        await db_session.flush()
 
        with patch(
@@ -358,12 +358,12 @@ class TestCheckChallengeCompletion:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
        # Today's entry meets target
-       db_session.add(make_progress_entry(challenge.id, owner.id, 5000, date.today()))
+       db_session.add(make_progress_entry(challenge.id, owner.id, 5000, date.today(), organization_id=org.id))
        await db_session.flush()
 
        with patch(
@@ -383,7 +383,7 @@ class TestCheckChallengeCompletion:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
@@ -405,12 +405,12 @@ class TestMarkChallengeComplete:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
        with patch(
-           "app.services.challenge._helpers.create_notification", new=AsyncMock()
+           "app.services.notification.create_notification", new=AsyncMock()
        ) as mock_notify:
            await mark_challenge_complete(
                session=db_session, challenge=challenge, participant=participant
@@ -432,12 +432,12 @@ class TestNotifyDailyGoalMet:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
        with patch(
-           "app.services.challenge._helpers.create_notification", new=AsyncMock()
+           "app.services.notification.create_notification", new=AsyncMock()
        ) as mock_notify:
            await notify_daily_goal_met(
                session=db_session,
@@ -461,7 +461,7 @@ class TestNotifyDailyGoalMet:
        db_session.add(challenge)
        await db_session.flush()
 
-       participant = make_participant(challenge.id, owner.id)
+       participant = make_participant(challenge.id, owner.id, organization_id=org.id)
        db_session.add(participant)
        await db_session.flush()
 
@@ -479,7 +479,7 @@ class TestNotifyDailyGoalMet:
        await db_session.flush()
 
        with patch(
-           "app.services.challenge._helpers.create_notification", new=AsyncMock()
+           "app.services.notification.create_notification", new=AsyncMock()
        ) as mock_notify:
            await notify_daily_goal_met(
                session=db_session,

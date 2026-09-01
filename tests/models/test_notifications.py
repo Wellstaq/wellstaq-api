@@ -38,7 +38,7 @@ def make_notification(user_id: str, organization_id: str, **overrides) -> Notifi
 
 @pytest.mark.asyncio
 async def test_notification_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     actor = make_user(org.id, email="actor@example.com", branch_id=owner.branch_id)
@@ -66,7 +66,7 @@ async def test_notification_id_is_uuid_format(db_session: AsyncSession):
     """ID must be a valid, parseable UUID — not just the right string shape.
     String-shape checks ([8,4,4,4,12]) pass values like
     'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'; UUID() actually validates it."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -86,7 +86,7 @@ async def test_notification_id_is_uuid_format(db_session: AsyncSession):
 async def test_notification_actor_can_be_null_for_system_generated(db_session: AsyncSession):
     """System-generated notifications (e.g. event reminders) have no
     triggering user."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -110,7 +110,7 @@ async def test_notification_actor_can_be_null_for_system_generated(db_session: A
 async def test_notification_can_have_no_reference(db_session: AsyncSession):
     """A broadcast announcement has no underlying record — reference_id
     and reference_type are both null together."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -133,7 +133,7 @@ async def test_notification_can_have_no_reference(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_notification_image_is_optional(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -148,7 +148,7 @@ async def test_notification_image_is_optional(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_notification_can_have_image(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     actor = make_user(org.id, email="actor@example.com", branch_id=owner.branch_id)
@@ -172,7 +172,7 @@ async def test_notification_can_be_system_wide_with_no_organization(db_session: 
     scope and no triggering actor."""
     # A system-wide recipient still needs an org to satisfy User.organization_id NOT NULL.
     # The notification itself carries no org reference.
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(
         org.id, email="system_recipient@example.com", branch_id=owner.branch_id
@@ -203,7 +203,7 @@ async def test_notification_can_be_system_wide_with_no_organization(db_session: 
 async def test_system_notifications_are_filterable_by_null_org(db_session: AsyncSession):
     """The whole point of nullable organization_id is to support querying
     system notifications separately from org-scoped ones."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -235,7 +235,7 @@ async def test_system_notifications_are_filterable_by_null_org(db_session: Async
 @pytest.mark.asyncio
 async def test_notification_can_be_marked_read(db_session: AsyncSession):
     """Marking a notification read requires both is_read=True and read_at set."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -256,7 +256,7 @@ async def test_notification_can_be_marked_read(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_notification_read_at_without_is_read_raises(db_session: AsyncSession):
     """is_read=False with read_at set violates the consistency constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -280,7 +280,7 @@ async def test_notification_read_at_without_is_read_raises(db_session: AsyncSess
 @pytest.mark.asyncio
 async def test_notification_is_read_true_without_read_at_raises(db_session: AsyncSession):
     """is_read=True without read_at set violates the consistency constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -304,7 +304,7 @@ async def test_notification_is_read_true_without_read_at_raises(db_session: Asyn
 @pytest.mark.asyncio
 async def test_notification_valid_unread_state(db_session: AsyncSession):
     """Explicit test for the valid unread state: is_read=False, read_at=None."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -321,7 +321,7 @@ async def test_notification_valid_unread_state(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_notification_valid_read_state(db_session: AsyncSession):
     """Explicit test for the valid read state: is_read=True, read_at set."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -349,7 +349,7 @@ async def test_notification_valid_read_state(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_notification_reference_id_and_type_must_be_set_together(db_session: AsyncSession):
     """Can't have reference_id without reference_type, or vice versa."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -372,7 +372,7 @@ async def test_notification_reference_id_and_type_must_be_set_together(db_sessio
 async def test_notification_reference_type_without_reference_id_raises(db_session: AsyncSession):
     """The reverse direction: reference_type set but reference_id null also
     violates the consistency constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -394,7 +394,7 @@ async def test_notification_reference_type_without_reference_id_raises(db_sessio
 @pytest.mark.asyncio
 async def test_notification_invalid_notification_type_raises(db_session: AsyncSession):
     """notification_type is constrained to a known set of values."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -409,7 +409,7 @@ async def test_notification_invalid_notification_type_raises(db_session: AsyncSe
 @pytest.mark.asyncio
 async def test_notification_invalid_reference_type_raises(db_session: AsyncSession):
     """reference_type is constrained to a known set of values."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -424,7 +424,7 @@ async def test_notification_invalid_reference_type_raises(db_session: AsyncSessi
 @pytest.mark.asyncio
 async def test_notification_body_is_required(db_session: AsyncSession):
     """Every notification must have preview text — body cannot be null."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -445,7 +445,7 @@ async def test_notification_body_is_required(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_can_have_multiple_notifications(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -475,7 +475,7 @@ async def test_user_can_have_multiple_notifications(db_session: AsyncSession):
 async def test_deleting_user_cascades_to_notifications(db_session: AsyncSession):
     """Notifications are meaningless without their recipient — deleting a
     User must cascade and remove all their notifications."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -509,7 +509,7 @@ async def test_actor_deleted_sets_actor_id_null(db_session: AsyncSession):
     """Deleting the actor (liker, commenter) should SET NULL on
     actor_id — the notification remains visible to the recipient, just
     without attribution."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     actor = make_user(org.id, email="actor@example.com", branch_id=owner.branch_id)
@@ -545,7 +545,7 @@ async def test_actor_deleted_sets_actor_id_null(db_session: AsyncSession):
 async def test_deleting_organization_cascades_to_notifications(db_session: AsyncSession):
     """Deleting an Organization must cascade and remove all its scoped
     notifications — organization_id FK is CASCADE."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     recipient = make_user(org.id, email="recipient@example.com", branch_id=owner.branch_id)
     db_session.add(recipient)
@@ -582,12 +582,12 @@ async def test_cross_org_actor_is_allowed_at_db_level(db_session: AsyncSession):
     belongs to the same org as the recipient."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
 

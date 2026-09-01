@@ -1,30 +1,77 @@
-# app/core/email.py
+"""Transactional email delivery through an authenticated SMTP relay."""
 
+from __future__ import annotations
+
+import asyncio
 import logging
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+import smtplib
+import ssl
+from email.message import EmailMessage
+from email.utils import formataddr
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-async def send_email(to: str, subject: str, html: str) -> None:
-    """
-    Fire-and-forget transactional email via SendGrid.
-    Raises on failure so callers can decide how to handle it.
-    """
-    message = Mail(
-        from_email=settings.MAIL_FROM,
-        to_emails=to,
-        subject=subject,
-        html_content=html,
-    )
+def _validate_smtp_settings() -> None:
+    required = {
+        "SMTP_HOST": settings.SMTP_HOST,
+        "SMTP_USERNAME": settings.SMTP_USERNAME,
+        "SMTP_PASSWORD": settings.SMTP_PASSWORD,
+        "MAIL_FROM": settings.MAIL_FROM,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(f"Missing SMTP configuration: {', '.join(missing)}")
+    if settings.SMTP_USE_TLS and settings.SMTP_USE_SSL:
+        raise RuntimeError("SMTP_USE_TLS and SMTP_USE_SSL cannot both be enabled")
+
+
+def _send_email_sync(to: str, subject: str, html: str) -> None:
+    """Send one HTML email using the configured SMTP relay."""
+    _validate_smtp_settings()
+
+    message = EmailMessage()
+    message["From"] = formataddr((settings.MAIL_FROM_NAME, settings.MAIL_FROM))
+    message["To"] = to
+    message["Subject"] = subject
+    message.set_content("This email requires an HTML-capable email client.")
+    message.add_alternative(html, subtype="html")
+
+    context = ssl.create_default_context()
+    client: smtplib.SMTP | smtplib.SMTP_SSL
+    if settings.SMTP_USE_SSL:
+        client = smtplib.SMTP_SSL(
+            settings.SMTP_HOST,
+            settings.SMTP_PORT,
+            timeout=settings.SMTP_TIMEOUT_SECONDS,
+            context=context,
+        )
+    else:
+        client = smtplib.SMTP(
+            settings.SMTP_HOST,
+            settings.SMTP_PORT,
+            timeout=settings.SMTP_TIMEOUT_SECONDS,
+        )
+
     try:
-        sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
-        response = sg.send(message)
-        if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(f"SendGrid rejected email with status {response.status_code}")
-        logger.info("SendGrid accepted email", extra={"to": to, "status_code": response.status_code})
-    except Exception as exc:
-        logger.error("SendGrid send failed", extra={"to": to, "error": str(exc)})
+        client.ehlo()
+        if settings.SMTP_USE_TLS:
+            client.starttls(context=context)
+            client.ehlo()
+        client.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        client.send_message(message)
+        client.quit()
+    except Exception:
+        try:
+            client.close()
+        except Exception:
+            pass
+        logger.exception("SMTP email send failed")
         raise
+
+
+async def send_email(to: str, subject: str, html: str) -> None:
+    """Send transactional email without blocking the FastAPI event loop."""
+    await asyncio.to_thread(_send_email_sync, to, subject, html)

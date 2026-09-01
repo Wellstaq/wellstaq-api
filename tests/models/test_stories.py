@@ -60,8 +60,8 @@ async def setup_org(
 ) -> tuple[User, Organization]:
     org, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email=email, role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="super_admin"),
     )
     return user, org
 

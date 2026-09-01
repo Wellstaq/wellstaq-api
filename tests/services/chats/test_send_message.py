@@ -28,6 +28,7 @@ Coverage:
 """
 
 from __future__ import annotations
+import importlib
 
 from datetime import date, time, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -83,7 +84,7 @@ async def _make_subscription(
 async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
     """make_org_with_owner() plus an active subscription, required by
     create_club()'s plan-limit check."""
-    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, **org_owner_kwargs)
     plan = await _make_plan(db_session)
     await _make_subscription(db_session, org.id, plan.id)
     return org, owner
@@ -116,7 +117,7 @@ async def _make_club(
     from app.services.club.create_club import create_club
 
     return await create_club(
-        session=db_session,
+        image_url=None, category="fitness", session=db_session,
         organization_id=organization_id,
         branch_id=branch_id,
         name=name,
@@ -201,8 +202,9 @@ class TestSendMessageHappyPath:
     @patch("app.services.chat.send_message.require_conversation_membership")
     @patch("app.services.chat.send_message.validate_conversation")
     async def test_creates_message_with_media_only(
-        self, mock_validate, mock_require_membership, db_session: AsyncSession
+        self, mock_validate, mock_require_membership, db_session: AsyncSession, monkeypatch
     ):
+        monkeypatch.setattr(importlib.import_module("app.services.chat.send_message"), "confirm_upload", lambda **kwargs: True)
         mock_validate.return_value = AsyncMock()
         mock_require_membership.return_value = AsyncMock()
 
@@ -233,8 +235,9 @@ class TestSendMessageHappyPath:
     @patch("app.services.chat.send_message.require_conversation_membership")
     @patch("app.services.chat.send_message.validate_conversation")
     async def test_creates_message_with_both_content_and_media(
-        self, mock_validate, mock_require_membership, db_session: AsyncSession
+        self, mock_validate, mock_require_membership, db_session: AsyncSession, monkeypatch
     ):
+        monkeypatch.setattr(importlib.import_module("app.services.chat.send_message"), "confirm_upload", lambda **kwargs: True)
         mock_validate.return_value = AsyncMock()
         mock_require_membership.return_value = AsyncMock()
 
@@ -430,7 +433,7 @@ class TestSendMessageValidationErrors:
     async def test_raises_400_when_both_content_and_media_are_none(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user("user-123")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -453,7 +456,7 @@ class TestSendMessageValidationErrors:
         self, db_session: AsyncSession
     ):
         """Whitespace-only content becomes None after strip, leaving no content."""
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user("user-123")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -474,7 +477,7 @@ class TestSendMessageValidationErrors:
     async def test_raises_400_when_content_empty_string_and_no_media(
         self, db_session: AsyncSession
     ):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user("user-123")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -506,7 +509,7 @@ class TestSendMessageNotFoundErrors:
             detail="Club not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -533,7 +536,7 @@ class TestSendMessageNotFoundErrors:
             detail="Event not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -560,7 +563,7 @@ class TestSendMessageNotFoundErrors:
             detail="Club not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -594,7 +597,7 @@ class TestSendMessagePermissionErrors:
             detail="Not a member of this conversation",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:

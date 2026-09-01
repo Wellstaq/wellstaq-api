@@ -54,7 +54,7 @@ async def setup_club(
     """branch_id is required — Club.branch_id is NOT NULL."""
     defaults = dict(privacy="public")
     club = Club(
-        organization_id=org_id,
+        category="fitness", organization_id=org_id,
         branch_id=branch_id,
         name=name,
         **{**defaults, **overrides},
@@ -68,8 +68,8 @@ async def setup_org(db_session: AsyncSession, *, slug: str = "acme-corp"):
     """Returns (org, owner) — owner.branch_id is the HQ branch."""
     org, owner = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email="owner@example.com", role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email="owner@example.com", role_name="super_admin"),
     )
     return org, owner
 

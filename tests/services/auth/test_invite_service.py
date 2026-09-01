@@ -5,9 +5,9 @@ Unit tests for app/services/auth/invite_service.py.
 
 Strategy:
   - request_invite_otp: monkeypatch app.core.email.send_email (no real
-    delivery in tests) and assert an OtpCode row is created.
+    delivery in tests) and assert a Redis OTP record is created.
   - verify_invite_otp: rather than mocking email to capture the code,
-    insert an OtpCode row directly using otp_service's own _hash_code
+    insert a Redis OTP record using otp_service's own _hash_code
     helper — this exercises the real verify path without depending on
     delivery plumbing.
   - invite_register: drive it through a real invite_verification_token
@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 import secrets
 import json
@@ -34,6 +34,7 @@ from app.models import (
     UserSettings,
     DepartmentMember,
     Department,
+    Role, Permission, RolePermission, UserRoleAssignment,
   
 )
 from app.services.auth._helpers import _make_invite_verification_token
@@ -46,7 +47,7 @@ from app.services.errors import AuthError, OtpError
 from app.core.redis import get_redis
 from app.core.constants import OTP_TTL_MINUTES
 from app.services.auth.otp_service import _hash_code, _otp_key
-from tests.conftest import  make_org_with_owner, make_user_with_role
+from tests.conftest import make_org_with_owner, make_user_with_role, get_or_create_system_role
 
 
 # ── Local factories — specific to invite tests, not reused elsewhere ────────
@@ -96,6 +97,16 @@ def make_invite(
 async def _setup_org_dept_invite(db_session: AsyncSession, **invite_overrides):
     """Org + owner + department + a pending invite, all persisted."""
     org, owner = await make_org_with_owner(db_session)
+    await get_or_create_system_role(db_session, "member")
+    from app.services.organization_roles import ensure_organization_roles
+    await ensure_organization_roles(db_session, org.id)
+    await db_session.flush()
+    invited_role = Role(name="team_leader", organization_id=org.id, branch_id=owner.branch_id, is_system=False)
+    permission = Permission(name="overview", category="dashboard", scope="both")
+    db_session.add_all([invited_role, permission])
+    await db_session.flush()
+    db_session.add(RolePermission(role_id=invited_role.id, permission_id=permission.id, scope="branch"))
+    await db_session.flush()
     
     # Create department with the owner's branch
     dept = make_department(organization_id=org.id, branch_id=owner.branch_id)
@@ -105,7 +116,7 @@ async def _setup_org_dept_invite(db_session: AsyncSession, **invite_overrides):
     invite = make_invite(
         organization_id=org.id,
         invited_department_id=dept.id,
-        invited_role_id=owner.role_id,
+        invited_role_id=invited_role.id,
         invited_by=owner.id,
         branch_id=owner.branch_id,  # Add this required field
         **invite_overrides,
@@ -253,6 +264,21 @@ def _register_kwargs(**overrides) -> dict:
 
 
 class TestInviteRegisterHappyPath:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role_name,overview", [("member", False), ("custom_viewer", False), ("custom_viewer", True)])
+    async def test_dashboard_session_requires_overview_permission(self, db_session, role_name, overview):
+        org, owner, dept, invite = await _setup_org_dept_invite(db_session, invited_email="access-check@example.com")
+        role = await db_session.get(Role, invite.invited_role_id)
+        role.name = role_name
+        if not overview:
+            await db_session.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
+        await db_session.flush()
+        token = _make_invite_verification_token(invite.invited_email, invite.invite_code)
+        result = await invite_register(db_session, token, **_register_kwargs())
+        assert result["requires_app"] is (not overview)
+        assert bool(result.get("access_token")) is overview
+        assert bool(result.get("refresh_token")) is overview
+
 
     @pytest.mark.asyncio
     async def test_creates_active_user_linked_to_org_branch_role(
@@ -273,7 +299,11 @@ class TestInviteRegisterHappyPath:
 
         assert user.status == UserStatus.ACTIVE
         assert user.organization_id == org.id
-        assert user.role_id == owner.role_id
+        assignment = (await db_session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id))).scalar_one()
+        assert assignment.role_id == invite.invited_role_id
+        assert assignment.branch_id == invite.branch_id
+        org_role = await db_session.get(Role, user.role_id)
+        assert org_role.name == "member"
         assert "access_token" in result
 
     @pytest.mark.asyncio

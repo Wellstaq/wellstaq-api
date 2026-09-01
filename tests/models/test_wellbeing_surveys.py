@@ -49,7 +49,7 @@ async def setup_org_with_config(db_session: AsyncSession, slug: str = "wellbeing
     """Create an org + owner + active survey config."""
     org, owner = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
+        with_trial=False, org_kwargs=dict(slug=slug),
         user_kwargs=dict(email=f"owner-{slug}@example.com"),
     )
     config = WellbeingSurveyConfig(
@@ -86,7 +86,7 @@ async def create_and_persist_user(
     organization_id: str,
     branch_id: str,
     email: str,
-    role_name: str = "employee",
+    role_name: str = "member",
 ) -> User:
     """Create a user with role, add to session, flush, and return."""
     user = await make_user_with_role(
@@ -169,7 +169,7 @@ async def test_survey_config_organization_unique(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_survey_config_invalid_cadence_raises(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     config = WellbeingSurveyConfig(
         organization_id=org.id,
@@ -184,7 +184,7 @@ async def test_survey_config_invalid_cadence_raises(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_survey_config_valid_cadences(db_session: AsyncSession):
     """All defined cadences are valid."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     for cadence in SURVEY_CADENCES:
         config = WellbeingSurveyConfig(

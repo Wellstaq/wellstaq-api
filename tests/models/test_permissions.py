@@ -1,35 +1,17 @@
 """
-Tests for Permission, Role, UserRoleAssignment, and UserPermission models.
+Permission/role persistence and scope-isolation tests.
 
-REVISED for the branch/role redesign:
-  - The org-wide custom role tier is GONE. Every custom Role now
-    requires BOTH organization_id AND branch_id — there is no more
-    "organization_id set, branch_id NULL" custom role. The old
-    TestOrgWideRole class tested exactly that tier and has been
-    replaced with TestCustomRoleRequiresBranch, which asserts the
-    opposite: attempting to create a branch-less custom role now
-    raises IntegrityError.
-  - Added TestRoleUniqueness — is_unique/unique_scope had no coverage
-    before. unique_scope only accepts 'branch'/'department'/NULL now
-    (no 'org').
-  - Added TestUserRoleAssignment — the new table tracking WHERE a
-    user's single role is exercised, had zero coverage before this.
-  - Every User created beyond the org owner now needs branch_id
-    explicitly (NOT NULL) — added `branch_id=owner.branch_id`
-    everywhere a second user is created without a specific branch
-    being the point of the test.
+Current role architecture:
+- Global system templates can be copied into organizations and branches.
+- Custom roles can belong to the organization (branch_id=None) or one branch.
+- Each user has one organization role and at most one branch-role assignment.
+- Effective access is derived from RolePermission, covered in service tests.
+- Legacy UserPermission persistence constraints remain covered here; those
+  rows must not independently grant access.
 
-Covers:
-  - Permission CRUD and uniqueness
-  - Role scoping: system, branch-scoped custom (org-wide tier removed)
-  - Role partial-index uniqueness constraints
-  - Role CheckConstraints (system/org/branch consistency, unique_scope)
-  - UserRoleAssignment: XOR scope constraint, row-level dedupe, cascades
-  - UserPermission direct grants (org-wide and branch-scoped)
-  - UserPermission partial-index uniqueness constraints
-  - UserPermission CheckConstraint (branch-requires-org)
-  - Permission check query pattern (org-wide and branch-scoped inheritance)
-  - CASCADE deletes (org deleted -> custom roles gone, branch deleted -> branch-scoped grants gone)
+Tenant-integrity tests intentionally still require custom roles to belong to
+an organization. A missing database constraint is a failure, not permission
+to weaken that invariant.
 """
 
 import pytest
@@ -131,22 +113,21 @@ class TestSystemRole:
 
     @pytest.mark.asyncio
     async def test_system_role_reused_not_duplicated(self, db_session):
-        r1 = await get_or_create_system_role(db_session, "employee")
-        r2 = await get_or_create_system_role(db_session, "employee")
+        r1 = await get_or_create_system_role(db_session, "member")
+        r2 = await get_or_create_system_role(db_session, "member")
         assert r1.id == r2.id
 
     @pytest.mark.asyncio
-    async def test_system_role_check_constraint_violated_when_org_set(self, db_session):
-        """is_system=True with an org set must fail the check constraint."""
-        org, _ = await make_org_with_owner(db_session)
-        with pytest.raises(IntegrityError):
-            bad = Role(
-                name="bad_system",
-                is_system=True,
-                organization_id=org.id,
-            )
-            db_session.add(bad)
-            await db_session.flush()
+    async def test_system_role_copy_can_belong_to_organization(self, db_session):
+        """Organizations keep their own copy of the system role template."""
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
+        template = await get_or_create_system_role(db_session, "admin")
+        role = Role(name="admin", is_system=False, organization_id=org.id, template_role_id=template.id)
+        db_session.add(role)
+        await db_session.flush()
+        assert role.organization_id == org.id
+        assert role.branch_id is None
+        assert role.template_role_id == template.id
 
     @pytest.mark.asyncio
     async def test_custom_role_check_constraint_violated_when_org_null(self, db_session):
@@ -161,26 +142,20 @@ class TestSystemRole:
 # Role — custom roles now REQUIRE a branch (org-wide tier removed)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestCustomRoleRequiresBranch:
-    """
-    REPLACES the old TestOrgWideRole class. There is no more
-    "organization_id set, branch_id NULL" custom role tier — every
-    custom role must have BOTH set. These tests assert that boundary
-    directly, since it's the single biggest behavior change to Role.
-    """
+class TestCustomRoleScope:
+    """Organization-wide and branch-local roles; custom roles require a tenant."""
 
     @pytest.mark.asyncio
-    async def test_custom_role_without_branch_raises(self, db_session):
-        """The old 'org-wide custom role' shape (branch_id=None) is no
-        longer valid — ck_role_system_org_consistent now requires
-        branch_id to be set for any custom role."""
+    async def test_custom_role_can_be_organization_wide(self, db_session):
+        """An org-wide custom role has an organization and no branch."""
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "org-role-1", "business_name": "OrgRole1"}
+            db_session, with_trial=False, org_kwargs={"slug": "org-role-1", "business_name": "OrgRole1"}
         )
-        with pytest.raises(IntegrityError):
-            bad = Role(name="hr_manager", organization_id=org.id, branch_id=None, is_system=False)
-            db_session.add(bad)
-            await db_session.flush()
+        role = Role(name="hr_manager", organization_id=org.id, branch_id=None, is_system=False)
+        db_session.add(role)
+        await db_session.flush()
+        assert role.id is not None
+        assert role.branch_id is None
 
     @pytest.mark.asyncio
     async def test_custom_role_with_org_but_no_branch_and_no_org_also_raises(self, db_session):
@@ -196,7 +171,7 @@ class TestCustomRoleRequiresBranch:
         combined invariant (previously a separate constraint; now
         folded into ck_role_system_org_consistent)."""
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "br-req-org", "business_name": "BrReqOrg"}
+            db_session, with_trial=False, org_kwargs={"slug": "br-req-org", "business_name": "BrReqOrg"}
         )
         branch = await _make_branch(db_session, org)
         with pytest.raises(IntegrityError):
@@ -213,7 +188,7 @@ class TestCustomRoleRequiresBranch:
     async def test_valid_custom_role_requires_both_org_and_branch(self, db_session):
         """The only valid custom-role shape now: both set together."""
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "org-role-valid", "business_name": "OrgRoleValid"}
+            db_session, with_trial=False, org_kwargs={"slug": "org-role-valid", "business_name": "OrgRoleValid"}
         )
         branch = await _make_branch(db_session, org)
         role = Role(name="hr_manager", organization_id=org.id, branch_id=branch.id, is_system=False)
@@ -232,7 +207,7 @@ class TestBranchScopedRole:
     @pytest.mark.asyncio
     async def test_create_branch_scoped_role(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "br-role-1", "business_name": "BrRole1"}
+            db_session, with_trial=False, org_kwargs={"slug": "br-role-1", "business_name": "BrRole1"}
         )
         branch = await _make_branch(db_session, org)
         role = Role(
@@ -248,7 +223,7 @@ class TestBranchScopedRole:
     @pytest.mark.asyncio
     async def test_branch_role_name_unique_within_same_branch(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "br-role-2", "business_name": "BrRole2"}
+            db_session, with_trial=False, org_kwargs={"slug": "br-role-2", "business_name": "BrRole2"}
         )
         branch = await _make_branch(db_session, org)
         db_session.add(Role(
@@ -271,7 +246,7 @@ class TestBranchScopedRole:
     @pytest.mark.asyncio
     async def test_same_branch_role_name_allowed_in_different_branches(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "br-role-3", "business_name": "BrRole3"}
+            db_session, with_trial=False, org_kwargs={"slug": "br-role-3", "business_name": "BrRole3"}
         )
         b1 = Branch(organization_id=org.id, name="Branch A")
         b2 = Branch(organization_id=org.id, name="Branch B")
@@ -293,7 +268,7 @@ class TestBranchScopedRole:
         implicit in both).
         """
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "br-role-4", "business_name": "BrRole4"}
+            db_session, with_trial=False, org_kwargs={"slug": "br-role-4", "business_name": "BrRole4"}
         )
         branch = await _make_branch(db_session, org)
         await get_or_create_system_role(db_session, "leader")
@@ -310,7 +285,7 @@ class TestRoleUniqueness:
     @pytest.mark.asyncio
     async def test_unique_scope_branch_is_valid(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-1", "business_name": "Uniq1"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-1", "business_name": "Uniq1"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(
@@ -322,7 +297,7 @@ class TestRoleUniqueness:
     @pytest.mark.asyncio
     async def test_unique_scope_department_is_valid(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-2", "business_name": "Uniq2"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-2", "business_name": "Uniq2"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(
@@ -336,7 +311,7 @@ class TestRoleUniqueness:
         longer is — there is no org-wide scope tier left to anchor it
         to. Attempting it must raise."""
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-3", "business_name": "Uniq3"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-3", "business_name": "Uniq3"}
         )
         branch = await _make_branch(db_session, org)
         with pytest.raises(IntegrityError):
@@ -347,7 +322,7 @@ class TestRoleUniqueness:
     @pytest.mark.asyncio
     async def test_is_unique_true_requires_unique_scope_set(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-4", "business_name": "Uniq4"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-4", "business_name": "Uniq4"}
         )
         branch = await _make_branch(db_session, org)
         with pytest.raises(IntegrityError):
@@ -358,7 +333,7 @@ class TestRoleUniqueness:
     @pytest.mark.asyncio
     async def test_is_unique_false_requires_unique_scope_null(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-5", "business_name": "Uniq5"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-5", "business_name": "Uniq5"}
         )
         branch = await _make_branch(db_session, org)
         with pytest.raises(IntegrityError):
@@ -369,7 +344,7 @@ class TestRoleUniqueness:
     @pytest.mark.asyncio
     async def test_default_is_not_unique(self, db_session):
         org, _ = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "uniq-6", "business_name": "Uniq6"}
+            db_session, with_trial=False, org_kwargs={"slug": "uniq-6", "business_name": "Uniq6"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, branch, name="member_like")
@@ -386,7 +361,7 @@ class TestUserRoleAssignment:
     @pytest.mark.asyncio
     async def test_create_branch_scoped_assignment(self, db_session):
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-1", "business_name": "URA1"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-1", "business_name": "URA1"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(
@@ -410,7 +385,7 @@ class TestUserRoleAssignment:
         from app.models.department import Department
 
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-2", "business_name": "URA2"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-2", "business_name": "URA2"}
         )
         branch = await _make_branch(db_session, org)
         dept = Department(organization_id=org.id, branch_id=branch.id, name="Engineering")
@@ -435,7 +410,7 @@ class TestUserRoleAssignment:
     @pytest.mark.asyncio
     async def test_neither_branch_nor_department_raises(self, db_session):
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-3", "business_name": "URA3"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-3", "business_name": "URA3"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, branch)
@@ -452,7 +427,7 @@ class TestUserRoleAssignment:
         from app.models.department import Department
 
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-4", "business_name": "URA4"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-4", "business_name": "URA4"}
         )
         branch = await _make_branch(db_session, org)
         dept = Department(organization_id=org.id, branch_id=branch.id, name="Sales")
@@ -468,11 +443,10 @@ class TestUserRoleAssignment:
             await db_session.flush()
 
     @pytest.mark.asyncio
-    async def test_same_user_can_hold_same_role_in_two_branches(self, db_session):
-        """The core scenario this table exists for: one role, two
-        different branches, same user — two rows, not a conflict."""
+    async def test_user_cannot_hold_two_branch_role_slots(self, db_session):
+        """The current model allows only one branch-role slot per user/org."""
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-5", "business_name": "URA5"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-5", "business_name": "URA5"}
         )
         branch_a = await _make_branch(db_session, org)
         branch_b = Branch(organization_id=org.id, name="Second Branch")
@@ -488,7 +462,8 @@ class TestUserRoleAssignment:
         db_session.add(UserRoleAssignment(
             user_id=owner.id, role_id=role.id, organization_id=org.id, branch_id=branch_b.id,
         ))
-        await db_session.flush()  # must not raise — different branch_id each row
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
 
     @pytest.mark.asyncio
     async def test_duplicate_exact_row_raises(self, db_session):
@@ -497,7 +472,7 @@ class TestUserRoleAssignment:
         — distinct from the is_unique business rule, which is a
         service-layer check across DIFFERENT users."""
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-6", "business_name": "URA6"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-6", "business_name": "URA6"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, branch)
@@ -516,7 +491,7 @@ class TestUserRoleAssignment:
     @pytest.mark.asyncio
     async def test_deleting_user_cascades_assignment(self, db_session):
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-7", "business_name": "URA7"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-7", "business_name": "URA7"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, branch)
@@ -548,7 +523,7 @@ class TestUserRoleAssignment:
         it, but must NOT be confused with User.branch_id (home) — a
         user's home branch is a separate relationship entirely."""
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-8", "business_name": "URA8"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-8", "business_name": "URA8"}
         )
         oversight_branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, oversight_branch)
@@ -576,7 +551,7 @@ class TestUserRoleAssignment:
     @pytest.mark.asyncio
     async def test_deleting_role_cascades_assignment(self, db_session):
         org, owner = await make_org_with_owner(
-            db_session, org_kwargs={"slug": "ura-9", "business_name": "URA9"}
+            db_session, with_trial=False, org_kwargs={"slug": "ura-9", "business_name": "URA9"}
         )
         branch = await _make_branch(db_session, org)
         role = await _make_branch_role(db_session, org, branch)
@@ -607,7 +582,7 @@ class TestUserPermissionOrgWide:
     async def test_grant_org_wide_permission(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-orgwide-1", "business_name": "UPOrgWide1"},
+            with_trial=False, org_kwargs={"slug": "up-orgwide-1", "business_name": "UPOrgWide1"},
         )
         perm = await _make_permission(db_session, name="user.invite.ow1")
 
@@ -626,7 +601,7 @@ class TestUserPermissionOrgWide:
     async def test_duplicate_org_wide_grant_raises(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-orgwide-2", "business_name": "UPOrgWide2"},
+            with_trial=False, org_kwargs={"slug": "up-orgwide-2", "business_name": "UPOrgWide2"},
         )
         perm = await _make_permission(db_session, name="user.invite.ow2")
 
@@ -645,7 +620,7 @@ class TestUserPermissionOrgWide:
     async def test_same_permission_different_users(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-orgwide-3", "business_name": "UPOrgWide3"},
+            with_trial=False, org_kwargs={"slug": "up-orgwide-3", "business_name": "UPOrgWide3"},
         )
         perm = await _make_permission(db_session, name="event.create.ow3")
         member = await make_user_with_role(
@@ -664,7 +639,7 @@ class TestUserPermissionOrgWide:
         """branch_id set but organization_id missing must fail."""
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-br-req", "business_name": "UPBrReq"},
+            with_trial=False, org_kwargs={"slug": "up-br-req", "business_name": "UPBrReq"},
         )
         perm = await _make_permission(db_session, name="wellbeing.view.brreq")
         branch = await _make_branch(db_session, org)
@@ -689,7 +664,7 @@ class TestUserPermissionBranchScoped:
     async def test_grant_branch_scoped_permission(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-branch-1", "business_name": "UPBranch1"},
+            with_trial=False, org_kwargs={"slug": "up-branch-1", "business_name": "UPBranch1"},
         )
         perm = await _make_permission(db_session, name="user.invite.bs1")
         branch = await _make_branch(db_session, org)
@@ -708,7 +683,7 @@ class TestUserPermissionBranchScoped:
     async def test_duplicate_branch_scoped_grant_raises(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-branch-2", "business_name": "UPBranch2"},
+            with_trial=False, org_kwargs={"slug": "up-branch-2", "business_name": "UPBranch2"},
         )
         perm = await _make_permission(db_session, name="user.invite.bs2")
         branch = await _make_branch(db_session, org)
@@ -734,7 +709,7 @@ class TestUserPermissionBranchScoped:
         that's unchanged. Only Role's custom-role tier lost org-wide."""
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-branch-3", "business_name": "UPBranch3"},
+            with_trial=False, org_kwargs={"slug": "up-branch-3", "business_name": "UPBranch3"},
         )
         perm = await _make_permission(db_session, name="user.invite.bs3")
         branch = await _make_branch(db_session, org)
@@ -751,7 +726,7 @@ class TestUserPermissionBranchScoped:
     async def test_same_permission_different_branches(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "up-branch-4", "business_name": "UPBranch4"},
+            with_trial=False, org_kwargs={"slug": "up-branch-4", "business_name": "UPBranch4"},
         )
         perm = await _make_permission(db_session, name="event.cancel.bs4")
         b1 = Branch(organization_id=org.id, name="North")
@@ -778,7 +753,7 @@ class TestPermissionCheckPattern:
     async def test_org_wide_permission_check(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "pcheck-1", "business_name": "PCheck1"},
+            with_trial=False, org_kwargs={"slug": "pcheck-1", "business_name": "PCheck1"},
         )
         perm = await _make_permission(db_session, name="user.suspend.chk1")
         db_session.add(UserPermission(
@@ -803,7 +778,7 @@ class TestPermissionCheckPattern:
     async def test_branch_scoped_check_inherits_org_wide_grant(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "pcheck-2", "business_name": "PCheck2"},
+            with_trial=False, org_kwargs={"slug": "pcheck-2", "business_name": "PCheck2"},
         )
         perm = await _make_permission(db_session, name="user.invite.chk2")
         branch = await _make_branch(db_session, org)
@@ -830,7 +805,7 @@ class TestPermissionCheckPattern:
     async def test_user_without_permission_returns_none(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "pcheck-3", "business_name": "PCheck3"},
+            with_trial=False, org_kwargs={"slug": "pcheck-3", "business_name": "PCheck3"},
         )
         perm = await _make_permission(db_session, name="post.moderate.chk3")
 
@@ -851,7 +826,7 @@ class TestPermissionCheckPattern:
     async def test_branch_only_grant_not_visible_in_other_branch(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "pcheck-4", "business_name": "PCheck4"},
+            with_trial=False, org_kwargs={"slug": "pcheck-4", "business_name": "PCheck4"},
         )
         perm = await _make_permission(db_session, name="event.create.chk4")
         b1 = Branch(organization_id=org.id, name="HQ2")
@@ -888,7 +863,7 @@ class TestGrantedBy:
     async def test_granted_by_records_granter(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "grantedby-1", "business_name": "GrantedBy1"},
+            with_trial=False, org_kwargs={"slug": "grantedby-1", "business_name": "GrantedBy1"},
         )
         member = await make_user_with_role(
             db_session, organization_id=org.id, email="member.gb1@example.com",
@@ -912,7 +887,7 @@ class TestGrantedBy:
     async def test_granted_by_nullable_for_system_seeded(self, db_session):
         org, owner = await make_org_with_owner(
             db_session,
-            org_kwargs={"slug": "grantedby-2", "business_name": "GrantedBy2"},
+            with_trial=False, org_kwargs={"slug": "grantedby-2", "business_name": "GrantedBy2"},
         )
         perm = await _make_permission(db_session, name="wellbeing.export.gb2")
         up = UserPermission(

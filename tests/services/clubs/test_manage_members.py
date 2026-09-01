@@ -105,7 +105,7 @@ async def _setup(db_session: AsyncSession, *, privacy: str = "public"):
     the club — the typical starting point for join/leave/remove tests.
     Also sets up an active subscription, required by create_club()'s
     plan-limit check."""
-    org, leader = await make_org_with_owner(db_session)
+    org, leader = await make_org_with_owner(db_session, with_trial=False)
     branch = await _make_branch(db_session, org.id)
     leader.branch_id = branch.id
     await db_session.flush()
@@ -114,7 +114,7 @@ async def _setup(db_session: AsyncSession, *, privacy: str = "public"):
     await _make_subscription(db_session, org.id, plan.id)
 
     club = await create_club(
-        session=db_session,
+        image_url=None, category="fitness", session=db_session,
         organization_id=org.id,
         branch_id=branch.id,
         name="Running Club",
@@ -205,7 +205,7 @@ class TestJoinClub:
     async def test_user_can_join_multiple_clubs(self, db_session: AsyncSession):
         org, branch, leader, club_a, member = await _setup(db_session)
         club_b = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Book Club",

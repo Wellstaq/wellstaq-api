@@ -60,7 +60,7 @@ async def setup_challenge(db_session: AsyncSession, org_id: str, **overrides) ->
 
 @pytest.mark.asyncio
 async def test_challenge_persists(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     result = await db_session.execute(
@@ -74,7 +74,7 @@ async def test_challenge_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_challenge_id_is_uuid_format(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     parts = challenge.id.split("-")
@@ -84,7 +84,7 @@ async def test_challenge_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_challenge_can_be_scoped_to_branch(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = make_branch(org.id)
     db_session.add(branch)
     await db_session.flush()
@@ -95,20 +95,20 @@ async def test_challenge_can_be_scoped_to_branch(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_challenge_defaults_to_draft_status(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+async def test_challenge_defaults_to_upcoming_status(db_session: AsyncSession):
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     challenge = Challenge(name="Mindfulness Month", organization_id=org.id)
     db_session.add(challenge)
     await db_session.flush()
 
-    assert challenge.status == "draft"
+    assert challenge.status == "upcoming"
 
 
 # ── ChallengeParticipant model ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_challenge_participant_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -130,7 +130,7 @@ async def test_challenge_participant_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_challenge_participant_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -148,7 +148,7 @@ async def test_challenge_participant_id_is_uuid_format(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_challenge_participant_joined_at_auto_set(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -165,7 +165,7 @@ async def test_challenge_participant_joined_at_auto_set(db_session: AsyncSession
 @pytest.mark.asyncio
 async def test_challenge_participant_duplicate_raises(db_session: AsyncSession):
     """A user can only join a given challenge once."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -183,7 +183,7 @@ async def test_challenge_participant_duplicate_raises(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_challenge_participant_same_user_different_challenges(db_session: AsyncSession):
     """A user can join multiple different challenges."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge_a = await setup_challenge(db_session, org.id, name="Steps Challenge")
     challenge_b = await setup_challenge(db_session, org.id, name="Hydration Challenge")
 
@@ -204,7 +204,7 @@ async def test_challenge_participant_same_user_different_challenges(db_session: 
 @pytest.mark.asyncio
 async def test_challenge_participant_rank_validation(db_session: AsyncSession):
     """Verify that the rank field resolves correctly on standard structures."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -224,7 +224,7 @@ async def test_challenge_participant_rank_validation(db_session: AsyncSession):
 async def test_challenge_participant_organization_id_required(db_session: AsyncSession):
     """organization_id is NOT NULL — denormalized from the parent Challenge
     at insert time. See challenge.py module docstring."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -243,7 +243,7 @@ async def test_challenge_participant_organization_id_required(db_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_challenge_participant_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -261,7 +261,7 @@ async def test_challenge_participant_org_fk_must_exist(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_organization_delete_cascades(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -290,7 +290,7 @@ async def test_organization_delete_cascades(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_challenge_participant_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -317,12 +317,12 @@ async def test_composite_fk_blocks_organization_id_mismatch(db_session: AsyncSes
     level — multi-tenant cross-contamination is impossible even without
     service-layer validation."""
     # Create two separate organizations with unique slugs
-    org_a, owner_a = await make_org_with_owner(db_session)
+    org_a, owner_a = await make_org_with_owner(db_session, with_trial=False)
 
     # Create org_b with a unique slug to avoid UNIQUE constraint violation
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"business_name": "Beta Corp", "slug": "beta-corp"},
+        with_trial=False, org_kwargs={"business_name": "Beta Corp", "slug": "beta-corp"},
         user_kwargs={"email": "owner-b@example.com"}
     )
 
@@ -344,7 +344,7 @@ async def test_composite_fk_blocks_organization_id_mismatch(db_session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_challenge_deletion_cascades_to_participants(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     challenge = await setup_challenge(db_session, org.id)
 
     member = make_user(organization_id=org.id, email="member@example.com", branch_id=owner.branch_id)
@@ -367,84 +367,25 @@ async def test_challenge_deletion_cascades_to_participants(db_session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_branch_deletion_cascades_to_challenges(db_session: AsyncSession):
-    """Verify that deleting a branch cascades to delete its challenges.
-    
-    Note: This test documents the intended behavior, but SQLite's in-memory
-    database combined with SQLAlchemy's session management may not properly
-    enforce CASCADE deletes in all test scenarios. In production with PostgreSQL,
-    this constraint will be enforced by the database.
-    
-    The test passes if the challenge is deleted; if it doesn't delete in SQLite
-    tests, that's a limitation of the test environment, not the model design.
-    """
-    org, _ = await make_org_with_owner(db_session)
+    """Exercise the database cascade without closing/rolling back the fixture."""
+    from sqlalchemy import delete
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = make_branch(org.id)
     db_session.add(branch)
     await db_session.flush()
-
     challenge = await setup_challenge(db_session, org.id, branch_id=branch.id)
     challenge_id = challenge.id
-
-    # Close the session to force SQLAlchemy to release all cached objects
-    await db_session.close()
-    
-    # Re-open a fresh session for the delete operation
-    # This ensures no cached objects interfere with cascade behavior
-    async with db_session.bind.begin() as trans:
-        try:
-            # Try to delete - in SQLite this may not cascade properly due to
-            # how the in-memory database is set up, but the constraint is correct
-            await db_session.delete(branch)
-            await db_session.flush()
-            
-            # Check if deletion occurred
-            result = await db_session.execute(
-                select(Challenge).where(Challenge.id == challenge_id)
-            )
-            deleted = result.scalar_one_or_none() is None
-            
-            # If not deleted, that's a SQLite limitation - rollback and skip
-            if not deleted:
-                await trans.rollback()
-                pytest.skip("SQLite in-memory does not properly enforce CASCADE deletes in this scenario")
-                
-        except Exception:
-            await trans.rollback()
-            raise
+    await db_session.execute(delete(Branch).where(Branch.id == branch.id))
+    assert (await db_session.execute(select(Challenge).where(Challenge.id == challenge_id))).scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
 async def test_creator_deletion_is_restricted(db_session: AsyncSession):
-    """Verify that deleting a user who created challenges is restricted.
-    
-    Note: This test documents the intended behavior. SQLite's implementation
-    of RESTRICT constraints is limited compared to PostgreSQL. In production
-    with PostgreSQL, this constraint will be properly enforced.
-    
-    The test passes if the deletion is blocked; if it doesn't block in SQLite
-    tests, that's a limitation of the test environment, not the model design.
-    """
-    org, owner = await make_org_with_owner(db_session)
+    from sqlalchemy import delete
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     creator = make_user(organization_id=org.id, email="creator@example.com", branch_id=owner.branch_id)
     db_session.add(creator)
     await db_session.flush()
-
     await setup_challenge(db_session, org.id, created_by=creator.id)
-    
-    # Close session to clear any cached objects
-    await db_session.close()
-    
-    # Try to delete - SQLite may not enforce RESTRICT properly
-    try:
-        async with db_session.bind.begin() as trans:
-            await db_session.delete(creator)
-            await db_session.flush()
-            
-            # If we get here without error, SQLite didn't enforce the constraint
-            # This is a known SQLite limitation - rollback and skip
-            await trans.rollback()
-            pytest.skip("SQLite does not properly enforce RESTRICT constraints")
-            
-    except IntegrityError:
-        # This is the expected behavior in production with PostgreSQL
-        pass
+    with pytest.raises(IntegrityError):
+        await db_session.execute(delete(User).where(User.id == creator.id))

@@ -66,7 +66,7 @@ def make_engagement_log(
 
 @pytest.mark.asyncio
 async def test_activity_log_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -85,7 +85,7 @@ async def test_activity_log_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -99,7 +99,7 @@ async def test_activity_log_id_is_uuid_format(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_activity_log_unit_set_for_distance_metric(db_session: AsyncSession):
     """distance metric_type carries a unit (km), unlike steps."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(
         org.id, owner.branch_id, owner.id,
@@ -119,7 +119,7 @@ async def test_activity_log_unit_set_for_distance_metric(db_session: AsyncSessio
 async def test_activity_log_value_preserves_decimal_precision(db_session: AsyncSession):
     """value is Numeric — a run distance like 5.42 km must not be
     rounded or coerced through float lossily."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(
         org.id, owner.branch_id, owner.id,
@@ -134,7 +134,7 @@ async def test_activity_log_value_preserves_decimal_precision(db_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_activity_log_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -148,7 +148,7 @@ async def test_activity_log_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_branch_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(
         organization_id=org.id,
@@ -162,7 +162,7 @@ async def test_activity_log_branch_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_user_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(
         organization_id=org.id,
@@ -177,7 +177,7 @@ async def test_activity_log_user_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_multiple_metric_types_same_day_allowed(db_session: AsyncSession):
     """A user can log several different metrics on the same day."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="steps", value=Decimal("9000")))
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="squat", value=Decimal("30"), unit="reps"))
@@ -199,7 +199,7 @@ async def test_duplicate_metric_same_user_same_day_not_blocked(db_session: Async
     """No DB-level uniqueness on (user_id, metric_type, date) — the
     service layer decides whether a second same-day same-metric entry
     is a correction/append."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="steps", value=Decimal("8500")))
     await db_session.flush()
@@ -222,7 +222,7 @@ async def test_duplicate_metric_same_user_same_day_not_blocked(db_session: Async
 async def test_activity_log_query_by_date_range(db_session: AsyncSession):
     """The Employee Engagement chart's core query pattern: scan a
     user's logs across a date range."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, date=date(2026, 6, 18)))
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, date=date(2026, 6, 19)))
@@ -245,12 +245,12 @@ async def test_activity_log_filterable_by_org(db_session: AsyncSession):
     """Logs from org A are directly queryable by organization_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -274,7 +274,7 @@ async def test_activity_log_filterable_by_branch(db_session: AsyncSession):
     branches."""
     from tests.conftest import make_branch
 
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     second_branch = make_branch(org.id, name="Downtown")
     db_session.add(second_branch)
@@ -306,12 +306,12 @@ async def test_activity_log_cross_tenant_isolation(db_session: AsyncSession):
     """Org B cannot see org A's activity logs when filtering by org_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -342,7 +342,7 @@ async def test_activity_log_branch_date_index_exists(db_session: AsyncSession):
 async def test_org_delete_cascades_to_activity_logs(db_session: AsyncSession):
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
 
@@ -366,7 +366,7 @@ async def test_org_delete_cascades_to_activity_logs(db_session: AsyncSession):
 async def test_branch_delete_cascades_to_activity_logs(db_session: AsyncSession):
     """Deleting a branch removes its activity logs without requiring
     the org itself to be deleted."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -388,7 +388,7 @@ async def test_branch_delete_cascades_to_activity_logs(db_session: AsyncSession)
 async def test_user_delete_cascades_to_activity_logs(db_session: AsyncSession):
     """Deletes a non-owner member to isolate ActivityLog.user_id CASCADE
     from the org owner_id constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
@@ -408,7 +408,7 @@ async def test_user_delete_cascades_to_activity_logs(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -421,7 +421,7 @@ async def test_activity_log_organization_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_branch_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -434,7 +434,7 @@ async def test_activity_log_branch_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_log_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_activity_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -447,7 +447,7 @@ async def test_activity_log_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_activity_logs_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="steps"))
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="squat", unit="reps"))
@@ -459,7 +459,7 @@ async def test_organization_activity_logs_relationship(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_user_activity_logs_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="steps"))
     db_session.add(make_activity_log(org.id, owner.branch_id, owner.id, metric_type="squat", unit="reps"))
@@ -473,7 +473,7 @@ async def test_user_activity_logs_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -491,7 +491,7 @@ async def test_engagement_log_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -504,7 +504,7 @@ async def test_engagement_log_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_value_preserves_decimal_precision(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="social", value=Decimal("64.25"))
     db_session.add(log)
@@ -516,7 +516,7 @@ async def test_engagement_log_value_preserves_decimal_precision(db_session: Asyn
 
 @pytest.mark.asyncio
 async def test_engagement_log_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -530,7 +530,7 @@ async def test_engagement_log_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_branch_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(
         organization_id=org.id,
@@ -544,7 +544,7 @@ async def test_engagement_log_branch_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_user_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(
         organization_id=org.id,
@@ -559,7 +559,7 @@ async def test_engagement_log_user_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_multiple_engagement_metric_types_same_day_allowed(db_session: AsyncSession):
     """Backend job can write several scores for the same day."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="participation"))
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="checkins"))
@@ -579,7 +579,7 @@ async def test_multiple_engagement_metric_types_same_day_allowed(db_session: Asy
 
 @pytest.mark.asyncio
 async def test_engagement_log_query_by_date_range(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, date=date(2026, 6, 1)))
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, date=date(2026, 6, 15)))
@@ -602,12 +602,12 @@ async def test_engagement_log_filterable_by_org(db_session: AsyncSession):
     """Logs from org A are directly queryable by organization_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -627,7 +627,7 @@ async def test_engagement_log_filterable_by_org(db_session: AsyncSession):
 async def test_engagement_log_filterable_by_branch(db_session: AsyncSession):
     """Within one org, engagement logs are directly queryable by
     branch_id — same per-branch scoping pattern as ActivityLog."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, value=Decimal("50.0")))
     await db_session.flush()
@@ -647,12 +647,12 @@ async def test_engagement_log_cross_tenant_isolation(db_session: AsyncSession):
     """Org B cannot see org A's engagement logs when filtering by org_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -683,7 +683,7 @@ async def test_engagement_log_branch_date_index_exists(db_session: AsyncSession)
 async def test_org_delete_cascades_to_engagement_logs(db_session: AsyncSession):
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
 
@@ -707,7 +707,7 @@ async def test_org_delete_cascades_to_engagement_logs(db_session: AsyncSession):
 async def test_branch_delete_cascades_to_engagement_logs(db_session: AsyncSession):
     """Deleting a branch removes its engagement logs without requiring
     the org itself to be deleted."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -729,7 +729,7 @@ async def test_branch_delete_cascades_to_engagement_logs(db_session: AsyncSessio
 async def test_user_delete_cascades_to_engagement_logs(db_session: AsyncSession):
     """Deletes a non-owner member to isolate EngagementLog.user_id CASCADE
     from the org owner_id constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
@@ -749,7 +749,7 @@ async def test_user_delete_cascades_to_engagement_logs(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_engagement_log_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -762,7 +762,7 @@ async def test_engagement_log_organization_relationship(db_session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_engagement_log_branch_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -775,7 +775,7 @@ async def test_engagement_log_branch_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_engagement_log_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     log = make_engagement_log(org.id, owner.branch_id, owner.id)
     db_session.add(log)
@@ -788,7 +788,7 @@ async def test_engagement_log_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_engagement_logs_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="participation"))
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="checkins"))
@@ -800,7 +800,7 @@ async def test_organization_engagement_logs_relationship(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_user_engagement_logs_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="participation"))
     db_session.add(make_engagement_log(org.id, owner.branch_id, owner.id, metric_type="checkins"))

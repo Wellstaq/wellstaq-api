@@ -52,7 +52,7 @@ def make_snapshot(hashtag_id: str, organization_id: str, **overrides) -> Hashtag
 
 @pytest.mark.asyncio
 async def test_hashtag_persists(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
@@ -69,7 +69,7 @@ async def test_hashtag_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_hashtag_id_is_uuid_format(db_session: AsyncSession):
     """ID must be a valid parseable UUID — not just the right string shape."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
@@ -82,7 +82,7 @@ async def test_hashtag_id_is_uuid_format(db_session: AsyncSession):
 async def test_hashtag_tag_name_must_be_unique_within_org(db_session: AsyncSession):
     """tag_name uniqueness is scoped per organization — duplicate within
     same org raises IntegrityError."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_hashtag(org.id, tag_name="wellness"))
     await db_session.flush()
@@ -98,12 +98,12 @@ async def test_same_tag_name_allowed_across_different_orgs(db_session: AsyncSess
     tag_name can exist independently in different orgs."""
     org_a, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
 
@@ -119,7 +119,7 @@ async def test_same_tag_name_allowed_across_different_orgs(db_session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_hashtag_total_post_count_defaults_to_zero(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = Hashtag(organization_id=org.id, tag_name="mindfulness")
     db_session.add(hashtag)
     await db_session.flush()
@@ -129,7 +129,7 @@ async def test_hashtag_total_post_count_defaults_to_zero(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_hashtag_total_post_count_can_increment(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="running")
     db_session.add(hashtag)
     await db_session.flush()
@@ -146,7 +146,7 @@ async def test_hashtag_total_post_count_can_increment(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_hashtag_total_post_count_cannot_be_negative(db_session: AsyncSession):
     """A decrement bug should raise IntegrityError, not silently store -1."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="running")
     db_session.add(hashtag)
     await db_session.flush()
@@ -167,7 +167,7 @@ async def test_hashtag_organization_id_required(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_hashtag_organization_relationship(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id)
     db_session.add(hashtag)
     await db_session.flush()
@@ -184,7 +184,7 @@ async def test_hashtag_tag_name_must_be_lowercase(db_session: AsyncSession):
     """tag_name must be stored lowercase — mixed or uppercase raises
     IntegrityError. Normalization is the service layer's responsibility;
     this constraint is the DB-level safety net."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     hashtag = make_hashtag(org.id, tag_name="Fitness")  # uppercase — should fail
     db_session.add(hashtag)
@@ -200,7 +200,7 @@ async def test_hashtag_tag_name_uppercase_and_lowercase_are_not_duplicates_witho
     satisfy the unique constraint and be stored as two separate tags —
     demonstrating why the constraint is necessary. With it, only the
     lowercase form is accepted."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     # Lowercase form — should persist fine
     hashtag = make_hashtag(org.id, tag_name="fitness")
@@ -218,7 +218,7 @@ async def test_hashtag_tag_name_uppercase_and_lowercase_are_not_duplicates_witho
 async def test_hashtag_empty_tag_name_raises(db_session: AsyncSession):
     """An empty string is not a valid tag name — DB rejects it via
     ck_hashtag_tag_name_not_empty."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     hashtag = make_hashtag(org.id, tag_name="")
     db_session.add(hashtag)
@@ -230,7 +230,7 @@ async def test_hashtag_empty_tag_name_raises(db_session: AsyncSession):
 async def test_hashtag_whitespace_only_tag_name_raises(db_session: AsyncSession):
     """A whitespace-only tag name is as meaningless as an empty string —
     length(trim(tag_name)) > 0 catches this case."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     hashtag = make_hashtag(org.id, tag_name="   ")
     db_session.add(hashtag)
@@ -243,7 +243,7 @@ async def test_hashtag_whitespace_only_tag_name_raises(db_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_deleting_org_cascades_to_hashtags(db_session: AsyncSession):
     """Deleting an Organization must cascade and remove all its hashtags."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     hashtag = make_hashtag(org.id, tag_name="fitness")
     db_session.add(hashtag)
@@ -267,7 +267,7 @@ async def test_deleting_org_cascades_to_hashtags(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_deleting_hashtag_cascades_to_trend_snapshots(db_session: AsyncSession):
     """Deleting a Hashtag must cascade and remove all its trend snapshots."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
 
     hashtag = make_hashtag(org.id, tag_name="fitness")
     db_session.add(hashtag)
@@ -298,7 +298,7 @@ async def test_deleting_hashtag_cascades_to_trend_snapshots(db_session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_persists(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-fitness")
     db_session.add(hashtag)
     await db_session.flush()
@@ -320,7 +320,7 @@ async def test_hashtag_trend_snapshot_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_id_is_uuid_format(db_session: AsyncSession):
     """ID must be a valid parseable UUID — not just the right string shape."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-uuid")
     db_session.add(hashtag)
     await db_session.flush()
@@ -335,7 +335,7 @@ async def test_hashtag_trend_snapshot_id_is_uuid_format(db_session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_window_fields(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-window")
     db_session.add(hashtag)
     await db_session.flush()
@@ -360,7 +360,7 @@ async def test_hashtag_trend_snapshot_window_end_must_be_after_window_start(
     db_session: AsyncSession,
 ):
     """window_end <= window_start is a miscalculated window — DB rejects it."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-badwindow")
     db_session.add(hashtag)
     await db_session.flush()
@@ -380,7 +380,7 @@ async def test_hashtag_trend_snapshot_window_end_must_be_after_window_start(
 async def test_hashtag_can_have_multiple_trend_snapshots(db_session: AsyncSession):
     """Snapshots accumulate over time — one row per computation run,
     no uniqueness constraint."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-multi")
     db_session.add(hashtag)
     await db_session.flush()
@@ -407,7 +407,7 @@ async def test_hashtag_can_have_multiple_trend_snapshots(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_hashtag_trend_snapshot_score_is_numeric(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-numeric")
     db_session.add(hashtag)
     await db_session.flush()
@@ -432,12 +432,12 @@ async def test_each_org_has_independent_trend_snapshots_for_same_tag_name(
     This is the correct real-world pattern — no cross-org snapshot sharing."""
     org_a, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
 
@@ -466,7 +466,7 @@ async def test_each_org_has_independent_trend_snapshots_for_same_tag_name(
 async def test_snapshot_computed_at_is_required(db_session: AsyncSession):
     """computed_at has no default — the background job must supply it
     explicitly. Omitting it should raise IntegrityError."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-computed")
     db_session.add(hashtag)
     await db_session.flush()
@@ -489,7 +489,7 @@ async def test_snapshot_computed_at_is_required(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_snapshot_post_count_cannot_be_negative(db_session: AsyncSession):
     """A negative post_count is a background job bug — DB rejects it."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-negcount")
     db_session.add(hashtag)
     await db_session.flush()
@@ -503,7 +503,7 @@ async def test_snapshot_post_count_cannot_be_negative(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_snapshot_post_count_defaults_to_zero(db_session: AsyncSession):
     """post_count defaults to 0 — valid lower bound."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-zerocount")
     db_session.add(hashtag)
     await db_session.flush()
@@ -520,7 +520,7 @@ async def test_deleting_org_cascades_to_snapshots_directly(db_session: AsyncSess
     """HashtagTrendSnapshot has its own organization_id FK with CASCADE —
     deleting an org removes its snapshots directly, independent of the
     hashtag cascade path."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     hashtag = make_hashtag(org.id, tag_name="snapshot-orgcascade")
     db_session.add(hashtag)
     await db_session.flush()
@@ -555,12 +555,12 @@ async def test_snapshot_org_mismatch_is_allowed_at_db_level(db_session: AsyncSes
     The insert succeeds — no IntegrityError."""
     org_a, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
 

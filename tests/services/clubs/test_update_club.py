@@ -81,7 +81,7 @@ async def _make_club_with_owner(db_session: AsyncSession, *, org_kwargs=None, us
     """Sets up an org + branch-assigned owner + an active subscription
     (required by create_club()'s plan-limit check), then creates a club
     via the real create_club() service."""
-    org, owner = await make_org_with_owner(db_session, org_kwargs=org_kwargs, user_kwargs=user_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, org_kwargs=org_kwargs, user_kwargs=user_kwargs)
     branch = await _make_branch(db_session, org.id)
     owner.branch_id = branch.id
     await db_session.flush()
@@ -97,7 +97,7 @@ async def _make_club_with_owner(db_session: AsyncSession, *, org_kwargs=None, us
         privacy="public",
         created_by=owner.id,
     )
-    club = await create_club(session=db_session, **{**defaults, **club_overrides})
+    club = await create_club(image_url=None, category="fitness", session=db_session, **{**defaults, **club_overrides})
     return org, owner, branch, club
 
 
@@ -107,7 +107,7 @@ class TestEditClubHappyPath:
         org, owner, branch, club = await _make_club_with_owner(db_session)
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name="Sprint Club",
@@ -122,7 +122,7 @@ class TestEditClubHappyPath:
         org, owner, branch, club = await _make_club_with_owner(db_session)
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name=None,
@@ -137,7 +137,7 @@ class TestEditClubHappyPath:
         org, owner, branch, club = await _make_club_with_owner(db_session, privacy="public")
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name=None,
@@ -152,7 +152,7 @@ class TestEditClubHappyPath:
         org, owner, branch, club = await _make_club_with_owner(db_session)
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name="New Name",
@@ -169,7 +169,7 @@ class TestEditClubHappyPath:
         org, owner, branch, club = await _make_club_with_owner(db_session)
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name="   Padel Club   ",
@@ -188,7 +188,7 @@ class TestEditClubPartialUpdate:
         )
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name=None,
@@ -226,7 +226,7 @@ class TestEditClubNameUniqueness:
         org, owner, branch, club = await _make_club_with_owner(db_session, name="Running Club")
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             club_id=club.id,
             name="Running Club",
@@ -244,7 +244,7 @@ class TestEditClubNameUniqueness:
             db_session, name="Running Club"
         )
         club_b = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Book Club",
@@ -255,7 +255,7 @@ class TestEditClubNameUniqueness:
 
         with pytest.raises(AppError) as exc_info:
             await edit_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 club_id=club_b.id,
                 name="Running Club",
@@ -283,7 +283,7 @@ class TestEditClubNameUniqueness:
         )
 
         updated = await edit_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org_b.id,
             club_id=club_b.id,
             name="Shared Name",
@@ -297,11 +297,11 @@ class TestEditClubNameUniqueness:
 class TestEditClubNotFound:
     @pytest.mark.asyncio
     async def test_raises_404_when_club_does_not_exist(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(AppError) as exc_info:
             await edit_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 club_id="00000000-0000-0000-0000-000000000000",
                 name="Doesn't Matter",
@@ -316,7 +316,7 @@ class TestEditClubNotFound:
         self, db_session: AsyncSession
     ):
         org_a, owner_a = await make_org_with_owner(
-            db_session, org_kwargs={"business_name": "Org A", "slug": "org-a"}
+            db_session, with_trial=False, org_kwargs={"business_name": "Org A", "slug": "org-a"}
         )
         org_b, owner_b, branch_b, club_b = await _make_club_with_owner(
             db_session,
@@ -326,7 +326,7 @@ class TestEditClubNotFound:
 
         with pytest.raises(AppError) as exc_info:
             await edit_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org_a.id,
                 club_id=club_b.id,
                 name="Hijacked Name",

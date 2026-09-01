@@ -103,8 +103,8 @@ async def setup_org(
     (email, slug) signature so existing call sites didn't need to change."""
     org, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email=email, role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="super_admin"),
     )
     return user, org
 
@@ -448,7 +448,7 @@ async def test_department_member_persists(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="member", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -470,7 +470,7 @@ async def test_department_member_id_is_uuid_format(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="member", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -488,7 +488,7 @@ async def test_department_member_joined_at_auto_set(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="member", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -505,7 +505,7 @@ async def test_department_member_duplicate_raises(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="member", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 
@@ -526,7 +526,7 @@ async def test_department_member_cannot_join_two_departments(db_session: AsyncSe
 
     member = await make_user_with_role(
         db_session, organization_id=org.id,
-        email="member@example.com", role_name="employee",
+        email="member@example.com", role_name="member",
         branch_id=dept_a.branch_id,
     )
     db_session.add(member)
@@ -545,7 +545,7 @@ async def test_department_member_leaving_deletes_row(db_session: AsyncSession):
     _, org = await setup_org(db_session)
     department = await setup_department(db_session, org.id)
 
-    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="employee", branch_id=department.branch_id)
+    member = await make_user_with_role(db_session, organization_id=org.id, email="member@example.com", role_name="member", branch_id=department.branch_id)
     db_session.add(member)
     await db_session.flush()
 

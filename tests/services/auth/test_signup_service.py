@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from app.models import RolePermission
+from app.services.auth.token_service import load_user_permissions
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_token
@@ -154,16 +156,22 @@ class TestOrgOwnerSignupHappyPath:
             select(User).where(User.email == "owner3@example.com")
         )
         user = user_result.scalar_one()
-        assert user.role_id == role.id
+        assigned = await db_session.get(Role, user.role_id)
+        assert assigned.id != role.id
+        assert assigned.template_role_id == role.id
+        assert assigned.organization_id == user.organization_id
+        assert assigned.name == RoleName.SUPER_ADMIN
 
     @pytest.mark.asyncio
     async def test_owner_receives_all_permissions_org_wide(
         self, db_session: AsyncSession
     ):
-        await _seed_super_admin_role(db_session)
+        role = await _seed_super_admin_role(db_session)
         perm1 = Permission(name="department.create", category="department", scope="org")
         perm2 = Permission(name="post.delete", category="content", scope="both")
         db_session.add_all([perm1, perm2])
+        await db_session.flush()
+        db_session.add_all([RolePermission(role_id=role.id, permission_id=p.id, scope="org") for p in (perm1, perm2)])
         await db_session.flush()
 
         token = _valid_token("owner4@example.com")
@@ -182,9 +190,9 @@ class TestOrgOwnerSignupHappyPath:
         )
         grants = grants_result.scalars().all()
 
-        assert len(grants) == 2
-        assert all(g.branch_id is None for g in grants)
-        assert all(g.granted_by is None for g in grants)
+        assert grants == []  # no duplicated direct user grants
+        effective = await load_user_permissions(db_session, user.id, user.organization_id)
+        assert {(g.name, g.branch_id) for g in effective} == {("department.create", None), ("post.delete", None)}
 
     @pytest.mark.asyncio
     async def test_creates_password_auth_provider(self, db_session: AsyncSession):
@@ -270,9 +278,11 @@ class TestOrgOwnerSignupHappyPath:
     async def test_access_token_decodes_with_correct_claims(
         self, db_session: AsyncSession
     ):
-        await _seed_super_admin_role(db_session)
+        role = await _seed_super_admin_role(db_session)
         perm = Permission(name="org.deactivate", category="org", scope="org")
         db_session.add(perm)
+        await db_session.flush()
+        db_session.add(RolePermission(role_id=role.id, permission_id=perm.id, scope="org"))
         await db_session.flush()
 
         token = _valid_token("owner9@example.com")
@@ -282,7 +292,7 @@ class TestOrgOwnerSignupHappyPath:
 
         payload = decode_token(result["access_token"])
         assert payload["role"] == RoleName.SUPER_ADMIN
-        assert "org.deactivate" in payload["permissions"]
+        assert {"name": "org.deactivate", "branch_id": None} in payload["permissions"]
 
 
 # ── Validation / error paths ────────────────────────────────────────────────────

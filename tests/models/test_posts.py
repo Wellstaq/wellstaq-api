@@ -33,7 +33,7 @@ from tests.conftest import make_user, make_org_with_owner, make_user_with_role
 
 def make_club(organization_id: str, branch_id: str, **overrides) -> Club:
     defaults = dict(name="Running Club", organization_id=organization_id, branch_id=branch_id)
-    return Club(**{**defaults, **overrides})
+    return Club(category="fitness", **{**defaults, **overrides})
 
 
 def make_post(user_id: str, organization_id: str, **overrides) -> Post:
@@ -109,8 +109,8 @@ async def setup_org(
 ):
     org, owner = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email=email, role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="super_admin"),
     )
     return owner, org
 
@@ -139,7 +139,7 @@ async def setup_user(
     test is specifically about branch assignment.
     """
     overrides.setdefault("email", "member@example.com")
-    role_name = overrides.pop("role_name", "employee")
+    role_name = overrides.pop("role_name", "member")
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,

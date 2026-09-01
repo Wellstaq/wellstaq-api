@@ -50,7 +50,7 @@ def make_device(user_id: str, organization_id: str, **overrides) -> UserDevice:
 
 @pytest.mark.asyncio
 async def test_user_persists(db_session: AsyncSession):
-    org, user = await make_org_with_owner(db_session)
+    org, user = await make_org_with_owner(db_session, with_trial=False)
 
     result = await db_session.execute(select(User).where(User.id == user.id))
     fetched = result.scalar_one()
@@ -62,20 +62,20 @@ async def test_user_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_id_is_valid_uuid(db_session: AsyncSession):
     """ID must be a valid parseable UUID — not just the right string shape."""
-    _, user = await make_org_with_owner(db_session)
+    _, user = await make_org_with_owner(db_session, with_trial=False)
     assert str(UUID(user.id)) == user.id
 
 
 @pytest.mark.asyncio
 async def test_user_timestamps_auto_set(db_session: AsyncSession):
-    _, user = await make_org_with_owner(db_session)
+    _, user = await make_org_with_owner(db_session, with_trial=False)
     assert user.created_at is not None
     assert user.updated_at is not None
 
 
 @pytest.mark.asyncio
 async def test_user_default_status_is_pending(db_session: AsyncSession):
-    _, user = await make_org_with_owner(db_session)
+    _, user = await make_org_with_owner(db_session, with_trial=False)
     assert user.status == "pending"
 
 
@@ -123,7 +123,7 @@ async def test_user_organization_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_duplicate_email_raises(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="first@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="first@example.com")
     )
     db_session.add(make_user(org.id, email="dup@example.com", branch_id=owner.branch_id))
     await db_session.flush()
@@ -138,7 +138,7 @@ async def test_user_duplicate_email_raises(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_optional_fields_nullable(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner-min@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner-min@example.com")
     )
     user = make_user(org.id, email="min@example.com", branch_id=owner.branch_id)
     db_session.add(user)
@@ -159,7 +159,7 @@ async def test_user_optional_fields_nullable(db_session: AsyncSession):
 async def test_user_role_id_nullable(db_session: AsyncSession):
     """role_id is nullable — a user can exist with no role assigned yet."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner-norole@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner-norole@example.com")
     )
     user = make_user(org.id, email="norole@example.com", branch_id=owner.branch_id)
     db_session.add(user)
@@ -172,7 +172,7 @@ async def test_user_role_id_nullable(db_session: AsyncSession):
 async def test_user_invalid_role_id_raises(db_session: AsyncSession):
     """role_id FK must reference a real Role row — phantom UUID raises IntegrityError."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner-badrole@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner-badrole@example.com")
     )
     user = make_user(
         org.id,
@@ -193,7 +193,7 @@ async def test_user_valid_statuses_accepted(db_session: AsyncSession, status: st
     """All four known statuses must be accepted."""
     _, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=f"org-{status}"),
+        with_trial=False, org_kwargs=dict(slug=f"org-{status}"),
         user_kwargs=dict(email=f"{status}@example.com", status=status),
     )
     assert user.status == status
@@ -203,7 +203,7 @@ async def test_user_valid_statuses_accepted(db_session: AsyncSession, status: st
 async def test_user_invalid_status_raises(db_session: AsyncSession):
     """status is constrained to known values — anything else raises."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner-badstatus@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner-badstatus@example.com")
     )
     user = make_user(
         org.id,
@@ -222,7 +222,7 @@ async def test_user_invalid_status_raises(db_session: AsyncSession):
 async def test_organization_deletion_cascades_to_member_users(db_session: AsyncSession):
     """Deleting an org removes every member User row — owner and non-owner."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner@example.com")
     )
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
@@ -245,7 +245,7 @@ async def test_organization_deletion_cascades_to_member_users(db_session: AsyncS
 @pytest.mark.asyncio
 async def test_settings_defaults(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="settings@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="settings@example.com")
     )
     settings = make_settings(user.id, org.id)
     db_session.add(settings)
@@ -266,7 +266,7 @@ async def test_settings_defaults(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_settings_organization_id_required(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="settings-required@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="settings-required@example.com")
     )
     settings = UserSettings(user_id=user.id, organization_id=None)
     db_session.add(settings)
@@ -278,7 +278,7 @@ async def test_settings_organization_id_required(db_session: AsyncSession):
 async def test_settings_one_per_user(db_session: AsyncSession):
     """unique=True on user_id enforces 1-to-1."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="unique@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="unique@example.com")
     )
     db_session.add(make_settings(user.id, org.id))
     await db_session.flush()
@@ -291,7 +291,7 @@ async def test_settings_one_per_user(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_settings_toggle_notifications(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="notif@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="notif@example.com")
     )
     settings = make_settings(
         user.id, org.id, email_notifications=False, push_notifications=False
@@ -306,7 +306,7 @@ async def test_settings_toggle_notifications(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_settings_dark_mode(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="dark@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="dark@example.com")
     )
     settings = make_settings(user.id, org.id, theme="dark")
     db_session.add(settings)
@@ -319,7 +319,7 @@ async def test_settings_dark_mode(db_session: AsyncSession):
 async def test_settings_invalid_theme_raises(db_session: AsyncSession):
     """theme is constrained to 'light' | 'dark'."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="theme-bad@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="theme-bad@example.com")
     )
     settings = make_settings(user.id, org.id, theme="solarized")
     db_session.add(settings)
@@ -330,7 +330,7 @@ async def test_settings_invalid_theme_raises(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_settings_privacy_toggles(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="privacy@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="privacy@example.com")
     )
     settings = make_settings(
         user.id, org.id, public_profile=True, show_wellness_to_team=True
@@ -348,7 +348,7 @@ async def test_settings_privacy_toggles(db_session: AsyncSession):
 async def test_settings_enable_2fa_totp(db_session: AsyncSession):
     """Valid state: 2FA on, method=totp, secret set."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -368,7 +368,7 @@ async def test_settings_enable_2fa_totp(db_session: AsyncSession):
 async def test_settings_2fa_enabled_without_method_raises(db_session: AsyncSession):
     """two_fa_enabled=True requires two_fa_method to be set."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa-no-method@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa-no-method@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -384,7 +384,7 @@ async def test_settings_2fa_enabled_without_method_raises(db_session: AsyncSessi
 async def test_settings_2fa_method_set_but_disabled_raises(db_session: AsyncSession):
     """two_fa_enabled=False with two_fa_method set is inconsistent."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa-method-disabled@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa-method-disabled@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -400,7 +400,7 @@ async def test_settings_2fa_method_set_but_disabled_raises(db_session: AsyncSess
 async def test_settings_2fa_totp_without_secret_raises(db_session: AsyncSession):
     """two_fa_method='totp' requires two_fa_secret to be set."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa-totp-no-secret@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa-totp-no-secret@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -417,7 +417,7 @@ async def test_settings_2fa_totp_without_secret_raises(db_session: AsyncSession)
 async def test_settings_2fa_sms_with_secret_raises(db_session: AsyncSession):
     """two_fa_method='sms' must not have a secret — secret is TOTP-only."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa-sms-secret@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa-sms-secret@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -434,7 +434,7 @@ async def test_settings_2fa_sms_with_secret_raises(db_session: AsyncSession):
 async def test_settings_2fa_invalid_method_raises(db_session: AsyncSession):
     """two_fa_method is constrained to totp | sms | email."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="2fa-bad-method@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="2fa-bad-method@example.com")
     )
     settings = make_settings(
         user.id, org.id,
@@ -456,12 +456,12 @@ async def test_settings_org_mismatch_allowed_at_db_level(db_session: AsyncSessio
     constraint exists."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
     user = make_user(org_a.id, email="mismatch-settings@example.com", branch_id=owner_a.branch_id)
@@ -481,7 +481,7 @@ async def test_settings_org_mismatch_allowed_at_db_level(db_session: AsyncSessio
 async def test_settings_org_scoped_query(db_session: AsyncSession):
     """organization_id enables direct org-wide queries without a JOIN."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="settings-scope-owner@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="settings-scope-owner@example.com")
     )
     member = make_user(
         org.id,
@@ -508,7 +508,7 @@ async def test_settings_org_scoped_query(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_auth_provider_password(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="pwd@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="pwd@example.com")
     )
     provider = make_auth_provider(user.id, org.id, provider="password")
     db_session.add(provider)
@@ -522,7 +522,7 @@ async def test_auth_provider_password(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_auth_provider_organization_id_required(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="auth-required@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="auth-required@example.com")
     )
     provider = UserAuthProvider(user_id=user.id, provider="password", organization_id=None)
     db_session.add(provider)
@@ -533,7 +533,7 @@ async def test_auth_provider_organization_id_required(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_auth_provider_google(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="google@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="google@example.com")
     )
     provider = make_auth_provider(
         user.id, org.id,
@@ -552,7 +552,7 @@ async def test_auth_provider_google(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_auth_provider_multiple_providers_same_user(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="multi@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="multi@example.com")
     )
     db_session.add(make_auth_provider(user.id, org.id, provider="password"))
     db_session.add(
@@ -574,7 +574,7 @@ async def test_auth_provider_multiple_providers_same_user(db_session: AsyncSessi
 async def test_auth_provider_duplicate_raises(db_session: AsyncSession):
     """Same user + same provider blocked by unique index."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="dup_provider@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="dup_provider@example.com")
     )
     db_session.add(
         make_auth_provider(user.id, org.id, provider="google", provider_user_id="g-1")
@@ -594,7 +594,7 @@ async def test_auth_provider_duplicate_raises(db_session: AsyncSession):
 async def test_auth_provider_oauth_without_provider_user_id_raises(db_session: AsyncSession):
     """OAuth provider must supply a provider_user_id (sub claim)."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="oauth-no-sub@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="oauth-no-sub@example.com")
     )
     provider = make_auth_provider(
         user.id, org.id,
@@ -610,7 +610,7 @@ async def test_auth_provider_oauth_without_provider_user_id_raises(db_session: A
 async def test_auth_provider_password_with_provider_user_id_raises(db_session: AsyncSession):
     """Password auth must not have a provider_user_id."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="pwd-sub@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="pwd-sub@example.com")
     )
     provider = make_auth_provider(
         user.id, org.id,
@@ -626,7 +626,7 @@ async def test_auth_provider_password_with_provider_user_id_raises(db_session: A
 async def test_auth_provider_password_with_access_token_raises(db_session: AsyncSession):
     """Password rows must not store OAuth tokens."""
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="pwd-token@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="pwd-token@example.com")
     )
     provider = make_auth_provider(
         user.id, org.id,
@@ -646,12 +646,12 @@ async def test_auth_provider_org_mismatch_allowed_at_db_level(db_session: AsyncS
     organization_id; service layer must prevent it."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
     user = make_user(org_a.id, email="mismatch-auth@example.com", branch_id=owner_a.branch_id)
@@ -670,7 +670,7 @@ async def test_auth_provider_org_mismatch_allowed_at_db_level(db_session: AsyncS
 @pytest.mark.asyncio
 async def test_auth_providers_org_scoped_query(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="org-scope-owner@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="org-scope-owner@example.com")
     )
     member = make_user(
         org.id,
@@ -699,7 +699,7 @@ async def test_auth_providers_org_scoped_query(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_device_persists(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="device@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="device@example.com")
     )
     device = make_device(user.id, org.id)
     db_session.add(device)
@@ -714,7 +714,7 @@ async def test_device_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_device_organization_id_required(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="device-required@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="device-required@example.com")
     )
     device = UserDevice(user_id=user.id, organization_id=None)
     db_session.add(device)
@@ -725,7 +725,7 @@ async def test_device_organization_id_required(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_device_revoke(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="revoke@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="revoke@example.com")
     )
     device = make_device(user.id, org.id)
     db_session.add(device)
@@ -743,7 +743,7 @@ async def test_device_revoke(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_multiple_devices(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="multidevice@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="multidevice@example.com")
     )
     db_session.add(make_device(user.id, org.id, device_name="Chrome on macOS"))
     db_session.add(make_device(user.id, org.id, device_name="iPhone 15"))
@@ -761,7 +761,7 @@ async def test_user_multiple_devices(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_device_optional_fields_nullable(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="mindevice@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="mindevice@example.com")
     )
     device = UserDevice(user_id=user.id, organization_id=org.id)
     db_session.add(device)
@@ -780,12 +780,12 @@ async def test_device_org_mismatch_allowed_at_db_level(db_session: AsyncSession)
     """Same documented gap as UserSettings and UserAuthProvider."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a", "business_name": "Org A"},
+        with_trial=False, org_kwargs={"slug": "org-a", "business_name": "Org A"},
         user_kwargs={"email": "owner_a@example.com"},
     )
     org_b, _ = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Org B"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Org B"},
         user_kwargs={"email": "owner_b@example.com"},
     )
     user = make_user(org_a.id, email="mismatch-device@example.com", branch_id=owner_a.branch_id)
@@ -804,7 +804,7 @@ async def test_device_org_mismatch_allowed_at_db_level(db_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_devices_org_scoped_query(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="org-scope-device-owner@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="org-scope-device-owner@example.com")
     )
     member = make_user(
         org.id,
@@ -833,7 +833,7 @@ async def test_devices_org_scoped_query(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_settings_relationship(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="rel_settings@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="rel_settings@example.com")
     )
     db_session.add(make_settings(user.id, org.id))
     await db_session.flush()
@@ -846,7 +846,7 @@ async def test_user_settings_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_organization_all_user_settings_relationship(db_session: AsyncSession):
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="rel-org-settings-owner@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="rel-org-settings-owner@example.com")
     )
     member = make_user(
         org.id,
@@ -868,7 +868,7 @@ async def test_organization_all_user_settings_relationship(db_session: AsyncSess
 @pytest.mark.asyncio
 async def test_user_devices_relationship(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="rel_devices@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="rel_devices@example.com")
     )
     db_session.add(make_device(user.id, org.id, device_name="Chrome on macOS"))
     db_session.add(make_device(user.id, org.id, device_name="iPhone 15"))
@@ -881,7 +881,7 @@ async def test_user_devices_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_auth_providers_relationship(db_session: AsyncSession):
     org, user = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="rel_auth@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="rel_auth@example.com")
     )
     db_session.add(make_auth_provider(user.id, org.id, provider="password"))
     db_session.add(
@@ -898,7 +898,7 @@ async def test_user_delete_cascades_to_children(db_session: AsyncSession):
     """Deleting a non-owner user cascades to settings, devices, and auth
     providers via user_id FK."""
     org, owner = await make_org_with_owner(
-        db_session, user_kwargs=dict(email="owner-for-cascade@example.com")
+        db_session, with_trial=False, user_kwargs=dict(email="owner-for-cascade@example.com")
     )
     user = make_user(org.id, email="cascade@example.com", branch_id=owner.branch_id)
     db_session.add(user)

@@ -127,8 +127,8 @@ async def setup_org(
     below didn't need to change."""
     org, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email=email, role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="super_admin"),
     )
     return user, org
 
@@ -140,7 +140,7 @@ async def make_member(
     now REQUIRED (User.branch_id is NOT NULL) — pass the org's home
     branch (e.g. owner.branch_id from setup_org())."""
     overrides.setdefault("email", "member@example.com")
-    role_name = overrides.pop("role_name", "employee")
+    role_name = overrides.pop("role_name", "member")
     user = await make_user_with_role(
         db_session,
         organization_id=organization_id,

@@ -26,7 +26,8 @@ from app.services.branch.update_branch import (
     edit_branch,
     unassign_branch_manager,
 )
-from tests.conftest import make_org_with_owner, make_user_with_role
+from tests.conftest import make_org_with_owner, make_user_with_role, get_or_create_system_role
+from app.services.organization_roles import ensure_organization_roles, ensure_branch_roles
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -38,6 +39,9 @@ async def _make_branch(
     manager_id: str | None = None,
     is_headquarters: bool = False,
 ) -> Branch:
+    for name_of_role in ("member", "branch_manager"):
+        await get_or_create_system_role(db_session, name_of_role)
+    await ensure_organization_roles(db_session, organization_id)
     branch = Branch(
         organization_id=organization_id,
         name=name,
@@ -45,6 +49,8 @@ async def _make_branch(
         is_headquarters=is_headquarters,
     )
     db_session.add(branch)
+    await db_session.flush()
+    await ensure_branch_roles(db_session, organization_id, branch.id)
     await db_session.flush()
     return branch
 
@@ -504,6 +510,7 @@ class TestAssignBranchManager:
     async def test_assigns_manager_successfully(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        owner = await _make_user(db_session, org.id, "manager@example.com", branch.id)
 
         result = await assign_branch_manager(
             session=db_session,
@@ -518,6 +525,7 @@ class TestAssignBranchManager:
     async def test_sets_branch_manager_id(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        owner = await _make_user(db_session, org.id, "manager@example.com", branch.id)
 
         await assign_branch_manager(
             session=db_session,
@@ -533,6 +541,7 @@ class TestAssignBranchManager:
     async def test_returns_updated_branch(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
+        owner = await _make_user(db_session, org.id, "manager@example.com", branch.id)
 
         result = await assign_branch_manager(
             session=db_session,

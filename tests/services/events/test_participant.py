@@ -9,14 +9,14 @@ Coverage:
       - returns an EventParticipant with correct fields (self-join)
       - sets invited_at and status="invited" when is_invite=True
       - sets invited_at=None and status from initial_status when is_invite=False
-      - default initial_status is "pending"
+      - self-join is accepted; invitations remain invited until explicit join
 
     Not-found / permission errors
       - raises 404 when event not found
       - raises 404 when event belongs to a different organization
       - raises 404 when user not found
       - raises 404 when user belongs to a different organization
-      - raises 403 when user's branch differs from event's branch
+      - allows discovery/join across branches within the same organization
       - raises 409 when user is already a participant
 
   update_participant_status()
@@ -146,6 +146,27 @@ async def _join(
 # ── join_event: happy path ─────────────────────────────────────────────────────
 
 class TestJoinEventHappyPath:
+    @pytest.mark.asyncio
+    async def test_invitation_notifies_then_explicit_join_accepts_same_row(self, db_session):
+        from app.models import Notification
+        from app.services.event.get_event import get_event
+        org, owner = await make_org_with_owner(db_session)
+        event = await _make_event(db_session, org.id, owner.branch_id, owner.id)
+        invitee = await _make_user_in_branch(db_session, org.id, owner.branch_id, "invitee@example.com")
+        invitation = await _join(db_session, org.id, event.id, invitee.id, is_invite=True, inviter_id=owner.id)
+        invitation_id = invitation.id
+        assert invitation.status == "invited"
+        _, before = await get_event(session=db_session, organization_id=org.id, event_id=event.id)
+        assert before == 0
+        notification = (await db_session.execute(select(Notification).where(Notification.user_id == invitee.id))).scalar_one()
+        assert notification.reference_id == event.id
+        assert notification.reference_type == "event"
+        joined = await _join(db_session, org.id, event.id, invitee.id)
+        assert joined.id == invitation_id
+        assert joined.status == "accepted"
+        _, after = await get_event(session=db_session, organization_id=org.id, event_id=event.id)
+        assert after == 1
+
 
     @pytest.mark.asyncio
     async def test_returns_event_participant(self, db_session: AsyncSession):
@@ -189,7 +210,7 @@ class TestJoinEventHappyPath:
         assert participant.invited_at is None
 
     @pytest.mark.asyncio
-    async def test_default_initial_status_is_pending(self, db_session: AsyncSession):
+    async def test_self_join_status_is_accepted(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         event = await _make_event(db_session, org.id, branch.id, owner.id)
@@ -198,10 +219,10 @@ class TestJoinEventHappyPath:
 
         participant = await _join(db_session, org.id, event.id, owner.id)
 
-        assert participant.status == "pending"
+        assert participant.status == "accepted"
 
     @pytest.mark.asyncio
-    async def test_custom_initial_status_is_respected(self, db_session: AsyncSession):
+    async def test_invitation_does_not_automatically_accept(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         event = await _make_event(db_session, org.id, branch.id, owner.id)
@@ -209,10 +230,11 @@ class TestJoinEventHappyPath:
         await db_session.flush()
 
         participant = await _join(
-            db_session, org.id, event.id, owner.id, initial_status="accepted"
+            db_session, org.id, event.id, owner.id, is_invite=True, inviter_id=owner.id
         )
 
-        assert participant.status == "accepted"
+        assert participant.status == "invited"
+        assert participant.invited_at is not None
 
     @pytest.mark.asyncio
     async def test_attended_defaults_to_false(self, db_session: AsyncSession):
@@ -325,7 +347,7 @@ class TestJoinEventErrors:
         assert "User not found" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
-    async def test_raises_403_when_user_branch_differs_from_event_branch(
+    async def test_same_organization_user_can_join_from_another_branch(
         self, db_session: AsyncSession
     ):
         org, owner = await make_org_with_owner(db_session)
@@ -337,11 +359,9 @@ class TestJoinEventErrors:
             db_session, org.id, user_branch.id, "outsider@example.com"
         )
 
-        with pytest.raises(HTTPException) as exc_info:
-            await _join(db_session, org.id, event.id, other_user.id)
-
-        assert exc_info.value.status_code == 403
-        assert "branch" in str(exc_info.value.detail).lower()
+        participant = await _join(db_session, org.id, event.id, other_user.id)
+        assert participant.user_id == other_user.id
+        assert participant.status == "accepted"
 
     @pytest.mark.asyncio
     async def test_raises_409_when_user_already_a_participant(
@@ -359,7 +379,7 @@ class TestJoinEventErrors:
             await _join(db_session, org.id, event.id, owner.id)
 
         assert exc_info.value.status_code == 409
-        assert "already a participant" in str(exc_info.value.detail)
+        assert "already has an RSVP" in str(exc_info.value.detail)
 
 
 # ── update_participant_status: happy path ──────────────────────────────────────

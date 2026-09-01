@@ -73,7 +73,7 @@ async def _make_subscription(
 async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwargs):
     """make_org_with_owner() plus an active subscription, required by
     create_branch()'s plan-limit check (max_branches)."""
-    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, **org_owner_kwargs)
     plan = await _make_plan(db_session)
     await _make_subscription(db_session, org.id, plan.id)
     return org, owner

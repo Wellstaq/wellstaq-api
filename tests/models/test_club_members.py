@@ -48,7 +48,7 @@ async def make_branch(
 
 def make_club(organization_id: str, branch_id: str, **overrides) -> Club:
     defaults = dict(name="Running Club", organization_id=organization_id, branch_id=branch_id)
-    return Club(**{**defaults, **overrides})
+    return Club(category="fitness", **{**defaults, **overrides})
 
 
 def make_membership(club_id: str, user_id: str, **overrides) -> ClubMember:
@@ -71,7 +71,7 @@ async def setup_club(
 
 @pytest.mark.asyncio
 async def test_club_member_persists(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -93,7 +93,7 @@ async def test_club_member_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_club_member_id_is_uuid_format(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -112,7 +112,7 @@ async def test_club_member_id_is_uuid_format(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_club_member_joined_at_auto_set(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -130,7 +130,7 @@ async def test_club_member_joined_at_auto_set(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_club_member_duplicate_raises(db_session: AsyncSession):
     """A user can only join a given club once — UniqueConstraint(club_id, user_id)."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -154,7 +154,7 @@ async def test_one_user_can_join_multiple_clubs(db_session: AsyncSession):
     UniqueConstraint(club_id, user_id) — a user CAN belong to many
     clubs at once; only re-joining the SAME club twice is blocked.
     """
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")
@@ -184,7 +184,7 @@ async def test_user_can_leave_one_club_while_staying_in_another(db_session: Asyn
     one club is just deleting that one ClubMember row — it has no
     effect on the user's other memberships.
     """
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")
@@ -211,7 +211,7 @@ async def test_user_can_leave_one_club_while_staying_in_another(db_session: Asyn
 
 @pytest.mark.asyncio
 async def test_club_can_have_multiple_members(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -235,7 +235,7 @@ async def test_club_can_have_multiple_members(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_club_member_club_fk_must_exist(db_session: AsyncSession):
     """club_id must reference a real club."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
 
     member = make_user(org.id, email="member@example.com", branch_id=branch.id)
@@ -254,7 +254,7 @@ async def test_club_member_club_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_club_member_user_fk_must_exist(db_session: AsyncSession):
     """user_id must reference a real user."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -270,7 +270,7 @@ async def test_club_member_user_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_club_delete_cascades_to_memberships(db_session: AsyncSession):
     """Deleting a club removes all its membership rows."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -293,7 +293,7 @@ async def test_club_delete_cascades_to_memberships(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_delete_cascades_to_memberships(db_session: AsyncSession):
     """Deleting a user removes all their club membership rows."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -319,7 +319,7 @@ async def test_user_delete_cascades_to_memberships(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_leaving_club_deletes_row(db_session: AsyncSession):
     """Leaving a club = deleting the membership row."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -347,7 +347,7 @@ async def test_leaving_club_deletes_row(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_club_member_club_relationship(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -366,7 +366,7 @@ async def test_club_member_club_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_club_member_user_relationship(db_session: AsyncSession):
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -386,7 +386,7 @@ async def test_club_member_user_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_club_members_relationship(db_session: AsyncSession):
     """club.members loads all ClubMember rows for that club."""
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club = await setup_club(db_session, org.id, branch.id)
 
@@ -410,7 +410,7 @@ async def test_user_club_memberships_relationship_shows_all_clubs(db_session: As
     A user belonging to multiple clubs simultaneously must see ALL of
     them via user.club_memberships — not just the most recent one.
     """
-    org, _ = await make_org_with_owner(db_session)
+    org, _ = await make_org_with_owner(db_session, with_trial=False)
     branch = await make_branch(db_session, org.id)
     club_a = await setup_club(db_session, org.id, branch.id, name="Running Club")
     club_b = await setup_club(db_session, org.id, branch.id, name="Book Club")

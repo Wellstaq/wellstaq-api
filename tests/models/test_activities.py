@@ -67,7 +67,7 @@ def make_activity(user_id: str, organization_id: str, **overrides) -> UserActivi
 
 @pytest.mark.asyncio
 async def test_priority_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     priority = make_priority(owner.id)
     db_session.add(priority)
@@ -81,7 +81,7 @@ async def test_priority_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_can_have_multiple_ranked_priorities(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_priority(owner.id, priority="reduce_stress", rank=1))
     db_session.add(make_priority(owner.id, priority="build_energy", rank=2))
@@ -106,7 +106,7 @@ async def test_priority_user_fk_must_exist(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_priority_rank_must_be_positive(db_session: AsyncSession):
     """CheckConstraint("rank > 0") — rejects zero and negative ranks."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_priority(owner.id, rank=0))
     with pytest.raises(IntegrityError):
@@ -115,7 +115,7 @@ async def test_priority_rank_must_be_positive(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_priority_negative_rank_rejected(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_priority(owner.id, rank=-100))
     with pytest.raises(IntegrityError):
@@ -130,7 +130,7 @@ async def test_user_delete_cascades_to_priorities(db_session: AsyncSession):
     delete this priority row as a side effect of the org/owner cascade,
     not because of UserPriority.user_id's own CASCADE, which is what
     this test is actually meant to isolate and verify."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
@@ -149,7 +149,7 @@ async def test_user_delete_cascades_to_priorities(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_priority_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     priority = make_priority(owner.id)
     db_session.add(priority)
@@ -162,7 +162,7 @@ async def test_priority_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_priorities_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_priority(owner.id, priority="reduce_stress", rank=1))
     db_session.add(make_priority(owner.id, priority="build_energy", rank=2))
@@ -176,7 +176,7 @@ async def test_user_priorities_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_checkin_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     checkin = make_checkin(owner.id)
     db_session.add(checkin)
@@ -193,7 +193,7 @@ async def test_checkin_persists(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_user_cannot_checkin_twice_same_day(db_session: AsyncSession):
     """Unique constraint on (user_id, checkin_date)."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     today = date(2026, 6, 20)
     db_session.add(make_checkin(owner.id, checkin_date=today))
@@ -206,7 +206,7 @@ async def test_user_cannot_checkin_twice_same_day(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_can_checkin_on_different_days(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_checkin(owner.id, checkin_date=date(2026, 6, 19)))
     db_session.add(make_checkin(owner.id, checkin_date=date(2026, 6, 20)))
@@ -232,7 +232,7 @@ async def test_checkin_vocabulary_rejects_invalid_value(db_session: AsyncSession
     """CheckConstraint restricts mood/energy_level/stress_level to the
     fixed good|bad|stressed|tired vocabulary — dirty variants like
     'Good' or 'GOOD' must be rejected at the DB layer."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_checkin(owner.id, **{field: "Good"}))
     with pytest.raises(IntegrityError):
@@ -242,7 +242,7 @@ async def test_checkin_vocabulary_rejects_invalid_value(db_session: AsyncSession
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", ["good", "bad", "stressed", "tired"])
 async def test_checkin_vocabulary_accepts_valid_values(db_session: AsyncSession, value: str):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(
         make_checkin(owner.id, mood=value, energy_level=value, stress_level=value)
@@ -254,7 +254,7 @@ async def test_checkin_vocabulary_accepts_valid_values(db_session: AsyncSession,
 async def test_user_delete_cascades_to_checkins(db_session: AsyncSession):
     """Deletes a non-owner member — see test_user_delete_cascades_to_priorities
     for why deleting the owner directly would not isolate this cascade."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
@@ -273,7 +273,7 @@ async def test_user_delete_cascades_to_checkins(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_checkin_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     checkin = make_checkin(owner.id)
     db_session.add(checkin)
@@ -286,7 +286,7 @@ async def test_checkin_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_user_daily_checkins_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_checkin(owner.id, checkin_date=date(2026, 6, 19)))
     db_session.add(make_checkin(owner.id, checkin_date=date(2026, 6, 20)))
@@ -300,7 +300,7 @@ async def test_user_daily_checkins_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_feed_entry_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(owner.id, org.id)
     db_session.add(activity)
@@ -319,7 +319,7 @@ async def test_activity_feed_entry_persists(db_session: AsyncSession):
 async def test_activity_metadata_column_name_is_metadata(db_session: AsyncSession):
     """Python attribute is activity_metadata; underlying DB column is
     literally named 'metadata' (avoids colliding with Base.metadata)."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(owner.id, org.id)
     db_session.add(activity)
@@ -336,7 +336,7 @@ async def test_activity_metadata_column_name_is_metadata(db_session: AsyncSessio
 @pytest.mark.asyncio
 async def test_activity_feed_organization_required(db_session: AsyncSession):
     """organization_id is NOT NULL per decision — every activity has an org."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = UserActivityFeed(
         user_id=owner.id,
@@ -350,7 +350,7 @@ async def test_activity_feed_organization_required(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_feed_user_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(
         user_id="00000000-0000-0000-0000-000000000000",
@@ -363,7 +363,7 @@ async def test_activity_feed_user_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_feed_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(
         user_id=owner.id,
@@ -387,7 +387,7 @@ async def test_activity_feed_reference_pairing_rejects_mismatch(
 ):
     """CheckConstraint — reference_type and reference_id must be both
     NULL or both set, never one without the other."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(
         owner.id,
@@ -404,7 +404,7 @@ async def test_activity_feed_reference_pairing_rejects_mismatch(
 async def test_activity_feed_reference_pairing_allows_both_null(db_session: AsyncSession):
     """A generic activity with no polymorphic reference at all is valid —
     e.g. a non-referential audit-style entry."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(
         owner.id, org.id, reference_type=None, reference_id=None
@@ -419,7 +419,7 @@ async def test_user_delete_cascades_to_activity_feed(db_session: AsyncSession):
     for why deleting the owner directly would not isolate this cascade
     (UserActivityFeed.user_id's own CASCADE) from the separate
     owner_id/org cascade."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
     await db_session.flush()
@@ -440,7 +440,7 @@ async def test_user_delete_cascades_to_activity_feed(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_organization_delete_cascades_to_activity_feed(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(owner.id, org.id)
     db_session.add(activity)
@@ -458,7 +458,7 @@ async def test_organization_delete_cascades_to_activity_feed(db_session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_activity_feed_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(owner.id, org.id)
     db_session.add(activity)
@@ -471,7 +471,7 @@ async def test_activity_feed_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_activity_feed_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     activity = make_activity(owner.id, org.id)
     db_session.add(activity)
@@ -485,7 +485,7 @@ async def test_activity_feed_organization_relationship(db_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_user_activity_feed_relationship(db_session: AsyncSession):
     """user.activity_feed loads all activity rows for that user."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_activity(owner.id, org.id, activity_type="joined_club"))
     db_session.add(make_activity(owner.id, org.id, activity_type="created_post"))
@@ -498,7 +498,7 @@ async def test_user_activity_feed_relationship(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_organization_activity_feed_relationship(db_session: AsyncSession):
     """org.activity_feed loads all activity rows scoped to that org."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     user2 = make_user(org.id, email="other@example.com", branch_id=owner.branch_id)
     db_session.add(user2)

@@ -5,6 +5,13 @@ Uses a separate in-memory SQLite database so tests never touch
 the real app.db file. Each test session starts with a clean slate.
 """
 
+import os
+import socket
+
+# Set before importing application settings: accidental application sessions
+# must never resolve to the developer's database.
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -14,6 +21,7 @@ from app.core.database import get_db
 from app.models.base import Base
 from app.models import Branch, Organization, Role, User
 import app.core.redis as redis_module
+from tests.fakes import MemoryRedis
 from app.models.payment import SubscriptionPlan
 from app.services.payment import start_trial
 
@@ -52,14 +60,26 @@ async def create_tables():
         await conn.execute(text("PRAGMA foreign_keys=OFF"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.execute(text("PRAGMA foreign_keys=ON"))
+    # aiosqlite owns worker threads; close the engine so pytest exits after
+    # reporting results instead of leaving an idle process behind.
+    await test_engine.dispose()
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncSession:
-    """Fresh DB session per test, rolled back after each test."""
-    async with TestSessionLocal() as session:
-        await session.execute(text("PRAGMA foreign_keys=ON"))
-        yield session
-        await session.rollback()
+    """An outer transaction isolates even tests that explicitly commit."""
+    async with test_engine.connect() as connection:
+        # SQLite needs an explicit BEGIN before nested savepoints; otherwise
+        # releasing a savepoint can commit the test's data permanently.
+        await connection.execute(text("BEGIN"))
+        async with AsyncSession(
+            bind=connection, expire_on_commit=False, autoflush=False,
+            join_transaction_mode="create_savepoint",
+        ) as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+        await connection.rollback()
 
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession) -> AsyncClient:
@@ -67,6 +87,8 @@ async def client(db_session: AsyncSession) -> AsyncClient:
     HTTP test client that uses the test DB session.
     Overrides the real get_db dependency with the test one.
     """
+    from app.main import app
+
     async def override_get_db():
         yield db_session
 
@@ -102,9 +124,10 @@ async def client(db_session: AsyncSession) -> AsyncClient:
 
 # ── Role resolution ────────────────────────────────────────────────────────
 #
-# User.role_id is a FK to roles.id. System roles are platform-seeded,
-# read-only, and shared across all orgs (is_system=True,
-# organization_id=NULL, branch_id=NULL).
+# User.role_id is the org-role slot. Global system templates are seeded
+# with is_system=True and no organization or branch. Real onboarding
+# provisions organization/branch copies; tests of that behavior call
+# ensure_organization_roles/ensure_branch_roles explicitly.
 #
 # The test DB has no seed data loaded, so get_or_create_system_role()
 # fetches a system Role by name if it already exists in this session,
@@ -177,7 +200,7 @@ async def make_user_with_role(
     db_session: AsyncSession,
     organization_id: str,
     *,
-    role_name: str = "employee",
+    role_name: str = "member",
     **overrides,
 ) -> User:
     if "role_id" not in overrides:
@@ -196,6 +219,7 @@ async def make_org_with_owner(
     *,
     org_kwargs: dict | None = None,
     user_kwargs: dict | None = None,
+    with_trial: bool = True,
 ) -> tuple[Organization, User]:
     """Creates an Organization + Headquarters Branch + owner User,
     resolving the circular FK the same way the real signup transaction
@@ -209,6 +233,8 @@ async def make_org_with_owner(
         member = make_user(org.id, email="...", branch_id=owner.branch_id)
 
     org_kwargs:  overrides for Organization (business_name, slug, etc.)
+    with_trial: disable for model-only tests or suites that construct their
+        own subscription, since there can be only one subscription per org.
     user_kwargs: overrides for the owner User (email, role_name, etc.)
         role_name is resolved to a system Role's id via
         make_user_with_role(). Pass role_id directly if the owner needs
@@ -232,9 +258,9 @@ async def make_org_with_owner(
     await db_session.flush()  # hq_branch.id available
 
     # ── Step 3: owner user ─────────────────────────────────────────────────────
-    owner_defaults = dict(role_name="overall_manager", email="owner@example.com")
+    owner_defaults = dict(role_name="super_admin", email="owner@example.com")
     merged = {**owner_defaults, **user_kwargs}
-    role_name = merged.pop("role_name", "overall_manager")
+    role_name = merged.pop("role_name", "super_admin")
 
     # branch_id defaults to HQ; tests may override by passing branch_id in
     # user_kwargs (e.g. to assign the owner to a different pre-existing branch).
@@ -257,27 +283,29 @@ async def make_org_with_owner(
     # active subscription. Real signups always have one (org_owner_signup()
     # calls start_trial() itself); this helper bypasses that flow, so it
     # must replicate the same side effect here.
-    await get_or_create_trial_plan(db_session)
-    await start_trial(session=db_session, organization_id=org.id)
+    if with_trial:
+        await get_or_create_trial_plan(db_session)
+        await start_trial(session=db_session, organization_id=org.id)
 
     return org, owner
 
 
 @pytest.fixture(autouse=True)
-async def _reset_redis_client():
-    """
-    get_redis() caches its client in a module-level global tied to
-    whatever event loop was active when it was first created. Since
-    pytest-asyncio gives each test its own event loop, a client built
-    in one test is unusable (and raises 'Event loop is closed') in the
-    next. Force a fresh client per test so it always binds to the
-    current test's loop.
-    """
-    redis_module._redis_client = None
-    yield
-    if redis_module._redis_client is not None:
-        await redis_module._redis_client.aclose()
-        redis_module._redis_client = None
+def memory_redis(monkeypatch):
+    """One deterministic Redis store per test; no live Redis connections."""
+    client = MemoryRedis()
+    monkeypatch.setattr(redis_module, "_redis_client", client)
+    return client
+
+
+@pytest.fixture(autouse=True)
+def no_external_network(monkeypatch):
+    """Tests must mock gateways explicitly instead of contacting real services."""
+    def reject_connection(*args, **kwargs):
+        raise AssertionError("External network is disabled in tests; mock the service boundary.")
+
+    monkeypatch.setattr(socket.socket, "connect", reject_connection)
+    monkeypatch.setattr(socket.socket, "connect_ex", reject_connection)
     
 
 

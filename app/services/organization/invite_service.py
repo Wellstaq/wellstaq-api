@@ -402,7 +402,7 @@ async def _send_invite_email(
     expires_days: int,
 ) -> None:
     """
-    Send the invite email via SendGrid.
+    Send the invite email via transactional email.
     Raises AuthError on delivery failure so the caller can rollback —
     an undelivered invite should leave no DB trace.
     """

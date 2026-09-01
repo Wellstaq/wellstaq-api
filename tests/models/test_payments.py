@@ -100,7 +100,7 @@ async def setup_org(db_session, email="owner@example.com", slug="acme-corp"):
     """Thin wrapper — returns (user, org)."""
     org, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
+        with_trial=False, org_kwargs=dict(slug=slug),
         user_kwargs=dict(email=email),
     )
     return user, org

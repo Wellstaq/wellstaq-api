@@ -30,7 +30,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
-from app.models.club import Club
+from app.models.club import Club, ClubMember
 from app.services.club.get_club import get_branch_clubs, get_club, get_clubs
 from app.services.errors import AppError
 
@@ -65,7 +65,7 @@ async def _make_club(
         member_count=0,
     )
     club = Club(
-        organization_id=organization_id,
+        category="fitness", organization_id=organization_id,
         branch_id=branch_id,
         created_by=created_by,
         name=name,
@@ -93,7 +93,7 @@ class TestGetClub:
 
     @pytest.mark.asyncio
     async def test_raises_404_when_club_does_not_exist(self, db_session: AsyncSession):
-        org, _owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
 
         with pytest.raises(AppError) as exc_info:
             await get_club(
@@ -129,6 +129,19 @@ class TestGetClub:
 
 class TestGetClubs:
     @pytest.mark.asyncio
+    async def test_overview_reports_membership_without_loading_branch_first(self, db_session):
+        org, owner = await make_org_with_owner(db_session)
+        mine = await _make_club(db_session, organization_id=org.id, branch_id=owner.branch_id, created_by=owner.id, name="My club")
+        other = await _make_club(db_session, organization_id=org.id, branch_id=owner.branch_id, created_by=owner.id, name="Other club")
+        db_session.add(ClubMember(club_id=mine.id, user_id=owner.id))
+        await db_session.flush()
+        overview, total = await get_clubs(session=db_session, organization_id=org.id, requesting_user_id=owner.id)
+        assert total == 2
+        assert {club.id: member for club, member in overview} == {mine.id: True, other.id: False}
+        branch, _ = await get_branch_clubs(session=db_session, organization_id=org.id, branch_id=owner.branch_id, requesting_user_id=owner.id)
+        assert {club.id: member for club, member in branch} == {mine.id: True, other.id: False}
+
+    @pytest.mark.asyncio
     async def test_returns_clubs_across_branches_in_org(self, db_session: AsyncSession):
         org, owner = await make_org_with_owner(db_session)
         branch_a = await _make_branch(db_session, org.id, name="Branch A")
@@ -142,10 +155,10 @@ class TestGetClubs:
             created_by=owner.id, name="Club B",
         )
 
-        clubs, total = await get_clubs(session=db_session, organization_id=org.id)
+        clubs, total = await get_clubs(session=db_session, organization_id=org.id, requesting_user_id=owner.id)
 
         assert total == 2
-        assert {c.name for c in clubs} == {"Club A", "Club B"}
+        assert {c.name for c, _member in clubs} == {"Club A", "Club B"}
 
     @pytest.mark.asyncio
     async def test_excludes_clubs_from_other_orgs(self, db_session: AsyncSession):
@@ -168,10 +181,10 @@ class TestGetClubs:
             created_by=owner_b.id, name="Org B Club",
         )
 
-        clubs, total = await get_clubs(session=db_session, organization_id=org_a.id)
+        clubs, total = await get_clubs(session=db_session, organization_id=org_a.id, requesting_user_id=owner_a.id)
 
         assert total == 1
-        assert clubs[0].name == "Org A Club"
+        assert clubs[0][0].name == "Org A Club"
 
     @pytest.mark.asyncio
     async def test_filters_by_privacy(self, db_session: AsyncSession):
@@ -187,11 +200,11 @@ class TestGetClubs:
         )
 
         clubs, total = await get_clubs(
-            session=db_session, organization_id=org.id, privacy="private"
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, privacy="private"
         )
 
         assert total == 1
-        assert clubs[0].name == "Private Club"
+        assert clubs[0][0].name == "Private Club"
 
     @pytest.mark.asyncio
     async def test_pagination_offset_and_limit(self, db_session: AsyncSession):
@@ -204,15 +217,15 @@ class TestGetClubs:
             )
 
         page_1, total = await get_clubs(
-            session=db_session, organization_id=org.id, offset=0, limit=2
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, offset=0, limit=2
         )
         page_2, _ = await get_clubs(
-            session=db_session, organization_id=org.id, offset=2, limit=2
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, offset=2, limit=2
         )
 
         assert total == 4
-        assert [c.name for c in page_1] == ["Alpha", "Bravo"]
-        assert [c.name for c in page_2] == ["Charlie", "Delta"]
+        assert [c.name for c, _member in page_1] == ["Alpha", "Bravo"]
+        assert [c.name for c, _member in page_2] == ["Charlie", "Delta"]
 
     @pytest.mark.asyncio
     async def test_total_reflects_filtered_count_not_page_size(
@@ -227,7 +240,7 @@ class TestGetClubs:
             )
 
         clubs, total = await get_clubs(
-            session=db_session, organization_id=org.id, offset=0, limit=2
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, offset=0, limit=2
         )
 
         assert len(clubs) == 2
@@ -235,9 +248,9 @@ class TestGetClubs:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_org_has_no_clubs(self, db_session: AsyncSession):
-        org, _owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session)
 
-        clubs, total = await get_clubs(session=db_session, organization_id=org.id)
+        clubs, total = await get_clubs(session=db_session, organization_id=org.id, requesting_user_id=owner.id)
 
         assert clubs == []
         assert total == 0
@@ -259,11 +272,11 @@ class TestGetBranchClubs:
         )
 
         clubs, total = await get_branch_clubs(
-            session=db_session, organization_id=org.id, branch_id=branch_a.id
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, branch_id=branch_a.id
         )
 
         assert total == 1
-        assert clubs[0].name == "Club A"
+        assert clubs[0][0].name == "Club A"
 
     @pytest.mark.asyncio
     async def test_excludes_clubs_from_other_branches(self, db_session: AsyncSession):
@@ -276,7 +289,7 @@ class TestGetBranchClubs:
         )
 
         clubs, total = await get_branch_clubs(
-            session=db_session, organization_id=org.id, branch_id=branch_a.id
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, branch_id=branch_a.id
         )
 
         assert clubs == []
@@ -296,12 +309,12 @@ class TestGetBranchClubs:
         )
 
         clubs, total = await get_branch_clubs(
-            session=db_session, organization_id=org.id, branch_id=branch.id,
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, branch_id=branch.id,
             privacy="public",
         )
 
         assert total == 1
-        assert clubs[0].name == "Public Club"
+        assert clubs[0][0].name == "Public Club"
 
     @pytest.mark.asyncio
     async def test_pagination_offset_and_limit(self, db_session: AsyncSession):
@@ -314,9 +327,9 @@ class TestGetBranchClubs:
             )
 
         page_1, total = await get_branch_clubs(
-            session=db_session, organization_id=org.id, branch_id=branch.id,
+            requesting_user_id=owner.id, session=db_session, organization_id=org.id, branch_id=branch.id,
             offset=0, limit=2,
         )
 
         assert total == 3
-        assert [c.name for c in page_1] == ["Alpha", "Bravo"]
+        assert [c.name for c, _member in page_1] == ["Alpha", "Bravo"]

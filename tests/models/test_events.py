@@ -45,7 +45,7 @@ def make_participant(event_id: str, user_id: str, **overrides) -> EventParticipa
 async def setup_org(db_session: AsyncSession) -> tuple[User, Organization]:
     """Thin wrapper around the shared make_org_with_owner() factory.
     Preserves this file's original (user, org) return order."""
-    org, user = await make_org_with_owner(db_session)
+    org, user = await make_org_with_owner(db_session, with_trial=False)
     return user, org
 
 

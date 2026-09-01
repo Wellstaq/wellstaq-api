@@ -82,7 +82,7 @@ async def _make_subscription(
 
 async def _setup_org_with_subscription(db_session: AsyncSession, **org_kwargs):
     """Create org + owner + branch + plan + subscription. Returns (org, owner, branch, plan)."""
-    org, owner = await make_org_with_owner(db_session, **org_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, **org_kwargs)
     branch = await _make_branch(db_session, org.id)
     owner.branch_id = branch.id
     await db_session.flush()
@@ -99,7 +99,7 @@ class TestCreateClubHappyPath:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         club = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Running Club",
@@ -121,7 +121,7 @@ class TestCreateClubHappyPath:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         club = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Book Club",
@@ -137,7 +137,7 @@ class TestCreateClubHappyPath:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         club = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Chess Club",
@@ -158,7 +158,7 @@ class TestCreateClubHappyPath:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         club = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Hiking Club",
@@ -174,7 +174,7 @@ class TestCreateClubHappyPath:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         club = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="   Padel Club   ",
@@ -189,14 +189,14 @@ class TestCreateClubHappyPath:
 class TestCreateClubBranchValidation:
     @pytest.mark.asyncio
     async def test_raises_404_when_branch_not_found(self, db_session: AsyncSession):
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         # Create subscription even though branch check will fail first
         plan = await _make_plan(db_session)
         await _make_subscription(db_session, org.id, plan.id)
 
         with pytest.raises(AppError) as exc_info:
             await create_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 branch_id="00000000-0000-0000-0000-000000000000",
                 name="Ghost Club",
@@ -212,11 +212,11 @@ class TestCreateClubBranchValidation:
         self, db_session: AsyncSession
     ):
         org_a, owner_a = await make_org_with_owner(
-            db_session, org_kwargs={"business_name": "Org A", "slug": "org-a"}
+            db_session, with_trial=False, org_kwargs={"business_name": "Org A", "slug": "org-a"}
         )
         org_b, _ = await make_org_with_owner(
             db_session,
-            org_kwargs={"business_name": "Org B", "slug": "org-b"},
+            with_trial=False, org_kwargs={"business_name": "Org B", "slug": "org-b"},
             user_kwargs={"email": "owner-b@example.com"},
         )
         # Create subscriptions for both orgs
@@ -228,7 +228,7 @@ class TestCreateClubBranchValidation:
 
         with pytest.raises(AppError) as exc_info:
             await create_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org_a.id,
                 branch_id=branch_b.id,
                 name="Cross Org Club",
@@ -246,7 +246,7 @@ class TestCreateClubNameUniqueness:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Yoga Club",
@@ -257,7 +257,7 @@ class TestCreateClubNameUniqueness:
 
         with pytest.raises(AppError) as exc_info:
             await create_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 branch_id=branch.id,
                 name="Yoga Club",
@@ -281,7 +281,7 @@ class TestCreateClubNameUniqueness:
         org, owner, branch, plan = await _setup_org_with_subscription(db_session)
 
         await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="Yoga Club",
@@ -293,7 +293,7 @@ class TestCreateClubNameUniqueness:
         # Same name with surrounding whitespace -> collides after strip()
         with pytest.raises(AppError) as exc_info:
             await create_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 branch_id=branch.id,
                 name="   Yoga Club   ",
@@ -306,11 +306,11 @@ class TestCreateClubNameUniqueness:
     @pytest.mark.asyncio
     async def test_same_name_allowed_in_different_orgs(self, db_session: AsyncSession):
         org_a, owner_a = await make_org_with_owner(
-            db_session, org_kwargs={"business_name": "Org A", "slug": "org-a"}
+            db_session, with_trial=False, org_kwargs={"business_name": "Org A", "slug": "org-a"}
         )
         org_b, owner_b = await make_org_with_owner(
             db_session,
-            org_kwargs={"business_name": "Org B", "slug": "org-b"},
+            with_trial=False, org_kwargs={"business_name": "Org B", "slug": "org-b"},
             user_kwargs={"email": "owner-b@example.com"},
         )
         branch_a = await _make_branch(db_session, org_a.id)
@@ -325,7 +325,7 @@ class TestCreateClubNameUniqueness:
         await _make_subscription(db_session, org_b.id, plan.id)
 
         club_a = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org_a.id,
             branch_id=branch_a.id,
             name="Shared Name Club",
@@ -334,7 +334,7 @@ class TestCreateClubNameUniqueness:
             created_by=owner_a.id,
         )
         club_b = await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org_b.id,
             branch_id=branch_b.id,
             name="Shared Name Club",
@@ -353,7 +353,7 @@ class TestCreateClubPlanLimits:
         """enforce_plan_limit blocks club creation once current_count has
         reached the plan's max_clubs. 402 Payment Required is the correct
         status code for plan-limit rejections."""
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         branch = await _make_branch(db_session, org.id)
         owner.branch_id = branch.id
         await db_session.flush()
@@ -364,7 +364,7 @@ class TestCreateClubPlanLimits:
 
         # First club: 0 existing < limit of 1 -> should succeed
         await create_club(
-            session=db_session,
+            image_url=None, category="fitness", session=db_session,
             organization_id=org.id,
             branch_id=branch.id,
             name="First Club",
@@ -376,7 +376,7 @@ class TestCreateClubPlanLimits:
         # Second club: 1 existing >= limit of 1 -> should fail with 402
         with pytest.raises(HTTPException) as exc_info:
             await create_club(
-                session=db_session,
+                image_url=None, category="fitness", session=db_session,
                 organization_id=org.id,
                 branch_id=branch.id,
                 name="Second Club",

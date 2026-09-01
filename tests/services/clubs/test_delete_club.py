@@ -81,7 +81,7 @@ async def _make_club_with_owner(db_session: AsyncSession, *, org_kwargs=None, us
     via the real create_club() service so the club is in a realistic
     state (leader assigned, creator auto-added as member)."""
     org, owner = await make_org_with_owner(
-        db_session, org_kwargs=org_kwargs, user_kwargs=user_kwargs
+        db_session, with_trial=False, org_kwargs=org_kwargs, user_kwargs=user_kwargs
     )
     branch = await _make_branch(db_session, org.id)
     owner.branch_id = branch.id
@@ -98,7 +98,7 @@ async def _make_club_with_owner(db_session: AsyncSession, *, org_kwargs=None, us
         privacy="public",
         created_by=owner.id,
     )
-    club = await create_club(session=db_session, **{**defaults, **club_overrides})
+    club = await create_club(image_url=None, category="fitness", session=db_session, **{**defaults, **club_overrides})
     return org, owner, branch, club
 
 
@@ -157,7 +157,7 @@ class TestDeleteClubHappyPath:
 class TestDeleteClubNotFound:
     @pytest.mark.asyncio
     async def test_raises_404_when_club_does_not_exist(self, db_session: AsyncSession):
-        org, _owner = await make_org_with_owner(db_session)
+        org, _owner = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(AppError) as exc_info:
             await delete_club(
@@ -173,7 +173,7 @@ class TestDeleteClubNotFound:
         self, db_session: AsyncSession
     ):
         org_a, owner_a = await make_org_with_owner(
-            db_session, org_kwargs={"business_name": "Org A", "slug": "org-a"}
+            db_session, with_trial=False, org_kwargs={"business_name": "Org A", "slug": "org-a"}
         )
         org_b, owner_b, branch_b, club_b = await _make_club_with_owner(
             db_session,

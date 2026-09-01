@@ -117,12 +117,11 @@ async def test_category_relationship_collections_initialize(db_session: AsyncSes
     await db_session.flush()
 
     # Explicitly refresh relationships asynchronously to avoid lazy-load errors
-    await db_session.refresh(category, ["departments", "clubs"])
+    await db_session.refresh(category, ["departments"])
 
     assert isinstance(category.departments, list)
-    assert isinstance(category.clubs, list)
     assert len(category.departments) == 0
-    assert len(category.clubs) == 0
+    assert not hasattr(category, "clubs")  # clubs now use their own category string
 
 
 # ── HealthCategory Model Tests ─────────────────────────────────────────────────

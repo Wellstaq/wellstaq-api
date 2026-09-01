@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_token, hash_refresh_token
 from app.core.constants import TokenType
-from app.models import Permission, Role, User, UserDevice, UserPermission
+from app.models import Permission, Role, RolePermission, User, UserDevice, UserPermission, UserRoleAssignment
 from app.services.auth.token_service import (
     _load_role_name,
     access_only_response,
@@ -40,16 +40,11 @@ class TestLoadUserPermissions:
         db_session.add(perm)
         await db_session.flush()
 
-        db_session.add(UserPermission(
-            user_id=user.id,
-            permission_id=perm.id,
-            organization_id=org.id,
-            branch_id=None,
-        ))
+        db_session.add(RolePermission(role_id=user.role_id, permission_id=perm.id, scope="org"))
         await db_session.flush()
 
         names = await load_user_permissions(db_session, user.id, org.id)
-        assert names == ["department.create"]
+        assert [(grant.name, grant.branch_id) for grant in names] == [("department.create", None)]
 
     @pytest.mark.asyncio
     async def test_does_not_return_permissions_from_other_org(
@@ -84,9 +79,8 @@ class TestLoadUserPermissions:
     @pytest.mark.asyncio
     async def test_no_duplicates(self, db_session: AsyncSession):
         """
-        A user can hold the same permission org-wide AND branch-scoped
-        simultaneously (two UserPermission rows) — load_user_permissions
-        must still return the name only once.
+        An org role and branch role can grant the same permission. The
+        effective list must retain only the wider org-level grant.
         """
         from app.models.branch import Branch
 
@@ -99,18 +93,18 @@ class TestLoadUserPermissions:
         db_session.add(perm)
         await db_session.flush()
 
-        db_session.add(UserPermission(
-            user_id=user.id, permission_id=perm.id,
-            organization_id=org.id, branch_id=None,
-        ))
-        db_session.add(UserPermission(
-            user_id=user.id, permission_id=perm.id,
-            organization_id=org.id, branch_id=branch.id,
-        ))
+        branch_role = Role(name="local-admin", organization_id=org.id, branch_id=branch.id, is_system=False)
+        db_session.add(branch_role)
+        await db_session.flush()
+        db_session.add_all([
+            RolePermission(role_id=user.role_id, permission_id=perm.id, scope="org"),
+            RolePermission(role_id=branch_role.id, permission_id=perm.id, scope="branch"),
+            UserRoleAssignment(user_id=user.id, role_id=branch_role.id, organization_id=org.id, branch_id=branch.id),
+        ])
         await db_session.flush()
 
         names = await load_user_permissions(db_session, user.id, org.id)
-        assert names == ["member.suspend"]
+        assert [(grant.name, grant.branch_id) for grant in names] == [("member.suspend", None)]
 
     @pytest.mark.asyncio
     async def test_empty_when_no_permissions(self, db_session: AsyncSession):
@@ -149,7 +143,7 @@ class TestLoadRoleName:
         await db_session.refresh(user)
 
         name = await _load_role_name(db_session, user)
-        assert name == "overall_manager"
+        assert name == "super_admin"
 
     @pytest.mark.asyncio
     async def test_uses_eager_loaded_role_when_present(self, db_session: AsyncSession):
@@ -157,7 +151,7 @@ class TestLoadRoleName:
         await db_session.refresh(user, ["role"])
 
         name = await _load_role_name(db_session, user)
-        assert name == "overall_manager"
+        assert name == "super_admin"
 
 
 # ── build_claims() ────────────────────────────────────────────────────────────────
@@ -203,20 +197,17 @@ class TestBuildClaims:
         db_session.add(perm)
         await db_session.flush()
 
-        db_session.add(UserPermission(
-            user_id=user.id, permission_id=perm.id,
-            organization_id=org.id, branch_id=None,
-        ))
+        db_session.add(RolePermission(role_id=user.role_id, permission_id=perm.id, scope="org"))
         await db_session.flush()
 
         claims = await build_claims(db_session, user)
-        assert claims["permissions"] == ["department.update"]
+        assert claims["permissions"] == [{"name": "department.update", "branch_id": None}]
 
     @pytest.mark.asyncio
     async def test_role_matches_assigned_role(self, db_session: AsyncSession):
         org, user = await make_org_with_owner(db_session)
         claims = await build_claims(db_session, user)
-        assert claims["role"] == "overall_manager"
+        assert claims["role"] == "super_admin"
 
 
 # ── Response shape helpers ────────────────────────────────────────────────────────
@@ -268,10 +259,7 @@ class TestIssueTokens:
         perm = Permission(name="branch.create", category="branch", scope="org")
         db_session.add(perm)
         await db_session.flush()
-        db_session.add(UserPermission(
-            user_id=user.id, permission_id=perm.id,
-            organization_id=org.id, branch_id=None,
-        ))
+        db_session.add(RolePermission(role_id=user.role_id, permission_id=perm.id, scope="org"))
         await db_session.flush()
 
         tokens = await issue_tokens(db_session, user, "Chrome", "fp-2", "5.6.7.8")
@@ -279,8 +267,8 @@ class TestIssueTokens:
 
         assert payload["sub"] == user.id
         assert payload["org_id"] == org.id
-        assert payload["role"] == "overall_manager"
-        assert "branch.create" in payload["permissions"]
+        assert payload["role"] == "super_admin"
+        assert {"name": "branch.create", "branch_id": None} in payload["permissions"]
         assert payload["type"] == TokenType.ACCESS
 
     @pytest.mark.asyncio

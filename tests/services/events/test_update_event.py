@@ -160,7 +160,8 @@ class TestEditEventHappyPath:
         assert result.description == "Updated description."
 
     @pytest.mark.asyncio
-    async def test_image_url_is_updated(self, db_session: AsyncSession):
+    async def test_image_url_is_updated(self, db_session: AsyncSession, monkeypatch):
+        monkeypatch.setattr("app.services.event.update_event.confirm_upload", lambda **kwargs: True)
         org, owner = await make_org_with_owner(db_session)
         branch = await _make_branch(db_session, org.id)
         event = await _make_event(db_session, org.id, branch.id, owner.id)

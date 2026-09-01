@@ -80,7 +80,7 @@ def make_kpi_snapshot(organization_id: str, branch_id: str, **overrides) -> KPIS
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -106,7 +106,7 @@ async def test_leaderboard_snapshot_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -120,7 +120,7 @@ async def test_leaderboard_snapshot_id_is_uuid_format(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_computed_at_auto_set(db_session: AsyncSession):
     """computed_at is set by the DB server default — never manually."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -133,7 +133,7 @@ async def test_leaderboard_snapshot_computed_at_auto_set(db_session: AsyncSessio
 async def test_leaderboard_snapshot_previous_rank_nullable(db_session: AsyncSession):
     """previous_rank and previous_org_rank are null on the very first
     computation run."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -150,7 +150,7 @@ async def test_leaderboard_snapshot_previous_rank_nullable(db_session: AsyncSess
 async def test_leaderboard_snapshot_previous_rank_set(db_session: AsyncSession):
     """previous_rank/previous_org_rank carry the prior ranks once at
     least one prior snapshot exists."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -168,7 +168,7 @@ async def test_leaderboard_snapshot_previous_rank_set(db_session: AsyncSession):
 async def test_leaderboard_snapshot_multiple_metrics_same_period(db_session: AsyncSession):
     """Multiple metrics for same user/period are allowed — different
     metric_type means different unique constraint key."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, metric_type="steps", rank=1, org_rank=1))
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, metric_type="distance", rank=3, org_rank=6))
@@ -188,7 +188,7 @@ async def test_leaderboard_snapshot_multiple_metrics_same_period(db_session: Asy
 async def test_leaderboard_snapshot_unique_constraint(db_session: AsyncSession):
     """Cannot create duplicate snapshots for same (org, user, metric, 
     period_type, period_start, period_end)."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot1 = make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -220,7 +220,7 @@ async def test_leaderboard_snapshot_unique_constraint(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_different_period_types_allowed(db_session: AsyncSession):
     """Same metric, same dates, but different period_type is allowed."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -247,7 +247,7 @@ async def test_leaderboard_snapshot_different_period_types_allowed(db_session: A
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_different_period_dates_allowed(db_session: AsyncSession):
     """Same metric, same period_type, but different dates is allowed."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -273,7 +273,7 @@ async def test_leaderboard_snapshot_different_period_dates_allowed(db_session: A
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_invalid_period_type_raises(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id, period_type="yearly")
     db_session.add(snapshot)
@@ -284,7 +284,7 @@ async def test_leaderboard_snapshot_invalid_period_type_raises(db_session: Async
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_valid_period_types(db_session: AsyncSession):
     """All valid period_types are accepted."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     for period_type in ["daily", "weekly", "monthly"]:
         # Use different dates to avoid unique constraint violation
@@ -314,7 +314,7 @@ async def test_leaderboard_snapshot_valid_period_types(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -328,7 +328,7 @@ async def test_leaderboard_snapshot_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_branch_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         organization_id=org.id,
@@ -342,7 +342,7 @@ async def test_leaderboard_snapshot_branch_fk_must_exist(db_session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_user_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         organization_id=org.id,
@@ -357,7 +357,7 @@ async def test_leaderboard_snapshot_user_fk_must_exist(db_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_rank_must_be_positive(db_session: AsyncSession):
     """rank > 0 — rank=0 and rank=-1 are both invalid."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, rank=0))
     with pytest.raises(IntegrityError):
@@ -373,7 +373,7 @@ async def test_leaderboard_snapshot_rank_must_be_positive(db_session: AsyncSessi
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_org_rank_must_be_positive(db_session: AsyncSession):
     """org_rank > 0 — org_rank=0 and org_rank=-1 are both invalid."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, org_rank=0))
     with pytest.raises(IntegrityError):
@@ -391,7 +391,7 @@ async def test_leaderboard_snapshot_previous_rank_must_be_positive_when_set(
     db_session: AsyncSession,
 ):
     """previous_rank must be > 0 when provided — 0 is not a valid rank."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, previous_rank=0))
     with pytest.raises(IntegrityError):
@@ -403,7 +403,7 @@ async def test_leaderboard_snapshot_previous_org_rank_must_be_positive_when_set(
     db_session: AsyncSession,
 ):
     """previous_org_rank must be > 0 when provided — 0 is not valid."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_snapshot(org.id, owner.branch_id, owner.id, previous_org_rank=0))
     with pytest.raises(IntegrityError):
@@ -413,7 +413,7 @@ async def test_leaderboard_snapshot_previous_org_rank_must_be_positive_when_set(
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_period_range_must_be_valid(db_session: AsyncSession):
     """period_end must not be before period_start."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(
         org.id, owner.branch_id, owner.id,
@@ -430,12 +430,12 @@ async def test_leaderboard_snapshot_cross_tenant_isolation(db_session: AsyncSess
     """Org B's query returns no rows when only org A has snapshots."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -454,7 +454,7 @@ async def test_leaderboard_snapshot_cross_tenant_isolation(db_session: AsyncSess
 async def test_leaderboard_snapshot_cross_branch_isolation(db_session: AsyncSession):
     """Filtering by branch_id only returns that branch's rows, even
     within the same org."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -483,12 +483,12 @@ async def test_leaderboard_snapshot_filterable_by_org(db_session: AsyncSession):
     """Snapshots are directly filterable by organization_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -520,7 +520,7 @@ async def test_leaderboard_snapshot_branch_rank_and_org_rank_across_branches(
     branches, each with their own local #1, but a combined org-wide
     ordering derived from raw values. Branch A's top performer can
     still be behind Branch B's top performer at the org level."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -556,7 +556,7 @@ async def test_leaderboard_snapshot_branch_rank_and_org_rank_across_branches(
 async def test_org_delete_cascades_to_leaderboard_snapshots(db_session: AsyncSession):
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
 
@@ -582,7 +582,7 @@ async def test_org_delete_cascades_to_leaderboard_snapshots(db_session: AsyncSes
 async def test_branch_delete_cascades_to_leaderboard_snapshots(db_session: AsyncSession):
     """Deletes a second, non-default branch to isolate the branch_id
     CASCADE from the org's own FK constraints."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -610,7 +610,7 @@ async def test_branch_delete_cascades_to_leaderboard_snapshots(db_session: Async
 async def test_user_delete_cascades_to_leaderboard_snapshots(db_session: AsyncSession):
     """Deletes a non-owner member to isolate the user_id CASCADE from
     the org owner_id constraint."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     member = make_user(org.id, email="member@example.com", branch_id=owner.branch_id)
     db_session.add(member)
@@ -642,7 +642,7 @@ async def test_leaderboard_snapshot_composite_indexes_exist(db_session: AsyncSes
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -655,7 +655,7 @@ async def test_leaderboard_snapshot_organization_relationship(db_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_branch_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -668,7 +668,7 @@ async def test_leaderboard_snapshot_branch_relationship(db_session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_leaderboard_snapshot_user_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     snapshot = make_snapshot(org.id, owner.branch_id, owner.id)
     db_session.add(snapshot)
@@ -683,7 +683,7 @@ async def test_leaderboard_snapshot_user_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(org.id, owner.branch_id)
     db_session.add(target)
@@ -702,7 +702,7 @@ async def test_target_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(org.id, owner.branch_id)
     db_session.add(target)
@@ -717,7 +717,7 @@ async def test_target_id_is_uuid_format(db_session: AsyncSession):
 async def test_target_duplicate_branch_metric_period_raises(db_session: AsyncSession):
     """Unique constraint on (branch_id, metric_type, period) — a
     second insert for the same combination must be rejected."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id))
     await db_session.flush()
@@ -731,7 +731,7 @@ async def test_target_duplicate_branch_metric_period_raises(db_session: AsyncSes
 async def test_target_same_metric_period_different_branches_allowed(db_session: AsyncSession):
     """Same org, same metric_type, same period, but two DIFFERENT
     branches is allowed — each branch sets its own target."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -751,7 +751,7 @@ async def test_target_same_metric_period_different_branches_allowed(db_session: 
 async def test_target_same_metric_different_period_allowed(db_session: AsyncSession):
     """Same branch, same metric_type in a different period is a
     distinct target row."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id, period="2026-W23"))
     db_session.add(make_target(org.id, owner.branch_id, period="2026-W24"))
@@ -767,7 +767,7 @@ async def test_target_same_metric_different_period_allowed(db_session: AsyncSess
 async def test_target_same_period_different_metric_allowed(db_session: AsyncSession):
     """Same branch, same period with a different metric_type is also
     a distinct target."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id, metric_type="steps"))
     db_session.add(make_target(org.id, owner.branch_id, metric_type="distance"))
@@ -781,7 +781,7 @@ async def test_target_same_period_different_metric_allowed(db_session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_target_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -794,7 +794,7 @@ async def test_target_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_branch_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(
         organization_id=org.id,
@@ -807,7 +807,7 @@ async def test_target_branch_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_metric_type_cannot_be_empty(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id, metric_type=""))
     with pytest.raises(IntegrityError):
@@ -822,7 +822,7 @@ async def test_target_metric_type_cannot_be_empty(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_period_cannot_be_empty(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id, period=""))
     with pytest.raises(IntegrityError):
@@ -838,7 +838,7 @@ async def test_target_period_cannot_be_empty(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_target_value_must_be_positive(db_session: AsyncSession):
     """target_value > 0 — zero and negative values are rejected."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_target(org.id, owner.branch_id, target_value=Decimal("0")))
     with pytest.raises(IntegrityError):
@@ -855,7 +855,7 @@ async def test_target_value_must_be_positive(db_session: AsyncSession):
 async def test_org_delete_cascades_to_targets(db_session: AsyncSession):
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
 
@@ -875,7 +875,7 @@ async def test_org_delete_cascades_to_targets(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_branch_delete_cascades_to_targets(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -900,12 +900,12 @@ async def test_target_cross_tenant_isolation(db_session: AsyncSession):
     """Org B cannot see org A's targets when filtering by org_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -931,7 +931,7 @@ async def test_target_org_wide_rollup_sums_branch_targets(db_session: AsyncSessi
     """Sanity check for the org-wide rollup story: an org-wide target
     figure is SUM(target_value) across branches for the same
     metric/period — no separate stored row needed."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -955,7 +955,7 @@ async def test_target_org_wide_rollup_sums_branch_targets(db_session: AsyncSessi
 
 @pytest.mark.asyncio
 async def test_target_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(org.id, owner.branch_id)
     db_session.add(target)
@@ -968,7 +968,7 @@ async def test_target_organization_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_target_branch_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     target = make_target(org.id, owner.branch_id)
     db_session.add(target)
@@ -983,7 +983,7 @@ async def test_target_branch_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_persists(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(org.id, owner.branch_id)
     db_session.add(kpi)
@@ -1003,7 +1003,7 @@ async def test_kpi_snapshot_persists(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_id_is_uuid_format(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(org.id, owner.branch_id)
     db_session.add(kpi)
@@ -1018,7 +1018,7 @@ async def test_kpi_snapshot_id_is_uuid_format(db_session: AsyncSession):
 async def test_kpi_snapshot_duplicate_branch_metric_period_raises(db_session: AsyncSession):
     """Unique constraint on (branch_id, metric_name, period_start) —
     writing the same metric twice for the same branch/period must fail."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_kpi_snapshot(org.id, owner.branch_id))
     await db_session.flush()
@@ -1032,7 +1032,7 @@ async def test_kpi_snapshot_duplicate_branch_metric_period_raises(db_session: As
 async def test_kpi_snapshot_same_metric_period_different_branches_allowed(db_session: AsyncSession):
     """Same org, same metric, same period_start, but different
     branches is allowed — each branch has its own KPI figure."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -1052,7 +1052,7 @@ async def test_kpi_snapshot_same_metric_period_different_branches_allowed(db_ses
 async def test_kpi_snapshot_same_metric_different_period_allowed(db_session: AsyncSession):
     """Same branch, same metric_name in a different period_start is a
     distinct snapshot."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_kpi_snapshot(
         org.id, owner.branch_id,
@@ -1074,7 +1074,7 @@ async def test_kpi_snapshot_same_metric_different_period_allowed(db_session: Asy
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_org_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(
         organization_id="00000000-0000-0000-0000-000000000000",
@@ -1087,7 +1087,7 @@ async def test_kpi_snapshot_org_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_branch_fk_must_exist(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(
         organization_id=org.id,
@@ -1100,7 +1100,7 @@ async def test_kpi_snapshot_branch_fk_must_exist(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_metric_name_cannot_be_empty(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     db_session.add(make_kpi_snapshot(org.id, owner.branch_id, metric_name=""))
     with pytest.raises(IntegrityError):
@@ -1116,7 +1116,7 @@ async def test_kpi_snapshot_metric_name_cannot_be_empty(db_session: AsyncSession
 @pytest.mark.asyncio
 async def test_kpi_snapshot_period_range_must_be_valid(db_session: AsyncSession):
     """period_end must not be before period_start."""
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(
         org.id, owner.branch_id,
@@ -1132,7 +1132,7 @@ async def test_kpi_snapshot_period_range_must_be_valid(db_session: AsyncSession)
 async def test_org_delete_cascades_to_kpi_snapshots(db_session: AsyncSession):
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
 
@@ -1152,7 +1152,7 @@ async def test_org_delete_cascades_to_kpi_snapshots(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_branch_delete_cascades_to_kpi_snapshots(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     branch_b = make_branch(org.id, name="Uptown Branch")
     db_session.add(branch_b)
@@ -1177,12 +1177,12 @@ async def test_kpi_snapshot_cross_tenant_isolation(db_session: AsyncSession):
     """Org B cannot see org A's KPI snapshots when filtering by org_id."""
     org_a, owner_a = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-a"},
+        with_trial=False, org_kwargs={"slug": "org-a"},
         user_kwargs={"email": "owner-a@example.com"},
     )
     org_b, owner_b = await make_org_with_owner(
         db_session,
-        org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
+        with_trial=False, org_kwargs={"slug": "org-b", "business_name": "Beta Corp"},
         user_kwargs={"email": "owner-b@example.com"},
     )
 
@@ -1205,7 +1205,7 @@ async def test_kpi_snapshot_branch_and_org_rollup_indexes_exist(db_session: Asyn
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_organization_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(org.id, owner.branch_id)
     db_session.add(kpi)
@@ -1218,7 +1218,7 @@ async def test_kpi_snapshot_organization_relationship(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_kpi_snapshot_branch_relationship(db_session: AsyncSession):
-    org, owner = await make_org_with_owner(db_session)
+    org, owner = await make_org_with_owner(db_session, with_trial=False)
 
     kpi = make_kpi_snapshot(org.id, owner.branch_id)
     db_session.add(kpi)

@@ -116,7 +116,7 @@ async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwar
     create_club()'s plan-limit check. Applied uniformly here (even for
     tests that only create an event) so this file doesn't break again
     if create_event() ever grows its own plan-limit check."""
-    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, **org_owner_kwargs)
     plan = await _make_plan(db_session)
     await _make_subscription(db_session, org.id, plan.id)
     return org, owner
@@ -149,7 +149,7 @@ async def _make_club(
     from app.services.club.create_club import create_club
 
     return await create_club(
-        session=db_session,
+        image_url=None, category="fitness", session=db_session,
         organization_id=organization_id,
         branch_id=branch_id,
         name=name,
@@ -259,7 +259,7 @@ class TestValidateConversationValidation:
 
     @pytest.mark.asyncio
     async def test_raises_400_for_invalid_conversation_type(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(HTTPException) as exc_info:
             await validate_conversation(
@@ -279,7 +279,7 @@ class TestValidateConversationNotFound:
 
     @pytest.mark.asyncio
     async def test_raises_404_when_club_not_found(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(HTTPException) as exc_info:
             await validate_conversation(
@@ -303,7 +303,7 @@ class TestValidateConversationNotFound:
         )
         org2, _ = await make_org_with_owner(
             db_session,
-            org_kwargs=dict(slug="org-two"),
+            with_trial=False, org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch1 = await _make_branch(db_session, org1.id)
@@ -323,7 +323,7 @@ class TestValidateConversationNotFound:
 
     @pytest.mark.asyncio
     async def test_raises_404_when_event_not_found(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(HTTPException) as exc_info:
             await validate_conversation(
@@ -347,7 +347,7 @@ class TestValidateConversationNotFound:
         )
         org2, _ = await make_org_with_owner(
             db_session,
-            org_kwargs=dict(slug="org-two"),
+            with_trial=False, org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch1 = await _make_branch(db_session, org1.id)
@@ -441,7 +441,7 @@ class TestGetMessageOr404NotFound:
 
     @pytest.mark.asyncio
     async def test_raises_404_when_message_not_found(self, db_session: AsyncSession):
-        org, _ = await make_org_with_owner(db_session)
+        org, _ = await make_org_with_owner(db_session, with_trial=False)
 
         with pytest.raises(HTTPException) as exc_info:
             await get_message_or_404(
@@ -464,7 +464,7 @@ class TestGetMessageOr404NotFound:
         )
         org2, owner2 = await make_org_with_owner(
             db_session,
-            org_kwargs=dict(slug="org-two"),
+            with_trial=False, org_kwargs=dict(slug="org-two"),
             user_kwargs=dict(email="owner2@example.com"),
         )
         branch1 = await _make_branch(db_session, org1.id)

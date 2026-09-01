@@ -6,7 +6,7 @@ Unit tests for app/services/event/get_event.py
 Coverage:
   get_event()
     Happy path
-      - returns the Event instance
+      - returns (Event, participant_count)
       - returns event belonging to the specified organization
 
     Not-found errors
@@ -15,7 +15,7 @@ Coverage:
 
   get_events()
     Happy path
-      - returns a tuple of (list of events, total count)
+      - returns (list of (Event, participant_count) pairs, total count)
       - returns empty list and 0 count when no events exist
       - returns only events belonging to the specified organization
       - filters by branch_id when provided
@@ -119,13 +119,14 @@ class TestGetEventHappyPath:
         branch = await _make_branch(db_session, org.id)
         event = await _make_event(db_session, org.id, branch.id, owner.id)
 
-        result = await get_event(
+        result, participant_count = await get_event(
             session=db_session,
             organization_id=org.id,
             event_id=event.id,
         )
 
         assert isinstance(result, Event)
+        assert participant_count == 0
         assert result.id == event.id
         assert result.title == "Annual General Meeting"
 
@@ -138,7 +139,7 @@ class TestGetEventHappyPath:
         event = await _make_event(db_session, org.id, branch.id, owner.id)
 
         # Verify we can retrieve the event with the correct org ID
-        result = await get_event(
+        result, participant_count = await get_event(
             session=db_session,
             organization_id=org.id,
             event_id=event.id,
@@ -212,7 +213,8 @@ class TestGetEventsHappyPath:
         assert isinstance(count, int)
         assert count == 1
         assert len(result) == 1
-        assert isinstance(result[0], Event)
+        assert isinstance(result[0][0], Event)
+        assert result[0][1] == 0
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_no_events_exist(self, db_session: AsyncSession):
@@ -249,12 +251,12 @@ class TestGetEventsHappyPath:
         # Get events for org1
         result1, count1 = await get_events(session=db_session, organization_id=org1.id)
         assert count1 == 1
-        assert result1[0].organization_id == org1.id
+        assert result1[0][0].organization_id == org1.id
 
         # Get events for org2
         result2, count2 = await get_events(session=db_session, organization_id=org2.id)
         assert count2 == 1
-        assert result2[0].organization_id == org2.id
+        assert result2[0][0].organization_id == org2.id
 
     @pytest.mark.asyncio
     async def test_filters_by_branch_id_when_provided(self, db_session: AsyncSession):
@@ -274,8 +276,8 @@ class TestGetEventsHappyPath:
 
         assert count == 1
         assert len(result) == 1
-        assert result[0].id == event1.id
-        assert result[0].branch_id == branch1.id
+        assert result[0][0].id == event1.id
+        assert result[0][0].branch_id == branch1.id
 
     @pytest.mark.asyncio
     async def test_respects_pagination_limit(self, db_session: AsyncSession):
@@ -342,8 +344,8 @@ class TestGetEventsHappyPath:
         assert len(result2) == 2
 
         # Ensure pages contain different data
-        titles_page1 = [e.title for e in result1]
-        titles_page2 = [e.title for e in result2]
+        titles_page1 = [e.title for e, _count in result1]
+        titles_page2 = [e.title for e, _count in result2]
         assert set(titles_page1) != set(titles_page2)
         assert "Event A" not in titles_page2  # Should be on page 1 only
 
@@ -374,7 +376,7 @@ class TestGetEventsHappyPath:
         assert len(result) == 3
 
         # Verify descending order (latest first)
-        returned_dates = [e.start_date for e in result]
+        returned_dates = [e.start_date for e, _count in result]
         assert returned_dates == sorted(returned_dates, reverse=True)
 
 

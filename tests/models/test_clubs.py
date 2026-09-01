@@ -37,7 +37,7 @@ def make_club(organization_id: str, branch_id: str, **overrides) -> Club:
         organization_id=organization_id,
         branch_id=branch_id,
     )
-    return Club(**{**defaults, **overrides})
+    return Club(category="fitness", **{**defaults, **overrides})
 
 
 async def make_branch(
@@ -60,8 +60,8 @@ async def setup_org(
 ) -> tuple[User, Organization]:
     org, user = await make_org_with_owner(
         db_session,
-        org_kwargs=dict(slug=slug),
-        user_kwargs=dict(email=email, role_name="overall_manager"),
+        with_trial=False, org_kwargs=dict(slug=slug),
+        user_kwargs=dict(email=email, role_name="super_admin"),
     )
     return user, org
 
@@ -193,7 +193,7 @@ async def test_club_branch_id_is_required(db_session: AsyncSession):
     """branch_id is NOT NULL — a Club cannot be created without a branch."""
     _, org = await setup_org(db_session)
 
-    club = Club(name="No Branch Club", organization_id=org.id)  # branch_id omitted
+    club = Club(category="fitness", name="No Branch Club", organization_id=org.id)  # branch_id omitted
     db_session.add(club)
     with pytest.raises(IntegrityError):
         await db_session.flush()

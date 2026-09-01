@@ -82,7 +82,7 @@ async def _make_org_with_subscription(db_session: AsyncSession, **org_owner_kwar
     """make_org_with_owner() plus an active subscription, required by
     create_club()'s plan-limit check — used by every happy-path test
     here since they all create a club."""
-    org, owner = await make_org_with_owner(db_session, **org_owner_kwargs)
+    org, owner = await make_org_with_owner(db_session, with_trial=False, **org_owner_kwargs)
     plan = await _make_plan(db_session)
     await _make_subscription(db_session, org.id, plan.id)
     return org, owner
@@ -115,7 +115,7 @@ async def _make_club(
     from app.services.club.create_club import create_club
 
     return await create_club(
-        session=db_session,
+        image_url=None, category="fitness", session=db_session,
         organization_id=organization_id,
         branch_id=branch_id,
         name=name,
@@ -445,7 +445,7 @@ class TestGetMessagesValidationErrors:
             detail="conversation_type must be one of ['club', 'event']",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -474,7 +474,7 @@ class TestGetMessagesNotFoundErrors:
             detail="Club not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -498,7 +498,7 @@ class TestGetMessagesNotFoundErrors:
             detail="Event not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -522,7 +522,7 @@ class TestGetMessagesNotFoundErrors:
             detail="Club not found in this organization.",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -553,7 +553,7 @@ class TestGetMessagesPermissionErrors:
             detail="Not a member of this club",
         )
 
-        org, owner = await make_org_with_owner(db_session)
+        org, owner = await make_org_with_owner(db_session, with_trial=False)
         current_user = _mock_current_user(owner.id)
 
         with pytest.raises(HTTPException) as exc_info:

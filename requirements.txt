@@ -57,7 +57,6 @@ python-multipart==0.0.20
 PyYAML==6.0.3
 redis==5.2.1
 s3transfer==0.10.4
-sendgrid==6.12.5
 six==1.17.0
 SQLAlchemy==2.0.36
 starlette==0.41.3
