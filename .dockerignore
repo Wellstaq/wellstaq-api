@@ -21,6 +21,7 @@ backups/
 
 tests/
 requirements-dev.txt
+pytest.ini
 .coverage
 htmlcov/
 
