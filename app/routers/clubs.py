@@ -135,9 +135,7 @@ async def list_clubs_route(
         )
         items = []
         for club, is_member in clubs:
-            resp = ClubResponse.model_validate(club)
-            resp.is_member = is_member
-            items.append(resp)
+            items.append(ClubResponse.model_validate({**club.__dict__, "is_member": is_member}))
         return ClubListResponse(items=items, total=total, offset=offset, limit=limit)
 
 # ── List by-branch ──────────────────────────────────────────────────────────────
@@ -166,9 +164,7 @@ async def list_branch_clubs_route(
         )
         items = []
         for club, is_member in clubs:
-            resp = ClubResponse.model_validate(club)
-            resp.is_member = is_member
-            items.append(resp)
+            items.append(ClubResponse.model_validate({**club.__dict__, "is_member": is_member}))
         return ClubListResponse(items=items, total=total, offset=offset, limit=limit)
 
 # ── Get one ────────────────────────────────────────────────────────────────────

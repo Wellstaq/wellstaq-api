@@ -15,7 +15,13 @@ from app.services.story._helpers import get_story_or_404
 
 async def get_story(*, session: AsyncSession, organization_id: str, story_id: str) -> Story:
     story = await get_story_or_404(session=session, organization_id=organization_id, story_id=story_id)
-    if story.expires_at <= datetime.now(timezone.utc):
+    expires_at = story.expires_at
+    if expires_at.tzinfo is None:
+        # SQLite drops timezone information even for DateTime(timezone=True).
+        # Stored application timestamps are UTC, so restore that context before
+        # comparing. PostgreSQL already returns an aware value unchanged.
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= datetime.now(timezone.utc):
         from fastapi import HTTPException, status
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Story has expired.")
     return story

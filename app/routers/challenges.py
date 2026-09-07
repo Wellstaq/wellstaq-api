@@ -100,7 +100,7 @@ router = APIRouter(prefix="/organizations/{org_id}/challenges", tags=["challenge
         "per challenge type, since the frontend/mobile client uses this to "
         "decide how to collect and submit progress.\n\n"
         "**status** is not settable here — every new challenge starts as "
-        "`draft` and is activated separately.\n\n"
+        "`upcoming` and is activated by the lifecycle worker when its start date arrives.\n\n"
         "**wellbeing_challenge_id** — optional link to a global challenge "
         "category/theme (e.g. \"Fitness\", \"Mental Health\") for grouping "
         "and filtering; leave null for an uncategorized challenge."

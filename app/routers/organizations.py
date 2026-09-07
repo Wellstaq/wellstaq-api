@@ -8,7 +8,6 @@ Routes:
   GET   /organizations/{org_id}/invites                       — list invites
   POST  /organizations/{org_id}/invites/{invite_code}/accept  — accept an invite (no auth)
   GET   /organizations/{org_id}/members                       — list all org members
-  GET   /organizations/{org_id}/clubs                         — list all org clubs
 
 Note on branches/departments:
   There is intentionally NO GET /organizations/{org_id}/branches or
@@ -45,8 +44,6 @@ from app.schemas.organization import (
     BranchStatsResponse,
     InviteItem,
     InviteListResponse,
-    OrganizationClubInfo,
-    OrganizationClubsListResponse,
     OrganizationMemberInfo,
     OrganizationMembersListResponse,
     OrgStatsResponse,
@@ -54,10 +51,7 @@ from app.schemas.organization import (
     SendInviteResponse,
 )
 from app.services.organization.invite_service import send_invite
-from app.services.organization.org_directory import (
-    get_organization_clubs,
-    get_organization_members,
-)
+from app.services.organization.org_directory import get_organization_members
 
 from app.services.organization.org_stats import get_branch_stats, get_org_stats
 
@@ -281,39 +275,6 @@ async def list_organization_members_route(
             limit=limit,
         )
 
-
-# ── Clubs ────────────────────────────────────────────────────────────────────
-
-@router.get(
-    "/clubs",
-    response_model=OrganizationClubsListResponse,
-    status_code=status.HTTP_200_OK,
-    summary="List all clubs in the organization",
-    description=(
-        "Returns every club belonging to the organization, across all "
-        "branches. Accessible to any authenticated member of the "
-        "organization."
-    ),
-)
-async def list_organization_clubs_route(
-    org_id: str,
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
-) -> OrganizationClubsListResponse:
-    require_same_organization(org_id, current_user)
-
-    async with request_guard(db, "/organizations/{org_id}/clubs"):
-        clubs, total = await get_organization_clubs(
-            session=db, organization_id=org_id, offset=offset, limit=limit,
-        )
-        return OrganizationClubsListResponse(
-            items=[OrganizationClubInfo.model_validate(c) for c in clubs],
-            total=total,
-            offset=offset,
-            limit=limit,
-        )
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 @router.get(
