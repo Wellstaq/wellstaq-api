@@ -35,6 +35,8 @@ from pydantic import (
 from pydantic import BaseModel, Field, field_validator
 import re
 
+from app.core.phone import normalize_phone_number
+
 
 # ── OTP / signup flow ──────────────────────────────────────────────────────────
 
@@ -55,7 +57,7 @@ class OrgOwnerRegisterRequest(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=100)
     password: str = Field(..., min_length=8)
     business_name: str = Field(..., min_length=1, max_length=255)
-    phone_number: str = Field(..., min_length=11, max_length=11)
+    phone_number: str = Field(..., min_length=7, max_length=30)
 
     employee_count: int = Field(..., ge=1)
     organization_type: str = Field(..., min_length=1, max_length=100)
@@ -63,12 +65,8 @@ class OrgOwnerRegisterRequest(BaseModel):
 
     @field_validator("phone_number")
     @classmethod
-    def phone_number_must_be_11_digits(cls, v: str) -> str:
-        if not v.isdigit():
-            raise ValueError("Phone number must contain only digits.")
-        if len(v) != 11:
-            raise ValueError("Phone number must be exactly 11 digits.")
-        return v
+    def validate_and_normalize_phone_number(cls, value: str) -> str:
+        return normalize_phone_number(value)
 
     @field_validator("password")
     @classmethod
@@ -147,6 +145,11 @@ class TwoFaSetupRequest(BaseModel):
     """
     method: Literal["totp", "sms", "email"]
     phone_number: str | None = None  # required when method="sms"
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_and_normalize_phone_number(cls, value: str | None) -> str | None:
+        return normalize_phone_number(value) if value is not None else None
 
 
 class TwoFaSetupResponse(BaseModel):

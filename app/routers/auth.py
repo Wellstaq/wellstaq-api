@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user
 from app.core.config import settings
+from app.core.phone import normalize_phone_number
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.auth import (
@@ -253,7 +254,14 @@ async def signup_check_phone(
     number: str = Query(..., min_length=7, max_length=20),
     db: AsyncSession = Depends(get_db),
 ):
-    return {"available": await check_phone_available(db, number)}
+    try:
+        normalized_number = normalize_phone_number(number)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return {"available": await check_phone_available(db, normalized_number)}
 
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED,
