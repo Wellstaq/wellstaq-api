@@ -236,7 +236,7 @@ async def get_event_route(
     response_model=EventResponse,
     status_code=status.HTTP_200_OK,
     summary="Update an event",
-    description="""
+    description=r"""
 Partially update an existing event. Only fields included in the request body
 are changed — all others remain untouched.
 
@@ -382,7 +382,7 @@ async def delete_event_route(
     response_model=EventParticipantsListResponse,
     status_code=status.HTTP_200_OK,
     summary="List participants of an event",
-    description="""
+    description=r"""
 Returns a paginated list of users who have joined or been invited to this event,
 along with their RSVP status and attendance flag.
 
@@ -506,7 +506,7 @@ async def join_event_route(
     response_model=ParticipantActionResponse,
     status_code=status.HTTP_200_OK,
     summary="Update a participant's RSVP status",
-    description="""
+    description=r"""
 Update the RSVP status of a participant. Typically called by the participant
 themselves in response to an invitation, or by an organizer correcting a status.
 
