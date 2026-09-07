@@ -21,6 +21,7 @@ from app.jobs.analytics.leaderboard import (
 )
 from app.jobs.analytics.engagement import compute_engagement_logs
 from app.jobs.challenges.lifecycle import activate_and_close_challenges, compute_challenge_stats_snapshots
+from app.jobs.events.lifecycle import activate_scheduled_events
 from app.jobs.notifications.notification import fanout_notification
 from app.jobs.notifications.email import send_invite_email
 from app.jobs.media.thumbnails import resize_thumbnail
@@ -56,6 +57,9 @@ class WorkerSettings:
         #challenge
         cron(activate_and_close_challenges, hour=set(range(24)), minute=0),
         cron(compute_challenge_stats_snapshots, hour=3, minute=0),  # once daily, after midnight rollover
+
+        # events (completion remains a manual organizer action)
+        cron(activate_scheduled_events, hour=set(range(24)), minute=0),
 
         #engagements
         cron(compute_engagement_logs, hour=1, minute=0),

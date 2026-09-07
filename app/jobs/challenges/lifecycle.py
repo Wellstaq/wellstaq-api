@@ -1,7 +1,7 @@
 """
 app/jobs/challenges/lifecycle.py
 
-activate_and_close_challenges — status transitions (draft->active,
+activate_and_close_challenges — status transitions (upcoming->active,
 active->completed), AND the authoritative daily_minimum completion
 evaluation, which can only run once a challenge's window has fully
 closed (a single passing day doesn't mean the whole challenge is won —
@@ -21,7 +21,8 @@ from sqlalchemy import select, func
 from app.jobs.shared import get_job_session
 from app.services.challenge._helpers import mark_challenge_complete
 from app.models import (
-    Challenge, ChallengeParticipant, ChallengeStatsSnapshot, Organization, Branch, User,
+    Challenge, ChallengeParticipant, ChallengeProgressEntry,
+    ChallengeStatsSnapshot, Organization, Branch, User,
 )
 
 
@@ -36,14 +37,14 @@ async def activate_and_close_challenges(ctx: dict[str, Any]) -> None:
     daily_minimum_passed = 0
 
     async with get_job_session() as session:
-        draft_result = await session.execute(
+        upcoming_result = await session.execute(
             select(Challenge).where(
-                Challenge.status == "draft",
+                Challenge.status == "upcoming",
                 Challenge.start_date.is_not(None),
                 Challenge.start_date <= today,
             )
         )
-        for challenge in draft_result.scalars().all():
+        for challenge in upcoming_result.scalars().all():
             challenge.status = "active"
             activated += 1
 
