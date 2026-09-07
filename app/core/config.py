@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_ADMIN_API_KEY: str = ""
-   
+
     APP_NAME: str = "Wellstaq API"
     APP_ENV: str = "development"  # development | staging | production
     APP_PORT: int = 8000
@@ -66,13 +66,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    SMTP_HOST: str = "smtp-relay.brevo.com"
-    SMTP_PORT: int = 2525
-    SMTP_USERNAME: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_USE_TLS: bool = True
-    SMTP_USE_SSL: bool = False
-    SMTP_TIMEOUT_SECONDS: float = 30.0
+    BREVO_API_URL: str = "https://api.brevo.com/v3/smtp/email"
+    BREVO_API_KEY: str = ""
+    BREVO_HTTP_TIMEOUT_SECONDS: float = 30.0
     MAIL_FROM: str = ""
     MAIL_FROM_NAME: str = "Wellstaq"
 
