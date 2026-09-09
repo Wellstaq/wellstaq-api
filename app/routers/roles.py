@@ -124,7 +124,7 @@ async def _validate_role_reassignment(db: AsyncSession, actor: CurrentUser, targ
             select(Role).join(UserRoleAssignment, UserRoleAssignment.role_id == Role.id).where(
                 UserRoleAssignment.user_id == target.id,
                 UserRoleAssignment.organization_id == target.organization_id,
-                UserRoleAssignment.branch_id.is_not(None),
+                UserRoleAssignment.branch_id == role.branch_id,
             )
         )).scalar_one_or_none()
     actor_role = actor.role
@@ -138,15 +138,17 @@ async def _validate_role_reassignment(db: AsyncSession, actor: CurrentUser, targ
         )).scalar_one_or_none() or actor.role
     _assert_role_target_mutable(actor_id=actor.user_id, actor_role=actor_role, target_id=target.id,
                                  target_role=current_role.name if current_role else None)
-    if role.branch_id is not None and role.branch_id != target.branch_id:
+    if role.branch_id is not None and role.name != "branch_manager" and role.branch_id != target.branch_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This role belongs to a different branch.")
     if role.name == "branch_manager":
         existing_manager = (await db.execute(
-            select(User.id).join(Role, Role.id == User.role_id).where(
-                User.organization_id == target.organization_id,
-                User.branch_id == target.branch_id,
+            select(UserRoleAssignment.user_id)
+            .join(Role, Role.id == UserRoleAssignment.role_id)
+            .where(
+                UserRoleAssignment.organization_id == target.organization_id,
+                UserRoleAssignment.branch_id == role.branch_id,
                 Role.name == "branch_manager",
-                User.id != target.id,
+                UserRoleAssignment.user_id != target.id,
             ).limit(1)
         )).scalar_one_or_none()
         if existing_manager is not None:
@@ -168,13 +170,13 @@ async def _assign_role_slot(db: AsyncSession, *, target: User, role: Role) -> No
         for device in devices:
             device.revoked = True
         return
-    if target.branch_id != role.branch_id:
+    if role.name != "branch_manager" and target.branch_id != role.branch_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The branch role must belong to the user's home branch.")
     previous_branch_role = (await db.execute(
         select(Role).join(UserRoleAssignment, UserRoleAssignment.role_id == Role.id).where(
             UserRoleAssignment.user_id == target.id,
             UserRoleAssignment.organization_id == target.organization_id,
-            UserRoleAssignment.branch_id.is_not(None),
+            UserRoleAssignment.branch_id == role.branch_id,
         )
     )).scalar_one_or_none()
     await db.execute(delete(UserPermission).where(
@@ -185,7 +187,7 @@ async def _assign_role_slot(db: AsyncSession, *, target: User, role: Role) -> No
     await db.execute(delete(UserRoleAssignment).where(
         UserRoleAssignment.user_id == target.id,
         UserRoleAssignment.organization_id == target.organization_id,
-        UserRoleAssignment.branch_id.is_not(None),
+        UserRoleAssignment.branch_id == role.branch_id,
     ))
     db.add(UserRoleAssignment(
         user_id=target.id,
@@ -411,6 +413,11 @@ async def create_organization_role(
             organization_id=org_id, branch_id=body.branch_id, is_system=False,
         )
         db.add(role)
+        if body.branch_id is None:
+            overview = (await db.execute(select(Permission).where(Permission.name == "overview"))).scalar_one_or_none()
+            if overview is None:
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Overview permission is unavailable; run the permission seed.")
+            db.add(RolePermission(role=role, permission=overview, scope="org"))
         await db.commit()
         await db.refresh(role)
         return RoleItem(id=role.id, name=role.name, description=role.description, branch_id=role.branch_id, is_system=False, user_count=0)
@@ -502,6 +509,8 @@ async def update_role_permissions(
             select(Permission.name).join(RolePermission).where(RolePermission.role_id == role.id)
         )).scalars().all())
         requested_names = set(body.permission_names)
+        if role.branch_id is None:
+            requested_names.add("overview")
         if role.name == "member" and requested_names:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "The Member role has no permissions by default. Grant a direct permission or assign another role instead.")
         if role.name == "super_admin":
@@ -525,7 +534,7 @@ async def update_role_permissions(
             await require_scoped_permission(db=db, current_user=current_user, permission="member.permission.grant", target_branch_id=target_scope)
         if existing_names - requested_names:
             await require_scoped_permission(db=db, current_user=current_user, permission="member.permission.revoke", target_branch_id=target_scope)
-        permissions = await _require_permission_ceiling(db, current_user, body.permission_names, target_scope)
+        permissions = await _require_permission_ceiling(db, current_user, list(requested_names), target_scope)
         if role.branch_id and any(permission.scope == "org" for permission in permissions):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Organization-only permissions cannot be added to a branch role.")
         if role.branch_id is None and any(permission.scope == "branch" for permission in permissions):
@@ -631,8 +640,8 @@ async def revoke_member_role(
             actor_role = current_user.role
         _assert_role_target_mutable(actor_id=current_user.user_id, actor_role=actor_role,
                                     target_id=target.id, target_role=current_role.name if current_role else None)
-        if branch_id and target.branch_id != branch_id:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "The user does not belong to the selected branch.")
+        if branch_id and current_role is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "The user has no role in the selected branch.")
         await require_scoped_permission(
             db=db, current_user=current_user, permission="member.role.revoke", target_branch_id=branch_id,
         )
@@ -665,7 +674,14 @@ async def revoke_member_role(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "Member fallback role is misconfigured with permissions; revocation was not applied.",
             )
-        await _assign_role_slot(db, target=target, role=member_role)
+        if branch_id and target.branch_id != branch_id:
+            # An external branch manager does not become a member of a branch
+            # they do not belong to; revocation simply removes that branch slot.
+            branch = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+            if branch is not None and branch.manager_id == target.id:
+                branch.manager_id = None
+        else:
+            await _assign_role_slot(db, target=target, role=member_role)
         # End every active login so the revoked role cannot remain visible in
         # an already-open dashboard. The next request receives 401 and the
         # client returns the user to login.

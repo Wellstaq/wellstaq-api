@@ -265,6 +265,12 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "(is_unique = false AND unique_scope IS NULL) OR (is_unique = true AND unique_scope IS NOT NULL)",
             name="ck_role_unique_scope_consistency",
         ),
+        CheckConstraint(
+            "(is_system = true AND organization_id IS NULL AND branch_id IS NULL "
+            "AND template_role_id IS NULL) OR "
+            "(is_system = false AND organization_id IS NOT NULL)",
+            name="ck_role_tenant_scope_consistent",
+        ),
     )
     def __repr__(self) -> str:
         if self.is_system:
@@ -453,8 +459,8 @@ class UserRoleAssignment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             postgresql_where=text("branch_id IS NOT NULL"),
         ),
         Index(
-            "uq_user_one_branch_role_per_organization",
-            "user_id", "organization_id",
+            "uq_user_one_role_per_branch",
+            "user_id", "organization_id", "branch_id",
             unique=True,
             sqlite_where=text("branch_id IS NOT NULL"),
             postgresql_where=text("branch_id IS NOT NULL"),

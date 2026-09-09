@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Club, DepartmentMember, Organization, Role, User, UserRoleAssignment, UserSettings
@@ -48,8 +48,17 @@ async def get_organization_members(
 
     member_filters = [User.organization_id == organization_id]
     if branch_id is not None:
-        member_filters.append(User.branch_id == branch_id)
-    count_result = await session.execute(select(func.count()).select_from(User).where(*member_filters))
+        assigned_to_branch = exists(
+            select(UserRoleAssignment.id).where(
+                UserRoleAssignment.user_id == User.id,
+                UserRoleAssignment.organization_id == organization_id,
+                UserRoleAssignment.branch_id == branch_id,
+            ).correlate(User)
+        )
+        member_filters.append(or_(User.branch_id == branch_id, assigned_to_branch))
+    count_result = await session.execute(
+        select(func.count(func.distinct(User.id))).select_from(User).where(*member_filters)
+    )
     total = count_result.scalar_one()
 
     query = select(User, DepartmentMember.department_id, Role.id.label("scoped_role_id"), Role.name.label("role_name"), UserSettings.public_profile).outerjoin(
@@ -75,6 +84,37 @@ async def get_organization_members(
          "public_profile": bool(public_profile)}
         for user, department_id, scoped_role_id, role_name, public_profile in result.all()
     ]
+    if branch_id is not None:
+        for member in members:
+            member["organization_role_id"] = None
+            member["organization_role_name"] = None
+            member["branch_roles"] = ([{
+                "branch_id": branch_id,
+                "role_id": member["role_id"],
+                "role_name": member["role_name"],
+            }] if member["role_id"] and member["role_name"] else [])
+    if branch_id is None and members:
+        user_ids = [member["id"] for member in members]
+        assignment_rows = (await session.execute(
+            select(UserRoleAssignment.user_id, UserRoleAssignment.branch_id, Role.id, Role.name)
+            .join(Role, Role.id == UserRoleAssignment.role_id)
+            .where(
+                UserRoleAssignment.organization_id == organization_id,
+                UserRoleAssignment.user_id.in_(user_ids),
+                UserRoleAssignment.branch_id.is_not(None),
+            )
+        )).all()
+        branch_roles: dict[str, list[dict[str, str]]] = {}
+        for user_id, assigned_branch_id, role_id, assigned_role_name in assignment_rows:
+            branch_roles.setdefault(user_id, []).append({
+                "branch_id": assigned_branch_id,
+                "role_id": role_id,
+                "role_name": assigned_role_name,
+            })
+        for member in members:
+            member["organization_role_id"] = member["role_id"]
+            member["organization_role_name"] = member["role_name"]
+            member["branch_roles"] = branch_roles.get(member["id"], [])
     return members, total
 
 

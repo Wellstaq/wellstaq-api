@@ -443,8 +443,8 @@ class TestUserRoleAssignment:
             await db_session.flush()
 
     @pytest.mark.asyncio
-    async def test_user_cannot_hold_two_branch_role_slots(self, db_session):
-        """The current model allows only one branch-role slot per user/org."""
+    async def test_user_can_hold_one_role_in_each_of_multiple_branches(self, db_session):
+        """A user may manage multiple branches, but has one slot per branch."""
         org, owner = await make_org_with_owner(
             db_session, with_trial=False, org_kwargs={"slug": "ura-5", "business_name": "URA5"}
         )
@@ -462,7 +462,28 @@ class TestUserRoleAssignment:
         db_session.add(UserRoleAssignment(
             user_id=owner.id, role_id=role.id, organization_id=org.id, branch_id=branch_b.id,
         ))
+        await db_session.flush()
+        assignments = (await db_session.execute(
+            select(UserRoleAssignment).where(UserRoleAssignment.user_id == owner.id)
+        )).scalars().all()
+        assert {assignment.branch_id for assignment in assignments} == {branch_a.id, branch_b.id}
+
+    @pytest.mark.asyncio
+    async def test_user_cannot_hold_two_roles_in_the_same_branch(self, db_session):
+        org, owner = await make_org_with_owner(
+            db_session, with_trial=False, org_kwargs={"slug": "ura-5b", "business_name": "URA5B"}
+        )
+        branch = await _make_branch(db_session, org)
+        manager = await _make_branch_role(db_session, org, branch, name="manager-5b")
+        lead = await _make_branch_role(db_session, org, branch, name="lead-5b")
+        db_session.add(UserRoleAssignment(
+            user_id=owner.id, role_id=manager.id, organization_id=org.id, branch_id=branch.id,
+        ))
+        await db_session.flush()
         with pytest.raises(IntegrityError):
+            db_session.add(UserRoleAssignment(
+                user_id=owner.id, role_id=lead.id, organization_id=org.id, branch_id=branch.id,
+            ))
             await db_session.flush()
 
     @pytest.mark.asyncio

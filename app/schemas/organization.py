@@ -59,6 +59,12 @@ class InviteListResponse(BaseModel):
 
 # ── Members ──────────────────────────────────────────────────────────────────
 
+class BranchRoleInfo(BaseModel):
+    branch_id: str
+    role_id: str
+    role_name: str
+
+
 class OrganizationMemberInfo(BaseModel):
     """Allow-list — deliberately excludes hashed_password and other
     sensitive User fields. Add fields only as the client actually needs."""
@@ -74,6 +80,9 @@ class OrganizationMemberInfo(BaseModel):
     branch_id: str | None
     department_id: str | None = None
     role_name: str | None = None
+    organization_role_id: str | None = None
+    organization_role_name: str | None = None
+    branch_roles: list[BranchRoleInfo] = Field(default_factory=list)
     public_profile: bool = False
 
 
