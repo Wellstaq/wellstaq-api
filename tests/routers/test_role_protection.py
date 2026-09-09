@@ -106,10 +106,9 @@ async def test_org_directory_shows_both_role_levels_while_branch_view_is_local(d
     branch_members, _ = await get_organization_members(
         session=db_session, organization_id=org.id, branch_id=managed.id,
     )
-    owner_branch = next(item for item in branch_members if item["id"] == owner.id)
-    assert owner_branch["role_name"] == "branch_manager"
-    assert owner_branch["organization_role_name"] is None
-    assert len(owner_branch["branch_roles"]) == 1
+    # Cross-branch managers are not duplicated into the branch team directory;
+    # callers that need them query UserRoleAssignment for that branch.
+    assert all(item["id"] != owner.id for item in branch_members)
 
 
 @pytest.mark.asyncio

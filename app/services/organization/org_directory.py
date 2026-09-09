@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Club, DepartmentMember, Organization, Role, User, UserRoleAssignment, UserSettings
@@ -48,14 +48,9 @@ async def get_organization_members(
 
     member_filters = [User.organization_id == organization_id]
     if branch_id is not None:
-        assigned_to_branch = exists(
-            select(UserRoleAssignment.id).where(
-                UserRoleAssignment.user_id == User.id,
-                UserRoleAssignment.organization_id == organization_id,
-                UserRoleAssignment.branch_id == branch_id,
-            ).correlate(User)
-        )
-        member_filters.append(or_(User.branch_id == branch_id, assigned_to_branch))
+        # Team directories contain home-branch members only. Cross-branch role
+        # holders are resolved explicitly from UserRoleAssignment queries.
+        member_filters.append(User.branch_id == branch_id)
     count_result = await session.execute(
         select(func.count(func.distinct(User.id))).select_from(User).where(*member_filters)
     )
