@@ -420,7 +420,12 @@ async def create_organization_role(
             db.add(RolePermission(role=role, permission=overview, scope="org"))
         await db.commit()
         await db.refresh(role)
-        return RoleItem(id=role.id, name=role.name, description=role.description, branch_id=role.branch_id, is_system=False, user_count=0)
+        return RoleItem(
+            id=role.id, name=role.name, description=role.description,
+            branch_id=role.branch_id, is_system=False, user_count=0,
+            permissions=["overview"] if role.branch_id is None else [],
+            permission_scopes={"overview": "org"} if role.branch_id is None else {},
+        )
 
 
 @router.delete("/organizations/{org_id}/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)

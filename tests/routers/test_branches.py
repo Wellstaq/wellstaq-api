@@ -563,7 +563,7 @@ class TestBranchManagerRoutes:
         assert replacement.role_id == member_role.id
 
     @pytest.mark.asyncio
-    async def test_manager_must_belong_to_target_branch(
+    async def test_manager_can_manage_target_branch_without_changing_home_branch(
         self, client, db_session: AsyncSession
     ):
         org, owner, headers = await _authorized_org(
@@ -583,8 +583,14 @@ class TestBranchManagerRoutes:
             json={"manager_id": manager.id},
         )
 
-        assert response.status_code == 400
-        assert "belong to the branch" in response.json()["detail"].lower()
+        assert response.status_code == 200
+        await db_session.refresh(manager)
+        assert manager.branch_id == owner.branch_id
+        assignment = (await db_session.execute(select(UserRoleAssignment).where(
+            UserRoleAssignment.user_id == manager.id,
+            UserRoleAssignment.branch_id == branch.id,
+        ))).scalar_one()
+        assert assignment.organization_id == org.id
 
     @pytest.mark.asyncio
     async def test_unassign_without_manager_returns_conflict(

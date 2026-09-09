@@ -333,6 +333,12 @@ async def assign_user_to_branch(
                 UserPermission.branch_id == old_branch_id,
             ))
             await session.delete(previous_assignment)
+            if previous_role_name == "branch_manager":
+                source_branch = (await session.execute(
+                    select(Branch).where(Branch.id == old_branch_id)
+                )).scalar_one_or_none()
+                if source_branch is not None and source_branch.manager_id == user.id:
+                    source_branch.manager_id = None
 
     # ── Move branch ────────────────────────────────────────────────────────
     user.branch_id = branch_id
@@ -367,6 +373,8 @@ async def assign_user_to_branch(
     # a corresponding role and its unique slot is available. A manager role
     # cannot silently displace an existing manager.
     if previous_role_name:
+        await ensure_branch_roles(session, organization_id, branch_id)
+        await session.flush()
         destination_role = (await session.execute(
             select(Role).where(
                 Role.organization_id == organization_id,
@@ -478,12 +486,6 @@ async def assign_branch_manager(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found or does not belong to this organization.",
         )
-    if manager.branch_id != branch_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A branch manager must belong to the branch they manage.",
-        )
-
     await ensure_branch_roles(session, organization_id, branch_id)
     await session.flush()
     manager_role = (await session.execute(select(Role).where(
@@ -496,7 +498,7 @@ async def assign_branch_manager(
     await session.execute(delete(UserRoleAssignment).where(
         UserRoleAssignment.user_id == manager_id,
         UserRoleAssignment.organization_id == organization_id,
-        UserRoleAssignment.branch_id.is_not(None),
+        UserRoleAssignment.branch_id == branch_id,
     ))
     await session.execute(delete(UserPermission).where(
         UserPermission.user_id == manager_id,
