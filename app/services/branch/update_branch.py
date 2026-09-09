@@ -308,8 +308,33 @@ async def assign_user_to_branch(
             ),
         )
 
-    # ── Move branch ────────────────────────────────────────────────────────
+    # Capture and clear the source branch role before changing home branch.
+    # Branch roles are scoped slots; leaving the old assignment in place can
+    # conflict with the destination slot (especially for branch_manager).
     old_branch_id = user.branch_id
+    previous_assignment = None
+    previous_role_name = None
+    if old_branch_id is not None:
+        previous_assignment = (await session.execute(
+            select(UserRoleAssignment).where(
+                UserRoleAssignment.user_id == user.id,
+                UserRoleAssignment.organization_id == organization_id,
+                UserRoleAssignment.branch_id == old_branch_id,
+            )
+        )).scalar_one_or_none()
+        if previous_assignment is not None:
+            previous_role = (await session.execute(
+                select(Role).where(Role.id == previous_assignment.role_id)
+            )).scalar_one_or_none()
+            previous_role_name = previous_role.name if previous_role else None
+            await session.execute(delete(UserPermission).where(
+                UserPermission.user_id == user.id,
+                UserPermission.organization_id == organization_id,
+                UserPermission.branch_id == old_branch_id,
+            ))
+            await session.delete(previous_assignment)
+
+    # ── Move branch ────────────────────────────────────────────────────────
     user.branch_id = branch_id
 
     # ── Move department membership ─────────────────────────────────────────
@@ -337,6 +362,43 @@ async def assign_user_to_branch(
 
     # Increment new department's member_count
     new_department.member_count += 1
+
+    # Reapply the same role in the destination branch, when that branch has
+    # a corresponding role and its unique slot is available. A manager role
+    # cannot silently displace an existing manager.
+    if previous_role_name:
+        destination_role = (await session.execute(
+            select(Role).where(
+                Role.organization_id == organization_id,
+                Role.branch_id == branch_id,
+                Role.name == previous_role_name,
+            )
+        )).scalar_one_or_none()
+        if destination_role is not None:
+            if previous_role_name == "branch_manager":
+                occupied = (await session.execute(
+                    select(UserRoleAssignment.user_id).join(Role, Role.id == UserRoleAssignment.role_id).where(
+                        UserRoleAssignment.organization_id == organization_id,
+                        UserRoleAssignment.branch_id == branch_id,
+                        Role.name == "branch_manager",
+                        UserRoleAssignment.user_id != user.id,
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if occupied is not None:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "The destination branch already has a Branch Manager; transfer the user after resolving that role.",
+                    )
+            session.add(UserRoleAssignment(
+                user_id=user.id, role_id=destination_role.id,
+                organization_id=organization_id, branch_id=branch_id,
+                department_id=None,
+            ))
+            if previous_role_name == "branch_manager":
+                destination_branch = (await session.execute(
+                    select(Branch).where(Branch.id == branch_id)
+                )).scalar_one()
+                destination_branch.manager_id = user.id
 
     await session.flush()
     await session.refresh(user)
