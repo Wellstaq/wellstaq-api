@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     STORAGE_CDN_DOMAIN: str = ""
 
     # ── CORS ─────────────────────────────────────────────
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "https://appwellstaq6.vercel.app"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "https://appwellstaq6.vercel.app",
+        "https://wellstaqemployee.vercel.app",
+    ]
     PUBLIC_APP_ORIGIN: str = "http//localhost:3000"
 
     model_config = SettingsConfigDict(
