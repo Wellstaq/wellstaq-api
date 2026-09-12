@@ -16,7 +16,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Branch, Department, DepartmentMember, User
+from app.models import Branch, Department, DepartmentMember, Organization, User
 from app.services.leaderboard import get_org_leaderboard
 from app.services.organization.org_directory import get_organization_members
 from app.services.auth.session_service import get_me
@@ -28,6 +28,10 @@ async def get_dashboard_bootstrap(
     metric_type: str = "steps",
 ) -> dict:
     user, department_id = await get_me(session=session, user_id=user_id, role=role)
+    organization_result = await session.execute(
+        select(Organization).where(Organization.id == organization_id)
+    )
+    organization = organization_result.scalar_one()
     settings = user.settings
     user_response = {
         "user_id": user.id,
@@ -36,6 +40,8 @@ async def get_dashboard_bootstrap(
         "last_name": user.last_name,
         "role": role,
         "organization_id": organization_id,
+        "business_name": organization.business_name,
+        "organization_slug": organization.slug,
         "branch_id": branch_id,
         "department_id": department_id,
         "location": user.country,

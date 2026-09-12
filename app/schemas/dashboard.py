@@ -24,8 +24,15 @@ class DepartmentBootstrapItem(BaseModel):
     avatars: list[str]
 
 
+class DashboardBootstrapUserResponse(UserMeResponse):
+    """Current user plus organization identity needed during dashboard load."""
+
+    business_name: str
+    organization_slug: str
+
+
 class DashboardBootstrapResponse(BaseModel):
-    user: UserMeResponse
+    user: DashboardBootstrapUserResponse
     branches: list[BranchResponse]
     members: list[OrganizationMemberInfo]
     departments: list[DepartmentBootstrapItem]

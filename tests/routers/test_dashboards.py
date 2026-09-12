@@ -10,6 +10,9 @@ class TestDashboardRoutes:
     async def test_bootstrap_and_trends(self,client,db_session):
         org,u,h=await _ctx(db_session)
         r=await client.get(f'/organizations/{org.id}/dashboard/bootstrap',headers=h); assert r.status_code==200
+        body = r.json()
+        assert body["user"]["business_name"] == org.business_name
+        assert body["user"]["organization_slug"] == org.slug
         r=await client.get(f'/organizations/{org.id}/dashboard/engagement-wellbeing-trends',headers=h); assert r.status_code in (200,403)
     @pytest.mark.asyncio
     async def test_tenant_isolation(self,client,db_session):

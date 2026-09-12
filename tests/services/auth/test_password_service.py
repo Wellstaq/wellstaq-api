@@ -47,6 +47,8 @@ class TestPasswordReset:
         await password_service.request_password_reset(session=db_session, email=" OWNER@example.com ")
         reset_email.assert_awaited_once()
         token = reset_email.await_args.kwargs["reset_token"]
+        assert 20 <= len(token) <= 24
+        assert await memory_redis.get(password_service._reset_token_key(reset_token=token)) == user.email
         await password_service.reset_password(session=db_session, reset_token=token, new_password="Replacement123!")
         assert verify_password("Replacement123!", user.hashed_password)
         key = password_service._used_token_key(reset_token=token)
@@ -55,6 +57,19 @@ class TestPasswordReset:
         with pytest.raises(HTTPException, match="already been used"):
             await password_service.reset_password(session=db_session, reset_token=token, new_password="Another123!")
         assert verify_password("Replacement123!", user.hashed_password)
+
+    async def test_reset_email_includes_copyable_absolute_link(self, monkeypatch):
+        sender = AsyncMock()
+        monkeypatch.setattr("app.core.email.send_email", sender)
+
+        await password_service._send_reset_email(
+            email="user@example.com", reset_token="short-token"
+        )
+
+        html = sender.await_args.kwargs["html"]
+        expected_url = "https://appwellstaq6.vercel.app/reset-password?token=short-token"
+        assert "You can also copy this link manually to your browser:" in html
+        assert expected_url in html
 
     @pytest.mark.parametrize("token_type,minutes", [(TokenType.ACCESS, 5), (TokenType.PASSWORD_RESET, -1)])
     async def test_wrong_type_and_expired_tokens_are_rejected(self, db_session, token_type, minutes):
