@@ -124,7 +124,7 @@ async def reset_password(*, session: AsyncSession, reset_token: str, new_passwor
     logger.info("Password reset completed", extra={"user_id": user.id})
 
 async def _send_reset_email(*, email: str, reset_token: str) -> None:
-    reset_url = f"https://app.wellstaq.com/reset-password?token={reset_token}"
+    reset_url = f"https://appwellstaq6.vercel.app/reset-password?token={reset_token}"
 
     html_body = f"""
     <html>
@@ -139,9 +139,6 @@ async def _send_reset_email(*, email: str, reset_token: str) -> None:
           background:#4F46E5;color:#fff;border-radius:8px;
           font-weight:600;text-decoration:none;margin:20px 0;
         ">Reset Password</a>
-         <p style="color:#555;">
-          or you can use the link manually {reset_token}
-        </p>
         <p style="color:#999;font-size:12px;">
           If you didn't request this, you can safely ignore this email.
         </p>
