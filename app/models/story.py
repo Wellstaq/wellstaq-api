@@ -26,7 +26,7 @@ Design principles:
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -66,6 +66,7 @@ class Story(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ── Content ───────────────────────────────────────────────────────────
     media_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     media_type: Mapped[str] = mapped_column(String(50), nullable=False, default="image")
+    like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
     expires_at: Mapped[datetime] = mapped_column(
@@ -89,6 +90,7 @@ class Story(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         back_populates="stories",
         foreign_keys=[branch_id],
     )
+    likes: Mapped[list["StoryLike"]] = relationship("StoryLike", back_populates="story", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_stories_user_expires_at", "user_id", "expires_at"),

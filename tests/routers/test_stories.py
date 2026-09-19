@@ -115,3 +115,51 @@ class TestStoryRoutes:
         response = await client.get(f"/organizations/{other_org.id}/stories", headers=headers)
 
         assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_story_likes_are_idempotent_and_expires(client, db_session: AsyncSession):
+    org, user, headers = await _context(db_session)
+    story = await _story(db_session, user)
+    endpoint = f"/organizations/{org.id}/stories/{story.id}/like"
+
+    liked = await client.post(endpoint, headers=headers)
+    assert liked.status_code == 200
+    assert liked.json()["like_count"] == 1
+    again = await client.post(endpoint, headers=headers)
+    assert again.status_code == 200
+    assert again.json()["like_count"] == 1
+
+    fetched = await client.get(f"/organizations/{org.id}/stories/{story.id}", headers=headers)
+    assert fetched.json()["like_count"] == 1
+
+    unliked = await client.delete(endpoint, headers=headers)
+    assert unliked.status_code == 200
+    assert unliked.json()["like_count"] == 0
+    again = await client.delete(endpoint, headers=headers)
+    assert again.status_code == 200
+    assert again.json()["like_count"] == 0
+
+    story.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    story.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    await db_session.flush()
+    expired = await client.post(endpoint, headers=headers)
+    assert expired.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_video_story_upload_contract(client, db_session: AsyncSession, monkeypatch):
+    org, user, headers = await _context(db_session)
+    service = importlib.import_module("app.services.story.create_story")
+    monkeypatch.setattr(service, "confirm_upload", lambda **_: True)
+    video_url = f"https://assets.test.invalid/stories/{org.id}/clip.mp4"
+
+    response = await client.post(f"/organizations/{org.id}/stories", headers=headers,
+                                 json={"media_url": video_url, "media_type": "video"})
+    assert response.status_code == 201, response.text
+    assert response.json()["media_type"] == "video"
+    assert response.json()["media_url"] == video_url
+
+    wrong_type = await client.post(f"/organizations/{org.id}/stories", headers=headers,
+                                   json={"media_url": video_url, "media_type": "image"})
+    assert wrong_type.status_code == 400

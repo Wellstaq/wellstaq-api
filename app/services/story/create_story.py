@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import MEDIA_TYPES
 from app.models import Story
 from app.services.story._helpers import validate_org_and_branch
+from app.services.post.media import validate_post_media
 from app.services.storage import attach_media_asset, confirm_upload
 from app.services.storage._helpers import extract_object_key
 
@@ -28,6 +29,7 @@ async def create_story(
     if media_type not in MEDIA_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"media_type must be one of {MEDIA_TYPES}.")
 
+    validate_post_media([media_url], media_type)
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
 
     object_key = extract_object_key(media_url)

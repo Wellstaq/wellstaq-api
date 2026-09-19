@@ -25,6 +25,7 @@ from app.models.wellbeing import(
 )
 from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
 from app.models.story import Story
+from app.models.story_like import StoryLike
 from app.models.permission import Permission, Role, RolePermission, UserPermission, UserRoleAssignment
 from app.models.engagement import ActivityLog, EngagementLog
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target

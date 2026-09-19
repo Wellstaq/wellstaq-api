@@ -20,13 +20,13 @@ async def delete_post(*, session: AsyncSession, organization_id: str, post_id: s
     """Hard delete — cascades to likes/comments/shares/saves/hashtags via FK ondelete."""
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
 
-    media_url = post.media_url  # capture before delete
+    media_urls = post.media_urls or ([post.media_url] if post.media_url else [])
 
     await remove_all_post_hashtags(session=session, post_id=post_id)
     await session.delete(post)
     await session.flush()
 
-    if media_url:
+    for media_url in media_urls:
         try:
             await release_media_asset(session=session, object_key=extract_object_key(media_url))
         except Exception:

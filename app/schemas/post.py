@@ -2,7 +2,7 @@
 app/schemas/post.py
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from datetime import datetime
 
 
@@ -16,12 +16,30 @@ class PostCreateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=10_000)
     media_url: str | None = Field(default=None, max_length=2048)
     media_type: str | None = Field(default=None, max_length=50)  # image | video | none
+    media_urls: list[str] | None = Field(default=None, min_length=1, max_length=15)
+
+    @model_validator(mode="after")
+    def validate_media(self):
+        if self.media_urls is not None and self.media_url is not None:
+            raise ValueError("Use media_urls or media_url, not both.")
+        if self.media_urls is not None and self.media_type != "image":
+            raise ValueError("media_urls requires media_type='image'.")
+        return self
 
 
 class PostUpdateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=10_000)
     media_url: str | None = Field(default=None, max_length=2048)
     media_type: str | None = Field(default=None, max_length=50)
+    media_urls: list[str] | None = Field(default=None, min_length=1, max_length=15)
+
+    @model_validator(mode="after")
+    def validate_media(self):
+        if self.media_urls is not None and self.media_url is not None:
+            raise ValueError("Use media_urls or media_url, not both.")
+        if self.media_urls is not None and self.media_type not in (None, "image"):
+            raise ValueError("media_urls requires media_type='image'.")
+        return self
 
 
 
@@ -35,11 +53,18 @@ class PostResponse(BaseModel):
     content: str | None
     media_url: str | None
     media_type: str | None
+    media_urls: list[str] | None
     like_count: int
     comment_count: int
     share_count: int  # new
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def legacy_media(self):
+        if self.media_urls is None:
+            self.media_urls = [self.media_url] if self.media_url else []
+        return self
 
 class PostListResponse(BaseModel):
     items: list[PostResponse]

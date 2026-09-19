@@ -156,6 +156,7 @@ async def create_post_route(
             content=body.content,
             media_url=body.media_url,
             media_type=body.media_type,
+            media_urls=body.media_urls,
         )
         await db.commit()
         return PostResponse.model_validate(post)
@@ -342,7 +343,7 @@ async def edit_post_route(
 
         updated = await edit_post(
             session=db, organization_id=org_id, post_id=post_id,
-            content=body.content, media_url=body.media_url, media_type=body.media_type,
+            content=body.content, media_url=body.media_url, media_type=body.media_type, media_urls=body.media_urls,
         )
         await db.commit()
         return PostResponse.model_validate(updated)

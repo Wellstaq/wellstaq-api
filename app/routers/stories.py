@@ -33,7 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import CurrentUser, get_current_user, require_same_organization, require_active_subscription
 from app.core.database import get_db
 from app.core.guards import request_guard
-from app.schemas.story import StoryCreateRequest, StoryListResponse, StoryResponse
+from app.schemas.story import StoryCreateRequest, StoryListResponse, StoryResponse, StoryLikeActionResponse
+from app.services.story.like_service import set_story_like
 from app.services.story import create_story, delete_story, get_my_stories, get_stories, get_story
 from app.services.story._helpers import check_story_branch_access, check_story_creation_membership
 
@@ -105,6 +106,34 @@ async def get_story_route(
         story = await get_story(session=db, organization_id=org_id, story_id=story_id)
         await check_story_branch_access(db=db, current_user=current_user, story=story)
         return StoryResponse.model_validate(story)
+
+
+@router.post("/{story_id}/like", response_model=StoryLikeActionResponse)
+async def like_story_route(
+    org_id: str, story_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_active_subscription),
+) -> StoryLikeActionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/stories/{story_id}/like"):
+        count = await set_story_like(session=db, organization_id=org_id, story_id=story_id,
+                                     current_user=current_user, liked=True)
+        await db.commit()
+        return StoryLikeActionResponse(story_id=story_id, user_id=current_user.user_id, liked=True, like_count=count)
+
+
+@router.delete("/{story_id}/like", response_model=StoryLikeActionResponse)
+async def unlike_story_route(
+    org_id: str, story_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_active_subscription),
+) -> StoryLikeActionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/stories/{story_id}/like"):
+        count = await set_story_like(session=db, organization_id=org_id, story_id=story_id,
+                                     current_user=current_user, liked=False)
+        await db.commit()
+        return StoryLikeActionResponse(story_id=story_id, user_id=current_user.user_id, liked=False, like_count=count)
 
 
 @router.delete("/{story_id}", status_code=status.HTTP_204_NO_CONTENT)

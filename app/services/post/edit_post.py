@@ -14,6 +14,7 @@ from app.core.datetime import ensure_utc
 from app.models import Post
 from app.services.hashtag import sync_post_hashtags
 from app.services.post._helpers import get_post_or_404
+from app.services.post.media import validate_post_media
 from app.services.storage import attach_media_asset, confirm_upload, release_media_asset
 from app.services.storage._helpers import extract_object_key
 
@@ -30,6 +31,7 @@ async def edit_post(
     content: str | None,
     media_url: str | None,
     media_type: str | None,
+    media_urls: list[str] | None = None,
 ) -> Post:
     post = await get_post_or_404(session=session, organization_id=organization_id, post_id=post_id)
 
@@ -43,33 +45,27 @@ async def edit_post(
         post.content = content.strip()
         await sync_post_hashtags(session=session, organization_id=organization_id, post_id=post.id, content=post.content)
 
-    if media_url is not None:
-        object_key = extract_object_key(media_url)
-        if not confirm_upload(object_key=object_key):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
-
-        old_media_url = post.media_url
-        post.media_url = media_url
-
-        # Mark the new upload as attached so the sweep job won't reap it.
-        await attach_media_asset(
-            session=session, object_key=object_key,
-            attached_to_type="post", attached_to_id=post.id,
-        )
-
-        # Release the old media now that it's no longer referenced —
-        # previously this was silently overwritten with no cleanup at all.
-        if old_media_url and old_media_url != media_url:
+    if media_url is not None or media_urls is not None:
+        urls = media_urls if media_urls is not None else [media_url]
+        effective_type = media_type or ("image" if media_urls is not None else post.media_type)
+        validate_post_media(urls, effective_type)
+        old_urls = post.media_urls or ([post.media_url] if post.media_url else [])
+        new_keys = [extract_object_key(url) for url in urls]
+        for key in new_keys:
+            if not key or not confirm_upload(object_key=key):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media upload not found — upload may have failed or not completed yet.")
+        post.media_url = urls[0]
+        post.media_urls = urls
+        post.media_type = effective_type
+        for key in new_keys:
+            await attach_media_asset(session=session, object_key=key, attached_to_type="post", attached_to_id=post.id)
+        for url in set(old_urls) - set(urls):
             try:
-                await release_media_asset(session=session, object_key=extract_object_key(old_media_url))
+                await release_media_asset(session=session, object_key=extract_object_key(url))
             except Exception:
-                logger.error(
-                    "Failed to release old post media asset", exc_info=True,
-                    extra={"post_id": post.id},
-                )
-
-    if media_type is not None:
-        post.media_type = media_type
+                logger.error("Failed to release old post media asset", exc_info=True, extra={"post_id": post.id})
+    elif media_type is not None and media_type != post.media_type:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Changing media_type requires a new media upload.")
 
     await session.flush()
     await session.refresh(post)

@@ -22,8 +22,16 @@ class StoryResponse(BaseModel):
     branch_id: str | None
     media_url: str
     media_type: str
+    like_count: int
     expires_at: datetime
     created_at: datetime
+
+
+class StoryLikeActionResponse(BaseModel):
+    story_id: str
+    user_id: str
+    liked: bool
+    like_count: int
 
 
 class StoryListResponse(BaseModel):

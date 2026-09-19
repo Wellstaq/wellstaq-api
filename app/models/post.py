@@ -52,7 +52,7 @@ Tenant isolation:
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, CheckConstraint, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, CheckConstraint, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -89,6 +89,8 @@ class Post(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     media_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Ordered gallery; media_url remains the first item for older clients.
+    media_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
 
     # Denormalized counters
