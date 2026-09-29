@@ -76,6 +76,8 @@ class TestNotificationReadIsolation:
         assert notification.is_read is False
         result = await mark_as_read(session=db_session, user_id=user.id, notification_id=notification.id)
         first_read = result.read_at
+        assert first_read is not None
+        assert first_read.tzinfo is None
         result = await mark_as_read(session=db_session, user_id=user.id, notification_id=notification.id)
         assert result.read_at == first_read
         assert result.is_read is True
@@ -91,5 +93,7 @@ class TestNotificationReadIsolation:
         await db_session.refresh(mine)
         await db_session.refresh(theirs)
         assert mine.is_read is True
+        assert mine.read_at is not None
+        assert mine.read_at.tzinfo is None
         assert theirs.is_read is False
         assert await mark_all_as_read(session=db_session, user_id=user.id) == 0
