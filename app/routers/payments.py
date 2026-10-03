@@ -45,6 +45,8 @@ from app.services.payment import (get_subscription,
     handle_charge_success,  
     handle_invoice_payment_failed,
     handle_subscription_disable,
+    handle_subscription_create,
+    handle_subscription_not_renewing,
     
 )
 
@@ -210,9 +212,16 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
     if not verify_paystack_signature(payload_body=payload_body, signature_header=signature):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook signature.")
 
-    event = json.loads(payload_body)
+    try:
+        event = json.loads(payload_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be valid JSON.") from exc
+    if not isinstance(event, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be a JSON object.")
     event_type = event.get("event")
     event_data = event.get("data", {})
+    if not isinstance(event_type, str) or not isinstance(event_data, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook event and data fields are invalid.")
 
     # ── Server-to-server re-verification ────────────────────────────────────
     # Signature verification confirms the payload genuinely came from
@@ -229,13 +238,34 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
             logger.error("Failed to re-verify transaction with Paystack", extra={"reference": reference})
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not verify transaction with payment provider.")
 
-        if verified_data.get("status") != ("success" if event_type == "charge.success" else "failed"):
+        if str(verified_data.get("status") or "").lower() != ("success" if event_type == "charge.success" else "failed"):
             logger.error(
                 "Webhook event type does not match Paystack's verified status — ignoring",
                 extra={"reference": reference, "webhook_event": event_type, "verified_status": verified_data.get("status")},
             )
             return {"status": "ignored"}
+        # Verification is authoritative for charge fields, while the signed
+        # event may contain subscription/invoice context absent from verify.
+        for key in ("subscription", "period_start", "period_end", "next_payment_date"):
+            if key in event_data and key not in verified_data:
+                verified_data[key] = event_data[key]
         event_data = verified_data
+
+    if event_type == "invoice.update" and event_data.get("paid") in (True, 1):
+        invoice_transaction = event_data.get("transaction")
+        invoice_transaction = invoice_transaction if isinstance(invoice_transaction, dict) else {}
+        invoice_reference = invoice_transaction.get("reference")
+        if invoice_reference:
+            try:
+                verified_data = await verify_transaction(reference=str(invoice_reference))
+            except PaystackError:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not verify renewal transaction.")
+            if str(verified_data.get("status") or "").lower() != "success":
+                return {"status": "ignored"}
+            verified_data["subscription"] = event_data.get("subscription", {})
+            verified_data["period_start"] = event_data.get("period_start")
+            verified_data["period_end"] = event_data.get("period_end")
+            event_data = verified_data
 
     async with request_guard(db, "/webhooks/paystack"):
         if event_type == "charge.success":
@@ -244,6 +274,12 @@ async def paystack_webhook_route(request: Request, db: AsyncSession = Depends(ge
             await handle_charge_failed(session=db, event_data=event_data)
         elif event_type == "invoice.payment_failed":
             await handle_invoice_payment_failed(session=db, event_data=event_data)
+        elif event_type == "invoice.update" and str(event_data.get("status") or "").lower() == "success":
+            await handle_charge_success(session=db, event_data=event_data)
+        elif event_type == "subscription.create":
+            await handle_subscription_create(session=db, event_data=event_data)
+        elif event_type == "subscription.not_renew":
+            await handle_subscription_not_renewing(session=db, event_data=event_data)
         elif event_type == "subscription.disable":
             await handle_subscription_disable(session=db, event_data=event_data)
         else:

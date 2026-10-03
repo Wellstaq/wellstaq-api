@@ -27,7 +27,7 @@ from app.models.activity import UserActivityFeed, UserPriority, DailyCheckin
 from app.models.story import Story
 from app.models.story_like import StoryLike
 from app.models.permission import Permission, Role, RolePermission, UserPermission, UserRoleAssignment
-from app.models.engagement import ActivityLog, EngagementLog
+from app.models.engagement import ActivityLog, EngagementLog, HealthActivitySync
 from app.models.snapshot_target import LeaderboardSnapshot, KPISnapshot, Target
 from app.models.payment import SubscriptionPlan, PaymentTransaction, OrganizationSubscription
 from app.models.wellbeing_survey import(

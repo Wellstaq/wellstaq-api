@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -51,15 +51,17 @@ async def submit_activity(
     value,
     unit: str | None,
     source: str = "manual",
+    entry_date=None,
+    is_verified: bool = False,
 ) -> tuple[ActivityLog, list[str]]:
     normalized_metric_type = metric_type.strip().lower()
-    today = today_utc()
+    activity_date = entry_date or today_utc()
 
     existing = await session.execute(
         select(ActivityLog).where(
             ActivityLog.user_id == user_id,
             ActivityLog.metric_type == normalized_metric_type,
-            ActivityLog.date == today,
+            ActivityLog.date == activity_date,
         )
     )
     entry = existing.scalar_one_or_none()
@@ -67,6 +69,8 @@ async def submit_activity(
     if entry is not None:
         entry.value = value
         entry.unit = unit
+        entry.source = source
+        entry.is_verified = is_verified
     else:
         entry = ActivityLog(
             organization_id=organization_id,
@@ -75,7 +79,9 @@ async def submit_activity(
             metric_type=normalized_metric_type,
             value=value,
             unit=unit,
-            date=today,
+            date=activity_date,
+            source=source,
+            is_verified=is_verified,
         )
         session.add(entry)
 
@@ -87,6 +93,8 @@ async def submit_activity(
         user_id=user_id,
         metric_type=normalized_metric_type,
         value=value,
+        entry_date=activity_date,
+        source="health_sync" if is_verified else "activity_log",
     )
 
     logger.info(
@@ -109,6 +117,8 @@ async def _fanout_to_active_challenges(
     user_id: str,
     metric_type: str,
     value,
+    entry_date=None,
+    source: str = "activity_log",
 ) -> list[str]:
     """
     Finds every challenge this user is an active (not yet completed)
@@ -119,6 +129,7 @@ async def _fanout_to_active_challenges(
     of a challenge-specific endpoint.
     """
 
+    progress_date = entry_date or today_utc()
     result = await session.execute(
         select(Challenge, ChallengeParticipant)
         .join(
@@ -131,19 +142,19 @@ async def _fanout_to_active_challenges(
             Challenge.organization_id == organization_id,
             Challenge.metric_type == metric_type,
             Challenge.status == "active",
+            or_(Challenge.start_date.is_(None), Challenge.start_date <= progress_date),
+            or_(Challenge.end_date.is_(None), Challenge.end_date >= progress_date),
         )
     )
 
     rows = result.all()
     updated_ids: list[str] = []
-    today = today_utc()
-
     for challenge, participant in rows:
         existing = await session.execute(
             select(ChallengeProgressEntry).where(
                 ChallengeProgressEntry.challenge_id == challenge.id,
                 ChallengeProgressEntry.user_id == user_id,
-                ChallengeProgressEntry.entry_date == today,
+                ChallengeProgressEntry.entry_date == progress_date,
             )
         )
 
@@ -151,15 +162,15 @@ async def _fanout_to_active_challenges(
 
         if progress_entry is not None:
             progress_entry.value = value
-            progress_entry.source = "activity_log"
+            progress_entry.source = source
         else:
             progress_entry = ChallengeProgressEntry(
                 challenge_id=challenge.id,
                 user_id=user_id,
                 organization_id=organization_id,
-                entry_date=today,
+                entry_date=progress_date,
                 value=value,
-                source="activity_log",
+                source=source,
             )
             session.add(progress_entry)
 

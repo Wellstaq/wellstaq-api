@@ -15,10 +15,25 @@ Do not run production seeds to prepare these tests.
 
 - Keep model tests under `tests/models/`, service tests under
   `tests/services/<domain>/`, and route tests under `tests/routers/`.
-- Name test modules `test_*.py` so pytest collects them. The survey tests
-  are now `tests/models/test_wellbeing_surveys.py` (previously uncollected).
-- Follow the existing async pytest conventions, local factories, and
-  `Test...` groups for happy paths, validation, and authorization cases.
+- Every source module gets a corresponding `test_*.py` module in the matching
+  folder. Use the existing plural domain folders (`branch` -> `branches`,
+  `event` -> `events`, and so on) consistently.
+- Start each test module with its source path and behavior contract. Keep
+  domain-only factories local; shared organization/user/authentication
+  factories belong in `conftest.py`.
+- Group cases by behavior with `Test...` classes: success, validation,
+  not-found, conflict, authorization, tenant/scope isolation, persistence,
+  and provider failures as applicable.
+- Model tests exercise ORM persistence, defaults, constraints, relationships,
+  cascades, and tenant integrity against the real in-memory database.
+- Service tests call the real service with persisted rows and assert returned
+  values plus database side effects. Mock only external providers such as
+  email, Redis timing, payment gateways, push delivery, and object storage.
+- Router tests make HTTP requests through `client`; they exercise real request
+  validation, JWT/session authentication, role-derived permissions, service
+  calls, transaction ownership, response schemas, and persisted side effects.
+  Route-existence manifests and "status < 500" smoke tests are not substitutes
+  for endpoint behavior tests.
 - Use the shared `db_session`: in-memory SQLite with foreign keys enabled
   and an outer transaction/savepoint, including tests that call `commit()`.
   The test configuration overrides `DATABASE_URL` before importing settings.
@@ -41,32 +56,31 @@ Examples:
 python -m pytest tests/services/auth -q
 python -m pytest tests/services/notifications tests/services/events -q
 python -m pytest tests/services/auth/test_role_access.py -q
+python -m pytest tests/routers/test_branches.py -q
 python -m pytest -q --junitxml=/tmp/wellstaq-tests.xml
+python -m pytest -q --cov=app --cov-branch --cov-report=term-missing
 ```
 
-## Refresh scope and known failures
+## Current baseline and known limitations
 
-This refresh updates stale role names, scoped role/permission fixtures,
-subscription fixtures, club fields and membership results, event results
-and invitation behavior, OTP storage, and challenge progress/notification
-tests. Added behavior coverage includes role replacement and session
-revocation, OTP expiry/reuse/attempt limits, notification preferences and
-recipient isolation, password reset/reuse, and initial Overview membership.
+The full suite baseline after the current refresh is **1,613 passed and 2
+expected failures**. SQLAlchemy warnings are promoted to errors so ORM/database
+cascade conflicts cannot pass unnoticed.
 
-The following remain deliberately failing, not skipped or marked expected:
+The two expected failures document SQLite limitations rather than accepted
+application failures:
 
-- Three model tests require a custom role to have an organization. The
-  current database model accepts tenant-less custom roles. These identify
-  a missing persistence invariant; they do not by themselves prove an
-  authenticated endpoint permits cross-organization access.
-- `test_dashboard_session_requires_overview_permission[custom_viewer-False]`
-  detects the deferred registration bug: a custom role without `overview`
-  still receives tokens because registration checks the role name.
+- the circular organization/owner bootstrap cannot express a deferred
+  `NOT NULL` owner constraint in SQLite;
+- SQLite does not reproduce PostgreSQL's owner-FK cascade across the deferred
+  circular relationship.
 
-Existing expected failures remain unchanged. Application code, migrations,
-and development data were not altered to silence these results. Fixing the
-remaining application behavior is separate work.
+PostgreSQL migration tests are still required before deployment for those two
+contracts. External-provider sandbox tests remain separate from this isolated
+unit/integration suite.
 
-SQLite tests do not replace PostgreSQL migration/constraint verification or
-provider sandbox integration tests. This is targeted regression coverage,
-not a claim that every route and external integration is covered.
+Router expansion is deliberately behavior-first. Completed matching HTTP
+suites currently include branches, branch activity summary, activity log,
+categories, storage, Paystack webhooks, and role protection. Continue adding
+one complete source-matched router suite at a time; do not bulk-generate
+placeholder tests.

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User
@@ -44,12 +45,21 @@ async def initiate_checkout(
 ) -> dict:
     subscription = await get_subscription_or_404(session=session, organization_id=organization_id)
     callback_url = _validate_callback_url(callback_url)
+    now = datetime.now(timezone.utc)
+    period_end = subscription.current_period_end
+    if period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=timezone.utc)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.PAYMENT_PENDING_EXPIRY_MINUTES)
+    if subscription.status == "active" and period_end > now:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This organization already has an active subscription. Wait until the current billing period ends before starting another checkout.",
+        )
+
+    cutoff = now - timedelta(minutes=settings.PAYMENT_PENDING_EXPIRY_MINUTES)
     stale_result = await session.execute(
         select(PaymentTransaction).where(
             PaymentTransaction.organization_id == organization_id,
-            PaymentTransaction.plan_id == plan_id,
             PaymentTransaction.status == "pending",
             PaymentTransaction.created_at <= cutoff,
         )
@@ -60,21 +70,20 @@ async def initiate_checkout(
     await session.flush()
 
     # ── Idempotency guard ────────────────────────────────────────────────────
-    # If there's already a PENDING transaction for this org+plan, reject a
+    # If there's already a PENDING transaction for this org, reject a
     # new checkout attempt rather than creating a second parallel one —
     # prevents double-submission (e.g. a user double-clicking "pay") from
-    # generating duplicate pending transactions and confusing history.
+    # generating duplicate pending transactions (even across plans).
     existing_pending = await session.execute(
         select(PaymentTransaction).where(
             PaymentTransaction.organization_id == organization_id,
-            PaymentTransaction.plan_id == plan_id,
             PaymentTransaction.status == "pending",
         )
     )
-    if existing_pending.scalar_one_or_none() is not None:
+    if existing_pending.scalars().first() is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "A payment for this plan is already in progress. Please complete or wait for it to expire before retrying.",
+            "A payment is already in progress for this organization. Complete it or wait for it to expire before retrying.",
         )
 
     plan_result = await session.execute(
@@ -101,14 +110,27 @@ async def initiate_checkout(
     transaction = PaymentTransaction(
         organization_id=organization_id, subscription_id=subscription.id, plan_id=plan.id,
         amount=plan.amount, currency=plan.currency, status="pending", external_reference=reference,
+        is_recurring=auto_renew,
     )
     session.add(transaction)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A payment is already in progress for this organization.",
+        ) from exc
 
     try:
         paystack_data = await initialize_transaction(
             email=initiating_user.email, amount=plan.amount, currency=plan.currency,
             reference=reference, callback_url=callback_url, plan_code=plan_code,
+            metadata={
+                "organization_id": organization_id,
+                "subscription_id": subscription.id,
+                "plan_id": plan.id,
+                "auto_renew": auto_renew,
+            },
         )
     except PaystackError as exc:
         logger.error("Paystack checkout initialization failed", extra={"organization_id": organization_id})

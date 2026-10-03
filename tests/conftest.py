@@ -10,7 +10,24 @@ import socket
 
 # Set before importing application settings: accidental application sessions
 # must never resolve to the developer's database.
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+_TEST_ENV = {
+    "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+    "JWT_SECRET_KEY": "test-only-secret-key-that-is-never-used-outside-pytest",
+    "JWT_ALGORITHM": "HS256",
+    "REDIS_URL": "redis://127.0.0.1:6379/15",
+    "STORAGE_REGION": "us-east-1",
+    "STORAGE_ACCESS_KEY_ID": "test-access-key",
+    "STORAGE_SECRET_ACCESS_KEY": "test-secret-key",
+    "STORAGE_BUCKET_NAME": "wellstaq-test-bucket",
+    "STORAGE_PUBLIC_BASE_URL": "https://assets.test.invalid",
+    "STORAGE_CDN_DOMAIN": "assets.test.invalid",
+    "AWS_EC2_METADATA_DISABLED": "true",
+    "SENDGRID_API_KEY": "test-sendgrid-key",
+    "MAIL_FROM": "tests@wellstaq.invalid",
+    "PUBLIC_APP_ORIGIN": "http://localhost:3000",
+    "PAYSTACK_SECRET_KEY": "test-paystack-key",
+}
+os.environ.update(_TEST_ENV)
 
 import pytest
 import pytest_asyncio
@@ -19,11 +36,12 @@ from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import Branch, Organization, Role, User
+from app.models import Branch, Organization, Permission, Role, RolePermission, User
 import app.core.redis as redis_module
 from tests.fakes import MemoryRedis
 from app.models.payment import SubscriptionPlan
 from app.services.payment import start_trial
+from app.services.auth.token_service import issue_tokens
 
 # ── In-memory SQLite for tests — never touches app.db ────
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -336,3 +354,44 @@ async def get_or_create_trial_plan(db_session: AsyncSession) -> SubscriptionPlan
         db_session.add(plan)
         await db_session.flush()
     return plan
+
+
+async def authenticate_user(
+    db_session: AsyncSession,
+    user: User,
+    *,
+    permissions: tuple[str, ...] = (),
+    permission_scope: str = "org",
+    device_fingerprint: str = "pytest-device",
+) -> tuple[dict[str, str], dict]:
+    """Make a persisted user request-ready with a real session and JWT.
+
+    Router tests use the real ``get_current_user`` dependency. Permissions are
+    attached to the user's role, then resolved from the database on request in
+    the same way as production. External auth providers are not bypassed.
+    """
+    user.status = "active"
+    for name in permissions:
+        permission = (
+            await db_session.execute(select(Permission).where(Permission.name == name))
+        ).scalar_one_or_none()
+        if permission is None:
+            permission = Permission(name=name, scope="both")
+            db_session.add(permission)
+            await db_session.flush()
+        db_session.add(RolePermission(
+            role_id=user.role_id,
+            permission_id=permission.id,
+            scope=permission_scope,
+        ))
+    await db_session.flush()
+
+    tokens = await issue_tokens(
+        db_session,
+        user,
+        device_name="Pytest client",
+        device_fingerprint=device_fingerprint,
+        ip_address="127.0.0.1",
+    )
+    await db_session.flush()
+    return {"Authorization": f"Bearer {tokens['access_token']}"}, tokens

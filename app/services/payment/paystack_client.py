@@ -35,12 +35,14 @@ async def _request(method: str, path: str, *, payload: dict | None = None) -> di
     return body["data"]
 
 
-async def initialize_transaction(*, email: str, amount: int, currency: str, reference: str, plan_code: str | None = None, callback_url: str | None = None) -> dict:
+async def initialize_transaction(*, email: str, amount: int, currency: str, reference: str, plan_code: str | None = None, callback_url: str | None = None, metadata: dict | None = None) -> dict:
     payload: dict[str, object] = {"email": email, "amount": amount, "currency": currency, "reference": reference}
     if callback_url:
         payload["callback_url"] = callback_url
     if plan_code:
         payload["plan"] = plan_code
+    if metadata:
+        payload["metadata"] = metadata
     return await _request("POST", "/transaction/initialize", payload=payload)
 
 

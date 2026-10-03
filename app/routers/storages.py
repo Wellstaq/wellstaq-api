@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user
 from app.core.database import get_db
+from app.core.guards import request_guard
 from app.schemas.storage import UploadRequestSchema, UploadResponse
 from app.services.storage import request_upload
 
@@ -32,8 +33,10 @@ async def request_upload_url_route(
     if body.domain not in VALID_DOMAINS:
         raise HTTPException(400, f"domain must be one of {VALID_DOMAINS}.")
 
-    result = await request_upload(
-        session=session, domain=body.domain,
-        organization_id=current_user.organization_id, content_type=body.content_type,
-    )
-    return UploadResponse(**result)
+    async with request_guard(session, "/storage/upload-url", user_id=current_user.user_id):
+        result = await request_upload(
+            session=session, domain=body.domain,
+            organization_id=current_user.organization_id, content_type=body.content_type,
+        )
+        await session.commit()
+        return UploadResponse(**result)

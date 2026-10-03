@@ -225,39 +225,39 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     wellbeing_challenges: Mapped[list["OrganizationWellbeingChallenge"]] = relationship(
         "OrganizationWellbeingChallenge",
         back_populates="organization",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
 
     wellbeing_scores: Mapped[list["WellbeingScore"]] = relationship(
         "WellbeingScore",
         back_populates="organization",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     wellbeing_baselines: Mapped[list["UserWellbeingBaseline"]] = relationship(
         "UserWellbeingBaseline",
         back_populates="organization",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     survey_configs: Mapped[list["WellbeingSurveyConfig"]] = relationship(
-        "WellbeingSurveyConfig", back_populates="organization", cascade="all, delete-orphan",
+        "WellbeingSurveyConfig", back_populates="organization", passive_deletes="all",
         foreign_keys="WellbeingSurveyConfig.organization_id",
     )
     survey_windows: Mapped[list["WellbeingSurveyWindow"]] = relationship(
-        "WellbeingSurveyWindow", back_populates="organization", cascade="all, delete-orphan",
+        "WellbeingSurveyWindow", back_populates="organization", passive_deletes="all",
         foreign_keys="WellbeingSurveyWindow.organization_id",
     )
     survey_responses: Mapped[list["WellbeingSurveyResponse"]] = relationship(
-        "WellbeingSurveyResponse", back_populates="organization", cascade="all, delete-orphan",
+        "WellbeingSurveyResponse", back_populates="organization", passive_deletes="all",
         foreign_keys="WellbeingSurveyResponse.organization_id",
     )
     pulse_snapshots: Mapped[list["WellbeingPulseSnapshot"]] = relationship(
-        "WellbeingPulseSnapshot", back_populates="organization", cascade="all, delete-orphan",
+        "WellbeingPulseSnapshot", back_populates="organization", passive_deletes="all",
         foreign_keys="WellbeingPulseSnapshot.organization_id",
     )
     health_assessments: Mapped[list["UserHealthAssessment"]] = relationship(
         "UserHealthAssessment",
         back_populates="organization",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
 
     invites: Mapped[list["OrganizationInvite"]] = relationship(

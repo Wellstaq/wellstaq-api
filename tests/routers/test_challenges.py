@@ -436,7 +436,7 @@ class TestChallengeProgressRoutes:
     ):
         org, member, headers = await _authorized_org(db_session, role_name="member")
         challenge = await _make_challenge(
-            db_session, org.id, branch_id=member.branch_id, target_value=100
+            db_session, org.id, branch_id=member.branch_id, target_value=100, metric_type="minutes"
         )
         await _make_participant(db_session, challenge, member.id)
 
@@ -473,7 +473,7 @@ class TestChallengeProgressRoutes:
     ):
         org, member, headers = await _authorized_org(db_session, role_name="member")
         challenge = await _make_challenge(
-            db_session, org.id, branch_id=member.branch_id
+            db_session, org.id, branch_id=member.branch_id, metric_type="minutes"
         )
 
         response = await client.post(

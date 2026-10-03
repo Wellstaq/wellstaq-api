@@ -84,7 +84,7 @@ from app.services.payment import enforce_plan_limit
 
 from app.models.branch import Branch
 from app.models.department import DepartmentMember
-from app.models.permission import Role, UserRoleAssignment
+from app.models.permission import Permission, Role, RolePermission, UserRoleAssignment
 from app.services.branch.update_branch import seed_role_permissions_for_branch
 from .token_service import issue_tokens
 from ._helpers import (
@@ -477,11 +477,26 @@ async def invite_register(
     )
     await session.flush()
 
-    # ── Step 11: members continue in the mobile app; admins enter web ─────────
+    # ── Step 11: dashboard access is permission-driven ────────────────────────
     await session.refresh(user, ["role"])
-    if role.name == RoleName.MEMBER:
+    has_overview_permission = (
+        await session.execute(
+            select(RolePermission.id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(
+                RolePermission.role_id == role.id,
+                Permission.name == "overview",
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none() is not None
+
+    if not has_overview_permission:
         return {
-            "message": "Registration successful. Download the Wellstaq app to continue.",
+            "message": (
+                "Registration successful. Your assigned role does not include "
+                "dashboard access; download the Wellstaq app to continue."
+            ),
             "role": role.name,
             "requires_app": True,
         }

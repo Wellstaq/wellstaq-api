@@ -35,7 +35,9 @@ EngagementLog design principles:
   date-range scan pattern as ActivityLog.
 """
 
-from sqlalchemy import Date, ForeignKey, Index, Numeric, String, CheckConstraint
+from datetime import date, datetime
+
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, JSON, Numeric, String, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPrimaryKeyMixin
@@ -79,6 +81,8 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
     value: Mapped[float] = mapped_column(Numeric, nullable=False)
     unit: Mapped[str | None] = mapped_column(String(20), nullable=True)
     date: Mapped["date"] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Relationships ──────────────────────────────────────────────────────
     organization: Mapped["Organization"] = relationship(
@@ -108,6 +112,47 @@ class ActivityLog(Base, UUIDPrimaryKeyMixin):
             f"user_id={self.user_id} metric_type={self.metric_type} "
             f"value={self.value} date={self.date}>"
         )
+
+
+class HealthActivitySync(Base, UUIDPrimaryKeyMixin):
+    """Audit record for an idempotent native-health aggregate sync."""
+
+    __tablename__ = "health_activity_syncs"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    branch_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    activity_log_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("activity_logs.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    recorded_date: Mapped["date"] = mapped_column(Date, nullable=False)
+    value: Mapped[float] = mapped_column(Numeric, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    recording_method: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", "external_id", name="uq_health_activity_sync_user_provider_external"),
+        CheckConstraint("recording_method IN ('automatic', 'active')", name="ck_health_activity_sync_recording_method"),
+        Index("ix_health_activity_sync_org_user_date", "organization_id", "user_id", "recorded_date"),
+    )
+
+
 class EngagementLog(Base, UUIDPrimaryKeyMixin):
     """
     Backend-computed engagement score for a user on a given day,

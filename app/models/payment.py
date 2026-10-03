@@ -5,7 +5,7 @@ Architecture principles:
 - Three distinct concerns, three distinct tables:
     1. SubscriptionPlan   — global lookup (what plans exist)
     2. OrganizationSubscription — per-org state (what plan is this org on)
-    3. PaymentTransaction — append-only ledger (every charge attempt)
+    3. PaymentTransaction — payment-attempt ledger (every charge attempt)
 
 - The database is NOT the source of truth for payment state — your
   payment gateway (e.g. Stripe) is. These tables store a snapshot of
@@ -30,12 +30,10 @@ Architecture principles:
   account closure — that's a legal/compliance decision, not a
   technical one.
 
-- PaymentTransaction is append-only — rows are never updated. Status
-  changes (e.g. a charge moving from "pending" to "succeeded") are new
-  rows, not updates to existing ones. This gives you a full audit trail
-  without needing soft deletes or updated_at on the transaction table.
-  updated_at is therefore intentionally absent (no TimestampMixin here,
-  only created_at).
+- PaymentTransaction stores one row per gateway charge attempt. A pending
+  row transitions to its terminal state in place; later retries and renewals
+  create new rows. updated_at is intentionally absent because created_at is
+  the time the attempt began and the gateway remains authoritative.
 
 - external_reference fields store the gateway's own IDs (e.g. Stripe's
   sub_xxx, cus_xxx, ch_xxx). Store these on every row so you can always
@@ -55,6 +53,7 @@ Architecture principles:
 from datetime import datetime, timezone
 
 from sqlalchemy import (CheckConstraint, 
+  Boolean,
   DateTime, 
   ForeignKey, 
   Index, 
@@ -216,9 +215,10 @@ class OrganizationSubscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     """
-    Append-only ledger — one row per charge attempt, success, or failure.
+    Payment-attempt ledger — one row per charge attempt.
 
-    Never update rows in this table. Status changes are new rows.
+    Pending rows transition to a terminal status in place. A retry or a
+    recurring renewal creates a new row with its own gateway reference.
     No updated_at — TimestampMixin is deliberately not used here;
     only created_at is needed for an immutable ledger entry.
 
@@ -260,6 +260,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     # card | bank_transfer | ussd | etc — free string, app-validated
     payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_recurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     
 
     # ── Gateway references ─────────────────────────────────────────────────
@@ -269,7 +270,7 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # ── Timestamp ─────────────────────────────────────────────────────────
-    # No updated_at — this table is append-only, rows are never updated
+    # No updated_at: created_at records when this payment attempt began.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -294,6 +295,13 @@ class PaymentTransaction(Base, UUIDPrimaryKeyMixin):
         CheckConstraint("amount > 0", name="ck_payment_transactions_amount_positive"),
         # Fast lookup: all transactions for an org in a date range
         Index("ix_payment_transactions_org_created_at", "organization_id", "created_at"),
+        Index(
+            "uq_payment_transactions_one_pending_per_org",
+            "organization_id",
+            unique=True,
+            postgresql_where=(status == "pending"),
+            sqlite_where=(status == "pending"),
+        ),
     )
 
     def __repr__(self) -> str:

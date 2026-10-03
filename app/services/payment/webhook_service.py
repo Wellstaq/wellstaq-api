@@ -1,31 +1,19 @@
-"""
-app/services/payment/webhook_service.py
-
-Handles Paystack's charge.success webhook — the ACTUAL source of truth
-for whether a payment succeeded (never trust a frontend redirect alone;
-a user can close the browser after paying but before redirect, or fake
-a redirect without paying — the webhook, signed by Paystack is trusted).
-
-Signature verification: Paystack signs every webhook body with your
-secret key via HMAC-SHA512, sent in the x-paystack-signature header.
-Verifying this is NOT optional — without it, anyone could POST a fake
-'payment succeeded' body to your webhook endpoint and get free access.
-"""
+"""Paystack webhook reconciliation and subscription lifecycle handlers."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 import logging
-from datetime import datetime, timedelta, timezone
+from calendar import monthrange
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import OrganizationSubscription, PaymentTransaction, SubscriptionPlan
+from app.models import OrganizationSubscription, PaymentTransaction, SubscriptionPlan, User
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +29,45 @@ def _parse_gateway_datetime(value: object) -> datetime | None:
         return None
 
 
+def _subscription_payload(event_data: dict) -> dict:
+    nested = event_data.get("subscription")
+    return nested if isinstance(nested, dict) else event_data
+
+
+def _customer_payload(event_data: dict) -> dict:
+    customer = event_data.get("customer")
+    return customer if isinstance(customer, dict) else {}
+
+
+def _metadata_payload(event_data: dict) -> dict:
+    metadata = event_data.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _gateway_plan_code(event_data: dict) -> str | None:
+    for candidate in (
+        _subscription_payload(event_data).get("plan"),
+        event_data.get("plan"),
+    ):
+        if isinstance(candidate, dict) and candidate.get("plan_code"):
+            return str(candidate["plan_code"])
+        if isinstance(candidate, str) and candidate.startswith("PLN_"):
+            return candidate
+    return None
+
+
+def _next_period_end(start: datetime, plan: SubscriptionPlan) -> datetime:
+    if plan.billing_interval == "annual":
+        year = start.year + 1
+        day = min(start.day, monthrange(year, start.month)[1])
+        return start.replace(year=year, day=day)
+    month_index = start.month
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day)
+
+
 def verify_paystack_signature(*, payload_body: bytes, signature_header: str | None) -> bool:
     if not signature_header:
         return False
@@ -49,149 +76,248 @@ def verify_paystack_signature(*, payload_body: bytes, signature_header: str | No
     ).hexdigest()
     return hmac.compare_digest(computed, signature_header)
 
+
+async def _find_subscription_for_gateway_event(
+    *, session: AsyncSession, event_data: dict
+) -> OrganizationSubscription | None:
+    subscription_data = _subscription_payload(event_data)
+    subscription_code = subscription_data.get("subscription_code")
+    if subscription_code:
+        result = await session.execute(
+            select(OrganizationSubscription).where(
+                OrganizationSubscription.external_subscription_id == str(subscription_code)
+            )
+        )
+        subscription = result.scalar_one_or_none()
+        if subscription is not None:
+            return subscription
+
+    metadata = _metadata_payload(event_data)
+    internal_id = metadata.get("subscription_id")
+    if internal_id:
+        result = await session.execute(
+            select(OrganizationSubscription).where(OrganizationSubscription.id == str(internal_id))
+        )
+        subscription = result.scalar_one_or_none()
+        if subscription is not None:
+            return subscription
+
+    customer = _customer_payload(event_data)
+    customer_code = customer.get("customer_code")
+    if customer_code:
+        result = await session.execute(
+            select(OrganizationSubscription).where(
+                OrganizationSubscription.external_customer_id == str(customer_code)
+            )
+        )
+        subscription = result.scalar_one_or_none()
+        if subscription is not None:
+            return subscription
+
+    email = customer.get("email")
+    if email:
+        result = await session.execute(
+            select(OrganizationSubscription)
+            .join(User, User.organization_id == OrganizationSubscription.organization_id)
+            .where(User.email == str(email).strip().lower())
+        )
+        return result.scalars().first()
+    return None
+
+
+async def _load_plan(session: AsyncSession, plan_id: str) -> SubscriptionPlan:
+    result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id))
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The paid subscription plan no longer exists.")
+    return plan
+
+
 async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> None:
     reference = event_data.get("reference")
     if not reference:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook payload missing reference.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payment payload missing reference.")
+    reference = str(reference)
 
     result = await session.execute(
         select(PaymentTransaction).where(PaymentTransaction.external_reference == reference)
     )
     transaction = result.scalar_one_or_none()
+    is_recurring_charge = transaction is None
+
+    if transaction is not None and transaction.status == "succeeded":
+        return
+
+    subscription: OrganizationSubscription | None = None
     if transaction is None:
-        logger.warning("Webhook for unknown transaction reference", extra={"reference": reference})
-        return
+        subscription = await _find_subscription_for_gateway_event(
+            session=session, event_data=event_data
+        )
+        if subscription is None:
+            logger.warning(
+                "Successful charge cannot be mapped to a subscription",
+                extra={"reference": reference},
+            )
+            return
+        plan = await _load_plan(session, subscription.plan_id)
+        transaction = PaymentTransaction(
+            organization_id=subscription.organization_id,
+            subscription_id=subscription.id,
+            plan_id=plan.id,
+            amount=plan.amount,
+            currency=plan.currency,
+            status="pending",
+            external_reference=reference,
+            is_recurring=True,
+        )
+        session.add(transaction)
+    else:
+        plan = await _load_plan(session, transaction.plan_id)
+        result = await session.execute(
+            select(OrganizationSubscription).where(
+                OrganizationSubscription.id == transaction.subscription_id
+            )
+        )
+        subscription = result.scalar_one_or_none()
 
-    if transaction.status == "succeeded":
-        return
-
-    # ── Amount/currency verification ────────────────────────────────────────
-    # Never trust the webhook's "success" claim without confirming it
-    # matches what WE expected to be charged. A malformed or tampered
-    # payload reporting success for a different amount must be rejected,
-    # not silently activated.
     webhook_amount = event_data.get("amount")
     webhook_currency = event_data.get("currency")
-
-    if webhook_amount != transaction.amount:
-        logger.error(
-            "Amount mismatch on charge.success webhook — refusing to mark succeeded",
-            extra={"reference": reference, "expected_amount": transaction.amount, "webhook_amount": webhook_amount},
-        )
+    gateway_plan_code = _gateway_plan_code(event_data)
+    if (
+        gateway_plan_code
+        and plan.external_plan_id
+        and gateway_plan_code != plan.external_plan_id
+    ):
         transaction.status = "failed"
-        transaction.failure_reason = f"Amount mismatch: expected {transaction.amount}, webhook reported {webhook_amount}."
+        transaction.failure_reason = (
+            f"Plan mismatch: expected {plan.external_plan_id}, provider reported {gateway_plan_code}."
+        )
         await session.flush()
         return
-
-    if webhook_currency and str(webhook_currency).upper() != transaction.currency.upper():
-        logger.error(
-            "Currency mismatch on charge.success webhook — refusing to mark succeeded",
-            extra={"reference": reference, "expected_currency": transaction.currency, "webhook_currency": webhook_currency},
-        )
+    if webhook_amount != transaction.amount:
         transaction.status = "failed"
-        transaction.failure_reason = f"Currency mismatch: expected {transaction.currency}, webhook reported {webhook_currency}."
+        transaction.failure_reason = (
+            f"Amount mismatch: expected {transaction.amount}, provider reported {webhook_amount}."
+        )
+        await session.flush()
+        return
+    if not webhook_currency or str(webhook_currency).upper() != transaction.currency.upper():
+        transaction.status = "failed"
+        transaction.failure_reason = (
+            f"Currency mismatch: expected {transaction.currency}, provider reported {webhook_currency}."
+        )
         await session.flush()
         return
 
     transaction.status = "succeeded"
-
-    authorization = event_data.get("authorization", {})
+    authorization = event_data.get("authorization")
+    authorization = authorization if isinstance(authorization, dict) else {}
     card_type = authorization.get("card_type")
     last4 = authorization.get("last4")
     if card_type and last4:
         transaction.payment_method = f"{card_type} ending in {last4}"
     elif event_data.get("channel"):
-        transaction.payment_method = event_data.get("channel")
-
-    subscription_result = await session.execute(
-        select(OrganizationSubscription).where(OrganizationSubscription.id == transaction.subscription_id)
-    )
-    subscription = subscription_result.scalar_one_or_none()
+        transaction.payment_method = str(event_data["channel"])
 
     if subscription is not None:
         paid_at = _parse_gateway_datetime(event_data.get("paid_at")) or datetime.now(timezone.utc)
-
-        plan_result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == transaction.plan_id))
-        paid_plan = plan_result.scalar_one_or_none()
-        if paid_plan is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "The paid subscription plan no longer exists.")
-        billing_period = timedelta(days=30) if paid_plan.billing_interval == "monthly" else timedelta(days=365)
-        subscription_data = event_data.get("subscription") or {}
+        subscription_data = _subscription_payload(event_data)
         next_payment_date = _parse_gateway_datetime(
             subscription_data.get("next_payment_date") or event_data.get("next_payment_date")
         )
+        period_start = _parse_gateway_datetime(event_data.get("period_start")) or paid_at
 
         subscription.status = "active"
-        subscription.current_period_start = paid_at
-        subscription.current_period_end = next_payment_date or paid_at + billing_period
+        subscription.current_period_start = period_start
+        subscription.current_period_end = next_payment_date or _next_period_end(period_start, plan)
         subscription.plan_id = transaction.plan_id
+        subscription.cancelled_at = None
 
-        if subscription.external_subscription_id is None:
-            subscription_code = subscription_data.get("subscription_code")
-            if subscription_code:
-                subscription.external_subscription_id = subscription_code
-                subscription.email_token = subscription_data.get("email_token")
-                subscription.auto_renew = True
+        subscription_code = subscription_data.get("subscription_code")
+        if subscription_code:
+            subscription.external_subscription_id = str(subscription_code)
+            subscription.email_token = subscription_data.get("email_token") or subscription.email_token
+            subscription.auto_renew = True
+        elif not is_recurring_charge and not transaction.is_recurring:
+            # A known checkout without subscription context is a one-time
+            # payment. subscription.create will restore these fields shortly
+            # afterward when this checkout did include a Paystack plan.
+            subscription.external_subscription_id = None
+            subscription.email_token = None
+            subscription.auto_renew = False
+
+        customer_code = _customer_payload(event_data).get("customer_code")
+        if customer_code:
+            subscription.external_customer_id = str(customer_code)
 
     await session.flush()
-    logger.info("Payment succeeded, subscription activated", extra={"organization_id": transaction.organization_id})
+    logger.info(
+        "Payment succeeded, subscription activated",
+        extra={"organization_id": transaction.organization_id, "reference": reference},
+    )
+
 
 async def handle_charge_failed(*, session: AsyncSession, event_data: dict) -> None:
     reference = event_data.get("reference")
     if not reference:
         return
-
-    result = await session.execute(select(PaymentTransaction).where(PaymentTransaction.external_reference == reference))
+    result = await session.execute(
+        select(PaymentTransaction).where(PaymentTransaction.external_reference == str(reference))
+    )
     transaction = result.scalar_one_or_none()
     if transaction is None or transaction.status != "pending":
         return
-
     transaction.status = "failed"
-    transaction.failure_reason = event_data.get("gateway_response", "Payment failed.")
+    transaction.failure_reason = str(event_data.get("gateway_response") or "Payment failed.")
     await session.flush()
-    logger.info("Payment failed", extra={"reference": reference})
+
+
+async def handle_subscription_create(*, session: AsyncSession, event_data: dict) -> None:
+    subscription = await _find_subscription_for_gateway_event(session=session, event_data=event_data)
+    if subscription is None:
+        logger.warning("subscription.create could not be mapped to an organization")
+        return
+
+    subscription_data = _subscription_payload(event_data)
+    subscription_code = subscription_data.get("subscription_code")
+    if not subscription_code:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Subscription payload missing subscription_code.")
+
+    subscription.external_subscription_id = str(subscription_code)
+    subscription.email_token = subscription_data.get("email_token") or subscription.email_token
+    subscription.auto_renew = True
+    customer_code = _customer_payload(event_data).get("customer_code")
+    if customer_code:
+        subscription.external_customer_id = str(customer_code)
+    next_payment_date = _parse_gateway_datetime(subscription_data.get("next_payment_date"))
+    if next_payment_date:
+        subscription.current_period_end = next_payment_date
+    await session.flush()
+
 
 async def handle_invoice_payment_failed(*, session: AsyncSession, event_data: dict) -> None:
-    """
-    A recurring auto-charge failed (card declined, insufficient funds,
-    etc.) — Paystack tells us via this event rather than us discovering
-    it later. Immediately flips the subscription to past_due, rather
-    than waiting for the nightly expire_lapsed_subscriptions job to
-    eventually notice current_period_end has passed.
-    """
-    subscription_code = event_data.get("subscription", {}).get("subscription_code")
-    if not subscription_code:
-        return
-
-    result = await session.execute(
-        select(OrganizationSubscription).where(OrganizationSubscription.external_subscription_id == subscription_code)
-    )
-    subscription = result.scalar_one_or_none()
+    subscription = await _find_subscription_for_gateway_event(session=session, event_data=event_data)
     if subscription is None:
-        logger.warning("invoice.payment_failed for unknown subscription", extra={"subscription_code": subscription_code})
+        logger.warning("invoice.payment_failed for unknown subscription")
         return
-
     subscription.status = "past_due"
     await session.flush()
-    logger.info("Subscription marked past_due after failed renewal", extra={"organization_id": subscription.organization_id})
+
+
+async def handle_subscription_not_renewing(*, session: AsyncSession, event_data: dict) -> None:
+    subscription = await _find_subscription_for_gateway_event(session=session, event_data=event_data)
+    if subscription is None:
+        return
+    subscription.auto_renew = False
+    await session.flush()
 
 
 async def handle_subscription_disable(*, session: AsyncSession, event_data: dict) -> None:
-    """Paystack cancelled/disabled the subscription (e.g. too many
-    failed retries, or explicit cancellation)."""
-    subscription_code = event_data.get("subscription_code")
-    if not subscription_code:
-        return
-
-    result = await session.execute(
-        select(OrganizationSubscription).where(OrganizationSubscription.external_subscription_id == subscription_code)
-    )
-    subscription = result.scalar_one_or_none()
+    subscription = await _find_subscription_for_gateway_event(session=session, event_data=event_data)
     if subscription is None:
         return
-
-    from datetime import datetime, timezone
+    if subscription.status != "cancelled":
+        subscription.cancelled_at = datetime.now(timezone.utc)
     subscription.status = "cancelled"
-    subscription.cancelled_at = datetime.now(timezone.utc)
+    subscription.auto_renew = False
     await session.flush()
-    logger.info("Subscription cancelled via webhook", extra={"organization_id": subscription.organization_id})

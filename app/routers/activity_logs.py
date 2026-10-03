@@ -12,7 +12,7 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser, get_current_user, require_active_subscription, require_same_organization
@@ -21,11 +21,14 @@ from app.core.guards import request_guard
 from app.schemas.activity_log import (
     ActivitySubmitRequest,
     ActivitySubmitResponse,
+    AUTOMATIC_ACTIVITY_METRICS,
+    HealthActivitySyncRequest,
+    HealthActivitySyncResponse,
     ActivityTrendPoint,
     ActivityTrendResponse,
 )
 from app.schemas.activity_log import ActivityLogResponse
-from app.services.activity_log import get_activity_trend, submit_activity
+from app.services.activity_log import get_activity_trend, submit_activity, sync_health_activity
 
 router = APIRouter(prefix="/organizations/{org_id}/activity-log", tags=["activity-log"])
 
@@ -48,6 +51,11 @@ async def submit_activity_route(
    
 ) -> ActivitySubmitResponse:
     require_same_organization(org_id, current_user)
+    if body.metric_type.strip().lower() in AUTOMATIC_ACTIVITY_METRICS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Steps, running, and calories must be synced from Apple Health or Health Connect.",
+        )
     async with request_guard(db, "/organizations/{org_id}/activity-log"):
         entry, challenges_updated = await submit_activity(
             session=db, organization_id=org_id, branch_id=current_user.branch_id, user_id=current_user.user_id,
@@ -55,6 +63,36 @@ async def submit_activity_route(
         )
         await db.commit()
         return ActivitySubmitResponse(entry=ActivityLogResponse.model_validate(entry), challenges_updated=challenges_updated)
+
+
+@router.post(
+    "/health-sync",
+    response_model=HealthActivitySyncResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sync verified native health activity",
+)
+async def sync_health_activity_route(
+    org_id: str,
+    body: HealthActivitySyncRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_active_subscription),
+) -> HealthActivitySyncResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/activity-log/health-sync"):
+        entries, challenges_updated = await sync_health_activity(
+            session=db,
+            organization_id=org_id,
+            branch_id=current_user.branch_id,
+            user_id=current_user.user_id,
+            provider=body.provider,
+            device_id=body.device_id,
+            records=body.records,
+        )
+        await db.commit()
+        return HealthActivitySyncResponse(
+            entries=[ActivityLogResponse.model_validate(entry) for entry in entries],
+            challenges_updated=challenges_updated,
+        )
 
 
 @router.get("/trend", response_model=ActivityTrendResponse, status_code=status.HTTP_200_OK)

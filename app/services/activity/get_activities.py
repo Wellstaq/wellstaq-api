@@ -6,10 +6,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import User, UserActivityFeed
+from app.models import Branch, User, UserActivityFeed
 
 PERIOD_DAYS = {"week": 7, "month": 30, "three_months": 91, "six_months": 182, "nine_months": 273, "year": 365}
 
@@ -105,6 +106,18 @@ async def get_branch_activity_summary(
     """Same aggregate-only guarantee as get_organization_activity_summary,
     scoped to one branch via a join through User.branch_id — UserActivityFeed
     itself has no branch_id column."""
+    branch = (await session.execute(
+        select(Branch.id).where(
+            Branch.id == branch_id,
+            Branch.organization_id == organization_id,
+        )
+    )).scalar_one_or_none()
+    if branch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Branch not found or does not belong to this organization.",
+        )
+
     total_query = (
         select(func.count())
         .select_from(UserActivityFeed)

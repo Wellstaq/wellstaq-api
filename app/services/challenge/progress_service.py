@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChallengeParticipant, ChallengeProgressEntry
+from app.schemas.activity_log import AUTOMATIC_ACTIVITY_METRICS
 from app.services.challenge._helpers import check_challenge_completion, get_challenge_or_404
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,12 @@ async def submit_progress(
     *, session: AsyncSession, organization_id: str, challenge_id: str, user_id: str, value: float, source: str = "manual"
 ) -> ChallengeProgressEntry | None:
     challenge = await get_challenge_or_404(session=session, organization_id=organization_id, challenge_id=challenge_id)
+
+    if challenge.metric_type in AUTOMATIC_ACTIVITY_METRICS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Steps, running, and calories are updated automatically from the connected health provider.",
+        )
 
     if challenge.status != "active":
         raise HTTPException(

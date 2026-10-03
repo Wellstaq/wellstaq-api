@@ -8,10 +8,13 @@ from .webhook_service import (
     handle_charge_success, 
     handle_subscription_disable, 
     handle_invoice_payment_failed,
+    handle_subscription_create,
+    handle_subscription_not_renewing,
     verify_paystack_signature,
 )
 
 __all__ = ["start_trial", "get_subscription", "get_transaction_history", "get_available_plans",
  "initiate_checkout", "enforce_plan_limit", "cancel_auto_renew", "set_auto_renew", "handle_charge_success", "handle_charge_failed",
- "verify_paystack_signature", "handle_invoice_payment_failed", "handle_subscription_disable"
+ "verify_paystack_signature", "handle_invoice_payment_failed", "handle_subscription_disable",
+ "handle_subscription_create", "handle_subscription_not_renewing"
  ]
