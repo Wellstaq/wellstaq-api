@@ -88,6 +88,60 @@ run the seeds → use the application endpoints.
    - `http://localhost:8000/health` — public health check
    - `http://localhost:8000/docs` — interactive Swagger UI
 
+7. Bootstrap the first platform admin (see **Platform Admin Console**
+   below) — none of the app's seeds create one, and the superadmin
+   console has nothing to log in with until you run this.
+
+## Platform Admin Console
+
+Platform staff (Wellstaq's own team, not organization customers) sign in
+through a completely separate identity: `AdminUser`/`AdminSession`
+(`app/models/admin_user.py`), not the org-facing `User` table. Their
+tokens carry a `scope="admin"` claim and are rejected by every
+org-facing route, and vice versa — an org user's token is rejected by
+every `/app-admin/*` route. This is intentional: a staff account should
+never be able to join or act inside a customer organization, and a
+compromised org token should never grant console access.
+
+Roles are `super_admin`, `admin`, and `support`, with the permission
+matrix defined in `app/core/constants.py` (`ADMIN_ROLE_PERMISSIONS`).
+`super_admin` implicitly has every permission and is the only role that
+can manage other admins.
+
+**There is no self-serve way to create the first admin** — inviting a
+new admin (`POST /app-admin/admins/invite`) requires already being
+logged in as an admin with `admins.manage`, which is a chicken-and-egg
+problem for the very first one. Bootstrap it with:
+
+```bash
+python -m scripts.create_super_admin --email owner@wellstaq.com --password "..." --first-name Wellstaq --last-name Owner
+```
+
+Omit `--password` to be prompted for it instead of passing it on the
+command line. If you're locked out later (forgotten password, or need
+to recover after disabling an account), rotate the same account's
+password instead of creating a duplicate:
+
+```bash
+python -m scripts.create_super_admin --email owner@wellstaq.com --reset-password
+```
+
+Every admin *after* this first one should go through the real invite
+flow (the Admin Team page in the admin console, or
+`POST /app-admin/admins/invite` directly) — that's what makes the audit
+log able to show who invited whom. The bootstrap script has no acting
+admin to attribute to, so the first admin's `invited_by` is left null.
+
+Every write a staff member makes through `/app-admin/*` — suspending an
+org, granting free access, creating a platform event, inviting or
+removing another admin — is recorded in `audit_entries`
+(`app/models/audit_entry.py`) with who did it, when, and (where
+applicable) why. It's visible in the console's Audit Log page, or
+directly via `GET /app-admin/audit-log` (supports `q`, `target_type`,
+and `start_date`/`end_date` filters). Entries are never edited or
+deleted, and `actor_admin_id` is nulled (not cascaded) if the acting
+admin is later removed, so history survives staff turnover.
+
 ### Local Paystack testing and webhooks
 
 The Paystack plan seed makes outbound requests to Paystack. It can run
@@ -117,57 +171,72 @@ do not disable webhook signature verification. The tunnel exposes the
 API port publicly, not just the webhook path, so use it only as needed
 and do not expose sensitive development endpoints unnecessarily.
 
-## Auth & scoping status
+## Auth & scoping
 
-The auth *plumbing* is fully wired, including the role/org/branch
-scoping layer:
+There are two separate identities and auth stacks in this codebase —
+see **Platform Admin Console** above for the second one.
+
+For organization users (owners, managers, employees):
 
 - `app/auth/security.py` — password hashing (bcrypt)
-- `app/auth/jwt.py` — access/refresh token creation + verification.
-  `create_access_token` accepts `extra_claims` — login should pass
-  `role`, `organization_id`, and `branch_id` here once it's implemented
-- `app/auth/dependencies.py` — `get_current_user_id`, a bare-bones
-  dependency for routes that only need "is this person logged in"
-- `app/auth/scoping.py` — the real one to use for anything touching
-  org- or branch-scoped data (most routes, given 40+ tables touched by
-  this isolation):
-  - `get_current_user` → returns a `CurrentUser` (user_id, role,
-    organization_id, branch_id) resolved from the token
-  - `require_role(minimum_role)` → dependency factory enforcing
-    **hierarchical** role checks (`overall_manager > branch_manager >
-    employee` — an overall_manager passes a branch_manager-only check)
-  - `require_same_organization` / `require_same_branch_or_org_level` →
-    call these inside a route/service after loading a target record, to
-    block cross-org or cross-branch access even with a guessed valid UUID
-- `app/routers/auth.py` — `/auth/register` and `/auth/login` (currently
-  `501 Not Implemented` until the User model and database exist)
-- `app/routers/general.py` — `/me` (any authenticated user) and
-  `/admin-only-example` (requires at least `branch_manager`) demonstrate
-  the pattern to copy for every future protected route
+- `app/auth/jwt.py` — access/refresh token creation + verification,
+  including the admin-scoped variants (`create_admin_access_token`,
+  `create_admin_refresh_token`) used by the platform admin console
+- `app/auth/dependencies.py` — `get_current_user`, the real dependency
+  for anything touching org- or branch-scoped data. It loads the user
+  row fresh from the database on every request (not just trusting the
+  token's claims), which is also where an organization's suspension
+  (`Organization.is_active`) is enforced — a suspended org's users are
+  locked out immediately, not just at their next login
+- `app/auth/admin_dependencies.py` — the platform-admin equivalent:
+  `get_current_admin` and `require_admin_permission(permission)`
+- `app/routers/auth.py` — `/auth/register`, `/auth/login`, 2FA,
+  password reset, and session/device management for org users
 - `app/routers/uploads.py` — `/uploads/presign`, protected, returns a
   short-lived presigned URL so the client uploads file bytes directly to
   S3/R2, never through this server
 
-**TODO flagged inline in `scoping.py`:** `get_current_user` currently
-trusts the token's claims directly. Once `app/models/users.py` exists,
-swap it to load the user row from the database by id instead, so a role
-change or branch transfer takes effect immediately rather than only
-after the user's current token expires.
+Role/org/branch scoping and permission checks for org-facing routes are
+in `app/services/organization_roles.py` and `app/services/permission_service.py`.
 
-Nothing in `app/models/`, `app/schemas/`, or `app/services/` is
-implemented yet — those folders are intentionally empty stubs, ready to
-be filled in domain by domain (organizations → users → everything else).
+## Running tests
+
+Install the test dependencies into the same virtual environment (not
+covered by `requirements.txt`, since they're dev-only):
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Then, from the project root:
+
+```bash
+pytest
+```
+
+Tests run against a throwaway async SQLite database per test (see
+`tests/conftest.py`'s `db_session`/`client` fixtures) — you do not need
+Postgres, Redis, or a running API server to run the suite.
+
+**Test layout convention**: every service, router, and model has its
+own test file in the matching `tests/` subfolder — e.g.
+`app/services/platform_admin/organization_service.py` is tested by
+`tests/services/platform_admin/test_organization_service.py`, and
+`app/routers/app_admin.py` by `tests/routers/test_app_admin.py`. Follow
+this placement for any new service, router, or model.
 
 ## Background jobs (app/jobs/)
 
-- `tasks.py` — task function stubs: four scheduled snapshot jobs
-  (`compute_leaderboard_snapshots`, `compute_kpi_snapshots`,
-  `compute_hashtag_trend_snapshots`, `compute_department_rank_snapshots`)
-  plus three on-demand jobs (`resize_thumbnail`, `send_invite_email`,
-  `fanout_notification`)
-- `worker.py` — `WorkerSettings`: registers the on-demand functions and
-  the cron schedule for the periodic snapshot jobs. Run with
-  `arq app.jobs.worker.WorkerSettings`
+Job functions are organized by domain (`analytics/`, `challenges/`,
+`events/`, `media/`, `notifications/`, `payment/`, `wellbeing/`), each
+with its own task modules rather than one flat file. `shared.py` has
+the common helpers (e.g. `get_job_session()`, used by one-off scripts
+like `create_super_admin.py` to get a DB session outside a request).
+
+`worker.py` — `WorkerSettings`: registers the on-demand job functions
+and the cron schedule for periodic jobs (snapshots, subscription
+expiry sweeps, survey window transitions, etc). Run with
+`arq app.jobs.worker.WorkerSettings`.
 
 ## Object storage (app/core/storage.py)
 
@@ -187,24 +256,22 @@ the upload completed.
 
 ```
 app/
-├── auth/          JWT + password hashing + role/org/branch scoping
-│   ├── security.py       password hashing
-│   ├── jwt.py             token create/decode
-│   ├── dependencies.py    bare user-id-only auth dependency
-│   └── scoping.py         CurrentUser, get_current_user, require_role
-├── core/          settings, database session, object storage client
-│   ├── config.py
-│   ├── database.py
-│   └── storage.py         aioboto3 presigned URLs (S3/R2)
-├── models/        SQLAlchemy models (empty stubs for now)
-├── schemas/       Pydantic request/response models (empty stubs for now)
-├── services/      business logic (empty stubs for now)
-├── routers/       FastAPI route definitions
-│   ├── auth.py
-│   ├── general.py
-│   └── uploads.py         presigned upload URL endpoint
-├── jobs/          ARQ background + scheduled jobs
-│   ├── tasks.py
-│   └── worker.py
-└── main.py        app entry point
+├── auth/          password hashing, JWT, auth dependencies (org + admin)
+│   ├── security.py
+│   ├── jwt.py
+│   ├── dependencies.py       get_current_user (org users)
+│   └── admin_dependencies.py get_current_admin (platform admins)
+├── core/          settings, database session, object storage, constants
+├── models/        SQLAlchemy models — one module per domain/table
+├── schemas/       Pydantic request/response models, one module per domain
+├── services/      business logic, one package per domain. Services never
+│                  commit — the router owns the transaction boundary
+│   └── platform_admin/  admin auth, org suspend/comp, audit, admin team,
+│                         platform events — see Platform Admin Console above
+├── routers/       FastAPI route definitions, one module per domain
+│   └── app_admin.py  all /app-admin/* platform-console routes
+├── jobs/          ARQ background + scheduled jobs, organized by domain
+└── main.py        app entry point — registers every router
 alembic/           database migrations
+scripts/           one-off CLI scripts: seeding, create_super_admin
+tests/             mirrors app/ — tests/<models|routers|services>/...
