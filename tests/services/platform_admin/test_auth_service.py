@@ -148,6 +148,27 @@ async def test_request_password_reset_is_silent_no_op_for_unknown_email(db_sessi
 
 
 @pytest.mark.asyncio
+async def test_reset_email_links_to_the_admin_console_not_the_org_app(db_session, monkeypatch):
+    """Regression test: this email's link previously pointed at a
+    hardcoded, never-deployed domain (admin.wellstaq.com), so an invited
+    or password-resetting admin landed on a dead page. It must point at
+    ADMIN_APP_ORIGIN (apps/admin), not PUBLIC_APP_ORIGIN (apps/org)."""
+    from app.core.config import settings
+
+    await _persisted_admin(db_session, email="owner@wellstaq.test")
+
+    captured = {}
+    async def _capture_send(*, to, subject, html):
+        captured["html"] = html
+    monkeypatch.setattr("app.core.email.send_email", _capture_send)
+
+    await auth_service.request_password_reset(session=db_session, email="owner@wellstaq.test")
+
+    assert settings.ADMIN_APP_ORIGIN in captured["html"]
+    assert "/reset-password?token=" in captured["html"]
+
+
+@pytest.mark.asyncio
 async def test_reset_password_activates_an_invited_admin(db_session, monkeypatch):
     """Also covers the invite flow (admin_team_service.invite_admin reuses
     this exact mechanism — see its docstring) since the reset-link token

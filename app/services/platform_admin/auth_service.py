@@ -213,8 +213,9 @@ def _used_token_key(*, reset_token: str) -> str:
 
 
 async def _send_reset_email(*, email: str, reset_token: str) -> None:
+    from app.core.config import settings
     from app.core.email import send_email
-    reset_url = f"https://admin.wellstaq.com/reset-password?token={reset_token}"
+    reset_url = f"{settings.ADMIN_APP_ORIGIN.rstrip('/')}/reset-password?token={reset_token}"
     html_body = f"""
     <html><body style="font-family:sans-serif;color:#333;max-width:480px;margin:auto;">
       <h2>Reset your Wellstaq admin password</h2>

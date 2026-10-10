@@ -62,7 +62,10 @@ class Settings(BaseSettings):
         "https://appwellstaq6.vercel.app",
         "https://wellstaqemployee.vercel.app",
     ]
-    PUBLIC_APP_ORIGIN: str = "http//localhost:3000"
+    PUBLIC_APP_ORIGIN: str = "http://localhost:3000"
+    # Platform admin console (apps/admin) — separate origin from the org app
+    # above. Used to build the link in admin invite/password-reset emails.
+    ADMIN_APP_ORIGIN: str = "http://localhost:3001"
 
     model_config = SettingsConfigDict(
         env_file=".env",
