@@ -36,12 +36,13 @@ from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import Branch, Organization, Permission, Role, RolePermission, User
+from app.models import AdminSession, AdminUser, Branch, Organization, Permission, Role, RolePermission, User
 import app.core.redis as redis_module
 from tests.fakes import MemoryRedis
 from app.models.payment import SubscriptionPlan
 from app.services.payment import start_trial
 from app.services.auth.token_service import issue_tokens
+from app.auth.jwt import create_admin_access_token, create_admin_refresh_token, hash_refresh_token
 
 # ── In-memory SQLite for tests — never touches app.db ────
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -395,3 +396,40 @@ async def authenticate_user(
     )
     await db_session.flush()
     return {"Authorization": f"Bearer {tokens['access_token']}"}, tokens
+
+
+def make_admin_user(**overrides) -> AdminUser:
+    """Build an AdminUser instance (not yet persisted). Defaults to an
+    active super_admin with a usable (fake) password hash — override
+    role/status for admin/support-role or invited-state tests."""
+    defaults = dict(
+        email="owner@wellstaq.test",
+        hashed_password="$2b$12$fakehash",
+        first_name="Wellstaq",
+        last_name="Owner",
+        role="super_admin",
+        status="active",
+    )
+    return AdminUser(**{**defaults, **overrides})
+
+
+async def authenticate_admin(db_session: AsyncSession, admin: AdminUser) -> tuple[dict[str, str], dict]:
+    """Make a persisted AdminUser request-ready with a real admin
+    session and JWT — mirrors authenticate_user() above but for the
+    separate AdminUser/AdminSession identity (app/auth/admin_dependencies.py)."""
+    from datetime import datetime, timezone
+    from app.core.constants import ADMIN_PERMISSIONS, ADMIN_ROLE_PERMISSIONS
+
+    permissions = list(ADMIN_PERMISSIONS) if admin.role == "super_admin" else list(ADMIN_ROLE_PERMISSIONS.get(admin.role, ()))
+
+    raw_refresh = create_admin_refresh_token(admin.id)
+    session_row = AdminSession(
+        admin_user_id=admin.id, refresh_token_hash=hash_refresh_token(raw_refresh),
+        device_name="Pytest client", ip_address="127.0.0.1", last_seen_at=datetime.now(timezone.utc), revoked=False,
+    )
+    db_session.add(session_row)
+    await db_session.flush()
+
+    access_token = create_admin_access_token(admin_id=admin.id, role=admin.role, permissions=permissions, session_id=session_row.id)
+    tokens = {"access_token": access_token, "refresh_token": raw_refresh, "token_type": "bearer", "expires_in": 900}
+    return {"Authorization": f"Bearer {access_token}"}, tokens

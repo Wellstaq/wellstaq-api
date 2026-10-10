@@ -42,4 +42,7 @@ from app.models.integration import (
     OrganizationIntegration, UserIntegration,
 )
 from app.models.support_ticket import SupportTicket
+from app.models.admin_user import AdminUser, AdminSession
+from app.models.audit_entry import AuditEntry
+from app.models.platform_event import PlatformEvent, PlatformEventOrganization, PlatformEventParticipant
 __all__ = ["Base", "UUIDPrimaryKeyMixin", "TimestampMixin", "SoftDeleteMixin"]

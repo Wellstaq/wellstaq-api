@@ -257,6 +257,22 @@ class TestPasswordLoginAccountStatus:
 
         assert exc_info.value.status_code == 403
 
+    @pytest.mark.asyncio
+    async def test_suspended_organization_blocks_active_user_login(self, db_session: AsyncSession):
+        """A platform-admin org suspension (see app/services/platform_admin/
+        organization_service.py) signs out every member immediately —
+        even an otherwise-active user can't log in while it's suspended."""
+        user, email = await _make_login_ready_user(db_session, status=UserStatus.ACTIVE, two_fa_enabled=False)
+        from app.models import Organization
+        org = (await db_session.execute(select(Organization).where(Organization.id == user.organization_id))).scalar_one()
+        org.is_active = False
+        await db_session.flush()
+
+        with pytest.raises(AuthError) as exc_info:
+            await password_login(db_session, email, RAW_PASSWORD)
+
+        assert exc_info.value.status_code == 403
+
 
 # ── Failure: OAuth-only account ───────────────────────────────────────────────────────
 

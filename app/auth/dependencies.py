@@ -116,7 +116,9 @@ async def get_current_user(
         raise credentials_exception from exc
 
     # Reject non-access tokens (refresh, 2fa_challenge, invite_verification, etc.)
-    if payload.get("type") != TokenType.ACCESS:
+    # and platform-admin tokens — admins are a separate identity (see
+    # app/models/admin_user.py) and must never authenticate as an org user.
+    if payload.get("type") != TokenType.ACCESS or payload.get("scope") == "admin":
         raise credentials_exception
 
     user_id: str | None = payload.get("sub")
@@ -144,18 +146,27 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Load user fresh from DB. Eager-load role so we can read role.name
-    # without a second query.
+    # Load user fresh from DB. Eager-load role + organization so we can
+    # read role.name and organization.is_active without extra queries.
     # NOTE: User has no deleted_at column — hard-delete only.
     result = await db.execute(
         select(User)
-        .options(selectinload(User.role))
+        .options(selectinload(User.role), selectinload(User.organization))
         .where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
 
     if user is None:
         raise credentials_exception
+
+    # A platform-admin suspension signs out every member immediately —
+    # checked on every request (not just login) since existing sessions
+    # must be cut off too. See app/services/platform_admin/organization_service.py.
+    if user.organization is not None and not user.organization.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your organization's account has been suspended. Contact Wellstaq support.",
+        )
 
     if user.status != UserStatus.ACTIVE:
         raise HTTPException(
@@ -435,16 +446,22 @@ async def require_active_subscription(
     from app.services.payment._helpers import ACTIVE_STATUSES
 
     result = await db.execute(
-        select(OrganizationSubscription.status).where(
+        select(OrganizationSubscription.status, OrganizationSubscription.platform_comped).where(
             OrganizationSubscription.organization_id == current_user.organization_id
         )
     )
-    sub_status = result.scalar_one_or_none()
+    row = result.one_or_none()
 
-    if sub_status is None or sub_status not in ACTIVE_STATUSES:
+    # A platform-admin grant (see organization_service.grant_free_access)
+    # bypasses status/dates entirely — an org can be comped regardless of
+    # whether it has ever paid.
+    if row is not None and row.platform_comped:
+        return current_user
+
+    if row is None or row.status not in ACTIVE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Your organization has no ctive subscription. Please renew your subscription or subscribe to plan to continue.",
+            detail="Your organization has no active subscription. Please renew your subscription or subscribe to plan to continue.",
         )
 
     return current_user

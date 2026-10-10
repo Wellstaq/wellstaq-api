@@ -169,6 +169,14 @@ class OrganizationSubscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_renew: Mapped[bool] = mapped_column(nullable=False, default=False)
 
+    # Platform-admin-granted free access — see app/services/platform_admin/
+    # organization_service.py's grant_free_access/revoke_free_access. When
+    # True, require_active_subscription (app/auth/dependencies.py) bypasses
+    # the status/date check entirely, independent of any Paystack state.
+    # Revoking it does NOT touch status/dates — the org simply falls back
+    # to whatever its real subscription state already was.
+    platform_comped: Mapped[bool] = mapped_column(nullable=False, default=False)
+
     # Paystack's per-subscription authorization token, returned in the
     # charge.success webhook payload alongside subscription_code — required
     # to call Paystack's /subscription/disable endpoint later. Without this

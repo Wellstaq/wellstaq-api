@@ -1,13 +1,12 @@
-import secrets
-
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.admin_dependencies import CurrentAdmin, require_admin_permission
 from app.auth.dependencies import CurrentUser, get_current_user
 from app.core.database import get_db
-from app.core.config import settings
 from app.core.guards import request_guard
 from app.services import support_ticket as support_ticket_service
+from app.services.platform_admin.audit_service import log_admin_audit
 from app.schemas.support_ticket import (
     TicketCreateRequest, TicketCreateResponse, TicketStatusRequest, TicketStatusResponse,
     TicketAdminListResponse, TicketAdminItem,
@@ -16,16 +15,11 @@ from app.schemas.support_ticket import (
 router = APIRouter(tags=["support tickets"])
 
 
-def require_app_admin_key(x_app_admin_key: str | None = Header(default=None)) -> None:
-    if not settings.APP_ADMIN_API_KEY or not x_app_admin_key or not secrets.compare_digest(x_app_admin_key, settings.APP_ADMIN_API_KEY):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Valid app-admin key required.")
-
-
-@router.get("/app-admin/support/tickets", response_model=TicketAdminListResponse,
-           dependencies=[Depends(require_app_admin_key)])
-async def list_support_tickets(status_filter: str | None = None, offset: int = 0, limit: int = 50,
-                               db: AsyncSession = Depends(get_db)):
-    """Temporary key-protected endpoint until the app-admin authentication flow exists."""
+@router.get("/app-admin/support/tickets", response_model=TicketAdminListResponse)
+async def list_support_tickets(
+    status_filter: str | None = None, offset: int = 0, limit: int = 50,
+    db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(require_admin_permission("support.read")),
+):
     rows, total = await support_ticket_service.list_support_tickets_admin(
         db, status_filter=status_filter, offset=offset, limit=limit)
     return {
@@ -40,12 +34,20 @@ async def list_support_tickets(status_filter: str | None = None, offset: int = 0
     }
 
 
-@router.patch("/app-admin/support/tickets/{ticket_id}", response_model=TicketStatusResponse,
-             dependencies=[Depends(require_app_admin_key)])
-async def update_support_ticket(ticket_id: str, body: TicketStatusRequest, db: AsyncSession = Depends(get_db)):
-    ticket = await support_ticket_service.update_support_ticket_status(db, ticket_id, body.status)
-    await db.commit()
-    return {"id": ticket.id, "status": ticket.status}
+@router.patch("/app-admin/support/tickets/{ticket_id}", response_model=TicketStatusResponse)
+async def update_support_ticket(
+    ticket_id: str, body: TicketStatusRequest, db: AsyncSession = Depends(get_db),
+    current_admin: CurrentAdmin = Depends(require_admin_permission("support.manage")),
+):
+    async with request_guard(db, "/app-admin/support/tickets/{ticket_id}"):
+        ticket = await support_ticket_service.update_support_ticket_status(db, ticket_id, body.status)
+        await log_admin_audit(
+            session=db, actor_admin_id=current_admin.admin_id, action="support_ticket.status_changed",
+            target_type="support_ticket", target_id=ticket.id, target_label=ticket.subject,
+            reason=f"New status: {body.status}",
+        )
+        await db.commit()
+        return {"id": ticket.id, "status": ticket.status}
 
 
 @router.post("/support/tickets", response_model=TicketCreateResponse, status_code=201)

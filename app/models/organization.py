@@ -89,6 +89,10 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # deactivation, distinct from deletion. See module docstring.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set only for a platform-admin-initiated suspension (see
+    # app/services/platform_admin/organization_service.py) — null for an
+    # owner-initiated deactivation, which has no "reason" concept today.
+    deactivation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Ownership
     # User who registered this org — holds Super Admin.

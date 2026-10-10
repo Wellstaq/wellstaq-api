@@ -58,6 +58,7 @@ async def password_login(
         .options(
             selectinload(User.settings),
             selectinload(User.auth_providers),
+            selectinload(User.organization),
         )
         .where(User.email == email.lower())
     )
@@ -91,6 +92,11 @@ async def password_login(
     if user.status == UserStatus.PENDING:
         raise AuthError(
             "Your account registration is incomplete. Please finish onboarding.",
+            status.HTTP_403_FORBIDDEN,
+        )
+    if user.organization is not None and not user.organization.is_active:
+        raise AuthError(
+            "Your organization's account has been suspended. Contact Wellstaq support.",
             status.HTTP_403_FORBIDDEN,
         )
 

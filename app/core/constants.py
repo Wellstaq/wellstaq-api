@@ -210,3 +210,35 @@ USER_STATUSES = ("pending", "active", "inactive", "suspended")
 
 #subscriptions
 ACTIVE_STATUSES = ("trialing", "active")
+
+#platform admin (Wellstaq staff — see app/models/admin_user.py)
+ADMIN_ROLES = ("super_admin", "admin", "support")
+
+ADMIN_PERMISSIONS = (
+    "organizations.read", "organizations.manage",
+    "individuals.read", "individuals.manage",
+    "events.read", "events.manage",
+    "support.read", "support.manage",
+    "admins.manage",
+    "audit.read",
+)
+
+# Mirrors docs/ADMIN_API_CONTRACT.md section 3 on the admin console repo
+# exactly. super_admin isn't listed per-permission below — it implicitly
+# holds every permission in ADMIN_PERMISSIONS, checked separately in
+# app/auth/admin_dependencies.py rather than duplicated into this dict.
+ADMIN_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "admin": (
+        "organizations.read", "organizations.manage",
+        "individuals.read", "individuals.manage",
+        "events.read", "events.manage",
+        "support.read", "support.manage",
+        "audit.read",
+    ),
+    "support": (
+        "organizations.read",
+        "individuals.read",
+        "events.read",
+        "support.read", "support.manage",
+    ),
+}

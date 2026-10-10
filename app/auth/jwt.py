@@ -131,6 +131,32 @@ def decode_token(token: str) -> dict[str, Any]:
         raise TokenError(str(exc)) from exc
 
 
+def create_admin_access_token(admin_id: str, role: str, permissions: list[str], session_id: str) -> str:
+    """
+    Platform-admin access token — same 'access' base type as
+    create_access_token, but carries scope='admin' so get_current_admin
+    (app/auth/admin_dependencies.py) can reject an org access token
+    outright, and so get_current_user (the org dependency) rejects an
+    admin token the same way. Admins are a wholly separate identity —
+    see app/models/admin_user.py.
+    """
+    return _create_token(
+        subject=admin_id,
+        expires_delta=timedelta(minutes=15),
+        token_type="access",
+        extra_claims={"scope": "admin", "role": role, "permissions": permissions, "sid": session_id},
+    )
+
+
+def create_admin_refresh_token(admin_id: str) -> str:
+    return _create_token(
+        subject=admin_id,
+        expires_delta=timedelta(hours=12),
+        token_type="refresh",
+        extra_claims={"scope": "admin"},
+    )
+
+
 def create_oauth_state_token(user_id: str, organization_id: str, provider: str, kind: str) -> str:
     """
     Short-lived, signed 'state' param for a third-party OAuth redirect

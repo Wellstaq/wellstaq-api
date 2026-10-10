@@ -50,9 +50,9 @@ from app.routers import (
     dashboards,
     department_ranks,
     support_tickets,
-    integrations,   
-   
-    
+    integrations,
+    app_admin,
+    platform_events,
 )
 from app.routers.payments import(
     router as payment_router,
@@ -126,6 +126,8 @@ app.include_router(department_ranks.router)
 app.include_router(kpi_snapshots.router)
 app.include_router(support_tickets.router)
 app.include_router(integrations.router)
+app.include_router(app_admin.router)
+app.include_router(platform_events.router)
 app.include_router(payment_router)
 app.include_router(payment_webhook_router)
 app.include_router(available_subscription_router)
