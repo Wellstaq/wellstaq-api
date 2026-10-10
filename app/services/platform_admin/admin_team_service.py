@@ -18,8 +18,12 @@ from app.models import AdminUser
 
 
 async def list_admins(*, session: AsyncSession, q: str | None, offset: int, limit: int) -> tuple[list[AdminUser], int]:
-    query = select(AdminUser)
-    count_query = select(func.count()).select_from(AdminUser)
+    # Removing an admin is a soft delete (status="disabled") so the audit
+    # log keeps attribution for their past actions — see remove_admin.
+    # Exclude them from the roster by default so a removed admin or a
+    # cancelled invite doesn't linger in the team list after reload.
+    query = select(AdminUser).where(AdminUser.status != "disabled")
+    count_query = select(func.count()).select_from(AdminUser).where(AdminUser.status != "disabled")
     if q:
         pattern = f"%{q}%"
         from sqlalchemy import or_

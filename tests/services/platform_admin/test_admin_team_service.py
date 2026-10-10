@@ -111,3 +111,17 @@ async def test_list_admins_paginates_and_filters_by_q(db_session):
     rows, total = await admin_team_service.list_admins(session=db_session, q="Alpha", offset=0, limit=20)
     assert total == 1
     assert rows[0].email == "alpha@wellstaq.test"
+
+
+@pytest.mark.asyncio
+async def test_list_admins_excludes_removed_admins(db_session):
+    """A removed admin (or a cancelled invite) is soft-disabled, not
+    deleted, but shouldn't linger in the team roster after reload."""
+    acting = await _persisted_admin(db_session, email="acting@wellstaq.test")
+    target = await _persisted_admin(db_session, email="target@wellstaq.test", role="support")
+    await admin_team_service.remove_admin(session=db_session, admin_id=target.id, acting_admin_id=acting.id)
+
+    rows, total = await admin_team_service.list_admins(session=db_session, q=None, offset=0, limit=20)
+
+    assert target.id not in {row.id for row in rows}
+    assert total == 1
