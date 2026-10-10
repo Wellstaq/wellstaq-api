@@ -121,6 +121,62 @@ class TestAdminOrganizationRoutes:
         assert response.status_code == 401
 
 
+class TestUserSearchAndActionsRoutes:
+    @pytest.mark.asyncio
+    async def test_search_requires_authentication(self, client):
+        response = await client.get("/app-admin/users/search", params={"q": "findme"})
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_support_role_can_search_users(self, client, db_session: AsyncSession):
+        _org, owner = await make_org_with_owner(db_session, user_kwargs={"email": "findme@example.com"})
+        _, support_headers = await _admin_context(db_session, email="support@wellstaq.test", role="support")
+
+        response = await client.get("/app-admin/users/search", headers=support_headers, params={"q": "findme"})
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["items"][0]["id"] == owner.id
+
+    @pytest.mark.asyncio
+    async def test_search_query_too_short_is_rejected(self, client, db_session: AsyncSession):
+        _, admin_headers = await _admin_context(db_session)
+        response = await client.get("/app-admin/users/search", headers=admin_headers, params={"q": "a"})
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_suspend_reactivate_password_reset_round_trip(self, client, db_session: AsyncSession, monkeypatch):
+        from app.services.user_setting import password_service
+
+        async def _no_op_send(**_kwargs):
+            return None
+
+        monkeypatch.setattr(password_service, "_send_reset_email", _no_op_send)
+
+        _org, owner = await make_org_with_owner(db_session)
+        _, admin_headers = await _admin_context(db_session)
+
+        suspend = await client.post(f"/app-admin/users/{owner.id}/suspend", headers=admin_headers, json={"reason": "Support investigation."})
+        assert suspend.status_code == 204
+
+        reactivate = await client.post(f"/app-admin/users/{owner.id}/reactivate", headers=admin_headers)
+        assert reactivate.status_code == 204
+
+        password_reset = await client.post(f"/app-admin/users/{owner.id}/password-reset", headers=admin_headers)
+        assert password_reset.status_code == 204
+
+        log = await client.get("/app-admin/audit-log", headers=admin_headers)
+        actions = {item["action"] for item in log.json()["items"]}
+        assert {"user.suspended", "user.reactivated"} <= actions
+
+    @pytest.mark.asyncio
+    async def test_support_role_cannot_suspend_a_user(self, client, db_session: AsyncSession):
+        _org, owner = await make_org_with_owner(db_session)
+        _, support_headers = await _admin_context(db_session, email="support@wellstaq.test", role="support")
+
+        response = await client.post(f"/app-admin/users/{owner.id}/suspend", headers=support_headers, json={"reason": "Should be blocked."})
+        assert response.status_code == 403
+
+
 class TestAdminTeamRoutes:
     @pytest.mark.asyncio
     async def test_invite_requires_admins_manage_permission(self, client, db_session: AsyncSession):

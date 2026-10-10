@@ -279,6 +279,16 @@ async def list_org_events_route(
 
 # ── User account actions ──────────────────────────────────────────────────
 
+@router.get("/users/search", response_model=PaginatedResponse)
+async def search_users_route(
+    q: str = Query(min_length=2), offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.read")),
+):
+    async with request_guard(db, "/app-admin/users/search"):
+        items, total = await organization_service.search_users(session=db, q=q, offset=offset, limit=limit)
+        return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
+
+
 @router.post("/users/{user_id}/suspend", status_code=status.HTTP_204_NO_CONTENT)
 async def suspend_user_route(
     user_id: str, body: SuspendUserRequest, request: Request, db: AsyncSession = Depends(get_db),

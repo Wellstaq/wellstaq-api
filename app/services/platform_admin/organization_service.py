@@ -248,6 +248,26 @@ async def list_members(*, session: AsyncSession, org_id: str, q: str | None, sta
     return items, total
 
 
+async def search_users(*, session: AsyncSession, q: str, offset: int, limit: int) -> tuple[list[dict], int]:
+    """Cross-organization lookup by name or email, so an admin can find and
+    act on a user (suspend/reactivate/password-reset — see the User account
+    actions routes) before knowing which organization they belong to."""
+    pattern = f"%{q}%"
+    clause = or_(User.first_name.ilike(pattern), User.last_name.ilike(pattern), User.email.ilike(pattern))
+    query = select(User).options(selectinload(User.organization)).where(clause)
+    count_query = select(func.count()).select_from(User).where(clause)
+
+    total = (await session.execute(count_query)).scalar_one()
+    rows = (await session.execute(query.order_by(User.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+    items = [{
+        "id": u.id, "first_name": u.first_name, "last_name": u.last_name, "email": u.email,
+        "avatar_url": u.avatar_url, "status": u.status,
+        "organization_id": u.organization_id, "organization_name": u.organization.business_name if u.organization else None,
+        "joined_at": u.created_at,
+    } for u in rows]
+    return items, total
+
+
 async def list_branches(*, session: AsyncSession, org_id: str, q: str | None, offset: int, limit: int) -> tuple[list[dict], int]:
     await get_organization_or_404(session=session, org_id=org_id)
     query = select(Branch).options(selectinload(Branch.manager)).where(Branch.organization_id == org_id)

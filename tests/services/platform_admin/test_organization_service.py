@@ -113,3 +113,24 @@ async def test_get_organization_detail_not_found(db_session):
     with pytest.raises(HTTPException) as exc:
         await organization_service.get_organization_detail(session=db_session, org_id="does-not-exist")
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_search_users_matches_by_email_across_organizations(db_session):
+    org, owner = await make_org_with_owner(db_session, org_kwargs={"business_name": "Acme Co", "slug": "acme-co"}, user_kwargs={"email": "findme@example.com"})
+    _other_org, _other_owner = await make_org_with_owner(db_session, org_kwargs={"business_name": "Other Co", "slug": "other-co"}, user_kwargs={"email": "nomatch@example.com"})
+
+    items, total = await organization_service.search_users(session=db_session, q="findme", offset=0, limit=20)
+
+    assert total == 1
+    assert items[0]["id"] == owner.id
+    assert items[0]["organization_id"] == org.id
+    assert items[0]["organization_name"] == "Acme Co"
+
+
+@pytest.mark.asyncio
+async def test_search_users_matches_by_name(db_session):
+    _org, owner = await make_org_with_owner(db_session, user_kwargs={"first_name": "Zuri", "email": "zuri@example.com"})
+    items, total = await organization_service.search_users(session=db_session, q="Zuri", offset=0, limit=20)
+    assert total == 1
+    assert items[0]["id"] == owner.id
