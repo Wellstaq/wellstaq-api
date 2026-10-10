@@ -55,7 +55,6 @@ from app.core.phone import normalize_phone_number
 from app.core.database import get_db
 from app.core.guards import request_guard
 from app.schemas.auth import (
-    AccessTokenResponse,
     InviteOtpRequestSchema,
     InviteOtpVerifySchema,
     InviteRegisterRequest,
@@ -544,11 +543,17 @@ async def revoke_session(
 
 # ── Session ────────────────────────────────────────────────────────────────────
 
-@router.post("/refresh", response_model=AccessTokenResponse, summary="Refresh access token")
+@router.post("/refresh", response_model=TokenResponse, summary="Refresh access token")
 async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
     """
     Rotates the refresh token — each token is single-use.
     Permissions re-loaded from DB on every rotation.
+
+    response_model is TokenResponse (not AccessTokenResponse): the old
+    refresh token's hash is overwritten the instant this runs (see
+    rotate_refresh_token), so the caller MUST receive the new raw
+    refresh_token here or every account would be locked out of
+    refreshing a second time.
     """
     async with request_guard(db, "/auth/refresh"):
         result = await refresh_access_token(session=db, raw_refresh_token=payload.refresh_token)
