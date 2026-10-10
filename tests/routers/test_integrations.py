@@ -31,7 +31,7 @@ class TestIntegrationRoutes:
             f"/organizations/{org.id}/integrations/google_calendar/connect", headers=headers
         )
         assert response.status_code == 503
-        assert "OAuth" in response.json()["detail"]
+        assert "GOOGLE_INTEGRATION_CLIENT_ID" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_toggle_connected_integration_and_disconnect(self, client, db_session):

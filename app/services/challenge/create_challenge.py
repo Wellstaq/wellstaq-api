@@ -32,6 +32,10 @@ async def create_challenge(
     target_type: str,
     target_value,
     created_by: str,
+    tracking_method: str = "self_reported",
+    activity_label: str | None = None,
+    evidence_required: bool = False,
+    requires_approval: bool = False,
 ) -> Challenge:
     await validate_org_and_branch(session=session, organization_id=organization_id, branch_id=branch_id)
 
@@ -57,6 +61,10 @@ async def create_challenge(
         target_type=target_type,
         target_value=target_value,
         created_by=created_by,
+        tracking_method=tracking_method,
+        activity_label=activity_label.strip() if activity_label else None,
+        evidence_required=evidence_required,
+        requires_approval=requires_approval,
     )
     session.add(challenge)
     await session.flush()

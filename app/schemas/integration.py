@@ -1,6 +1,28 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel
+
+
+class ConnectIntegrationResponse(BaseModel):
+    authorization_url: str
+
+
+class MyIntegrationItem(BaseModel):
+    provider: str
+    status: str
+    enabled: bool
+    last_synced_at: datetime | None
+
+
+class MyIntegrationListResponse(BaseModel):
+    items: list[MyIntegrationItem]
+
+
+class SyncResultResponse(BaseModel):
+    synced_entries: int
+    challenge_ids: list[str]
 
 
 class IntegrationItem(BaseModel):

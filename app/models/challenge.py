@@ -92,6 +92,33 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     target_value: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     # The number to hit — total steps for cumulative, per-day minimum for daily_minimum
 
+    # ── Tracking method ──────────────────────────────────────────────────────
+    # "automatic" = fed from a connected health/fitness source (see
+    #   AUTOMATIC_ACTIVITY_METRICS / sync_health_activity) — manual progress
+    #   submission is rejected for these.
+    # "self_reported" = participant logs their own value/completion via
+    #   POST .../progress — no evidence required.
+    # "evidence_based" = participant submits via POST .../submissions
+    #   (photo/note); counts toward progress only once review_status is
+    #   'approved' — immediately if requires_approval is False (user
+    #   declaration), otherwise after an admin/moderator reviews it.
+    # "platform_recorded" = Wellstaq records participation itself because it
+    #   happened inside the platform (e.g. event attendance) — no
+    #   participant-submitted progress at all.
+    tracking_method: Mapped[str] = mapped_column(String(20), nullable=False, default="self_reported")
+
+    # Human-readable definition of the specific activity being tracked, e.g.
+    # "Prepare a healthy meal containing vegetables." Shown to participants
+    # instead of letting them type an arbitrary value for what counts.
+    activity_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Only meaningful for tracking_method='evidence_based'.
+    evidence_required: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Whether a submitted entry needs admin/moderator approval before it
+    # counts toward progress, or counts immediately on submission
+    # ("user declaration" per spec).
+    requires_approval: Mapped[bool] = mapped_column(nullable=False, default=False)
+
     # ── Audit ─────────────────────────────────────────────────────────────
     created_by: Mapped[str | None] = mapped_column(
         String(36),
@@ -152,6 +179,10 @@ class Challenge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ck_challenges_status_valid",
         ),
         CheckConstraint("target_type IN ('cumulative', 'daily_minimum')", name="ck_challenges_target_type_valid"),
+        CheckConstraint(
+            "tracking_method IN ('automatic', 'self_reported', 'evidence_based', 'platform_recorded')",
+            name="ck_challenges_tracking_method_valid",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -193,6 +224,11 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Admin/moderator-assigned quality score (0-100) for challenges judged
+    # on submission quality rather than plain completion count — see
+    # set_participant_score. Null until an admin scores this participant.
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # ── Relationships ──────────────────────────────────────────────────────
     challenge: Mapped["Challenge"] = relationship(
         "Challenge",
@@ -221,6 +257,9 @@ class ChallengeParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="fk_challenge_participants_challenge_org",
         ),
         CheckConstraint("rank IS NULL OR rank > 0", name="ck_challenge_participants_rank_positive"),
+        CheckConstraint(
+            "score IS NULL OR (score >= 0 AND score <= 100)", name="ck_challenge_participants_score_range",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -260,6 +299,24 @@ class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # though only one source is supported today.
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
 
+    # ── Evidence-based submissions ───────────────────────────────────────────
+    # Populated only when the parent Challenge.tracking_method is
+    # 'evidence_based'; null for automatic/self_reported entries.
+    photo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 'approved' by default so automatic/self_reported entries (and
+    # evidence_based entries on a challenge with requires_approval=False)
+    # count toward progress immediately. Only an evidence_based entry on a
+    # requires_approval challenge starts 'pending'. check_challenge_completion
+    # and get_participant_progress only count 'approved' entries.
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="approved")
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     challenge: Mapped["Challenge"] = relationship(
         "Challenge", back_populates="progress_entries", foreign_keys=[challenge_id],
     )
@@ -281,6 +338,9 @@ class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="fk_challenge_progress_challenge_org",
         ),
         CheckConstraint("value >= 0", name="ck_challenge_progress_value_non_negative"),
+        CheckConstraint(
+            "review_status IN ('pending', 'approved', 'rejected')", name="ck_challenge_progress_review_status_valid",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -311,6 +371,8 @@ class ChallengeStatsSnapshot(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     active_challenges: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_participants: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_participants: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_challenges: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    upcoming_challenges: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
         UniqueConstraint("organization_id", "branch_id", "snapshot_date", name="uq_challenge_stats_snapshot_day"),

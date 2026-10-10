@@ -38,12 +38,17 @@ def upgrade() -> None:
             "Correct those rows explicitly, then rerun the migration."
         )
 
-    op.create_check_constraint(
-        "ck_role_tenant_scope_consistent", "roles", _CONSTRAINT
-    )
+    # batch mode: SQLite has no ALTER TABLE ADD CONSTRAINT — Alembic's
+    # batch mode does a copy-and-move rebuild instead. On Postgres/MySQL
+    # this degrades to the plain ALTER (no behavior change there).
+    with op.batch_alter_table("roles") as batch_op:
+        batch_op.create_check_constraint(
+            "ck_role_tenant_scope_consistent", _CONSTRAINT
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "ck_role_tenant_scope_consistent", "roles", type_="check"
-    )
+    with op.batch_alter_table("roles") as batch_op:
+        batch_op.drop_constraint(
+            "ck_role_tenant_scope_consistent", type_="check"
+        )

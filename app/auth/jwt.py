@@ -129,3 +129,31 @@ def decode_token(token: str) -> dict[str, Any]:
         )
     except JWTError as exc:
         raise TokenError(str(exc)) from exc
+
+
+def create_oauth_state_token(user_id: str, organization_id: str, provider: str, kind: str) -> str:
+    """
+    Short-lived, signed 'state' param for a third-party OAuth redirect
+    (e.g. Google) — carries just enough to resume the flow in the
+    callback, which Google calls with no auth context of its own.
+
+    kind distinguishes an org-level connect (e.g. a shared company
+    calendar, admin-only) from a user-level personal connect (e.g. an
+    employee's own Google Fit data) — both share the same OAuth client
+    and callback route.
+    """
+    return _create_token(
+        subject=user_id,
+        expires_delta=timedelta(minutes=10),
+        token_type="access",  # reuses the same claim shape; distinguished by purpose below
+        extra_claims={"org_id": organization_id, "provider": provider, "purpose": "oauth_state", "kind": kind},
+    )
+
+
+def decode_oauth_state_token(token: str) -> dict[str, Any]:
+    """Decode an oauth state token, raising TokenError if invalid, expired,
+    or not actually an oauth_state token (rejects a stolen/replayed access token)."""
+    claims = decode_token(token)
+    if claims.get("purpose") != "oauth_state":
+        raise TokenError("Not an OAuth state token.")
+    return claims

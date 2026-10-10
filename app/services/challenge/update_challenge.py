@@ -9,7 +9,7 @@ import logging
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import CHALLENGE_STATUSES, TARGET_TYPES
+from app.core.constants import CHALLENGE_STATUSES, TARGET_TYPES, TRACKING_METHODS
 from app.services.challenge._helpers import get_challenge_or_404
 from app.services.storage import attach_media_asset, confirm_upload, release_media_asset
 from app.services.storage._helpers import extract_object_key
@@ -31,6 +31,10 @@ async def edit_challenge(
     target_type: str | None,
     target_value,
     status_: str | None,
+    tracking_method: str | None = None,
+    activity_label: str | None = None,
+    evidence_required: bool | None = None,
+    requires_approval: bool | None = None,
 ):
     challenge = await get_challenge_or_404(session=session, organization_id=organization_id, challenge_id=challenge_id)
 
@@ -85,6 +89,16 @@ async def edit_challenge(
         if status_ not in CHALLENGE_STATUSES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid status '{status_}'.")
         challenge.status = status_
+    if tracking_method is not None:
+        if tracking_method not in TRACKING_METHODS:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid tracking_method '{tracking_method}'.")
+        challenge.tracking_method = tracking_method
+    if activity_label is not None:
+        challenge.activity_label = activity_label.strip()
+    if evidence_required is not None:
+        challenge.evidence_required = evidence_required
+    if requires_approval is not None:
+        challenge.requires_approval = requires_approval
 
     if challenge.target_type == "daily_minimum" and challenge.end_date is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "daily_minimum challenges require an end_date.")

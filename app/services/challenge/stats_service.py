@@ -24,6 +24,12 @@ async def get_challenge_stats(
     active_challenges = (await session.execute(
         select(func.count()).select_from(challenge_ids_subq).where(challenge_ids_subq.c.status == "active")
     )).scalar_one()
+    completed_challenges = (await session.execute(
+        select(func.count()).select_from(challenge_ids_subq).where(challenge_ids_subq.c.status == "completed")
+    )).scalar_one()
+    upcoming_challenges = (await session.execute(
+        select(func.count()).select_from(challenge_ids_subq).where(challenge_ids_subq.c.status == "upcoming")
+    )).scalar_one()
 
     participant_query = (
         select(func.count(ChallengeParticipant.id), func.count(ChallengeParticipant.completed_at))
@@ -41,6 +47,8 @@ async def get_challenge_stats(
         "active_challenges": active_challenges,
         "total_participants": total_participants,
         "completion_rate": completion_rate,
+        "completed_challenges": completed_challenges,
+        "upcoming_challenges": upcoming_challenges,
     }
 
     # period=None (default) → all-time view, no baseline to compare against

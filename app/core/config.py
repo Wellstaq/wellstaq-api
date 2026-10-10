@@ -81,6 +81,20 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     APPLE_CLIENT_ID: str = ""  # your app's bundle id / services id
 
+    # Google integration (Calendar sync + Fit activity data) — distinct from
+    # GOOGLE_CLIENT_ID above, which is for "Sign in with Google" only. This
+    # is a separate OAuth client because it requests different scopes
+    # (calendar.events, fitness.activity.read) and a different consent
+    # screen flow (offline access, for refresh tokens).
+    GOOGLE_INTEGRATION_CLIENT_ID: str = ""
+    GOOGLE_INTEGRATION_CLIENT_SECRET: str = ""
+    GOOGLE_INTEGRATION_REDIRECT_URI: str = ""
+    # Fernet key (32 url-safe base64-encoded bytes) used to encrypt
+    # OrganizationIntegration/UserIntegration access & refresh tokens at
+    # rest — see app/services/integration/crypto.py. Generate with
+    # `Fernet.generate_key()`.
+    INTEGRATION_ENCRYPTION_KEY: str = ""
+
     # Permission cache TTL — belt-and-suspenders; explicit invalidation
     # on every role change makes this mostly irrelevant, but caps
     # staleness if an invalidation call is ever missed.

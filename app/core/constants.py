@@ -148,6 +148,8 @@ HEADQUARTERS_BRANCH_NAME = "Headquarters"
 #challenge
 CHALLENGE_STATUSES = ("upcoming", "active", "completed", "cancelled", "archived")
 TARGET_TYPES = ("cumulative", "daily_minimum")
+TRACKING_METHODS = ("automatic", "self_reported", "evidence_based", "platform_recorded")
+SUBMISSION_REVIEW_STATUSES = ("pending", "approved", "rejected")
 
 #chat
 VALID_CONVERSATION_TYPES = {"club", "event"}

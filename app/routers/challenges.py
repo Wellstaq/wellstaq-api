@@ -38,14 +38,21 @@ from app.schemas.challenge import (
     ChallengeListResponse,
     ChallengeResponse,
     ChallengeUpdateRequest,
+    LeaderboardResponse,
     ParticipantCompleteRequest,
     ParticipantInfo,
     ParticipantJoinResponse,
     ParticipantListResponse,
+    ParticipantScoreRequest,
     ProgressEntryResponse,
     ProgressSubmitRequest,
     ParticipantProgressResponse,
     ChallengeStatsResponse,
+    SubmissionCreateRequest,
+    SubmissionListResponse,
+    SubmissionResponse,
+    SubmissionReviewRequest,
+    SubmissionReviewerInfo,
 )
 from app.services.challenge import (
     create_challenge,
@@ -54,10 +61,15 @@ from app.services.challenge import (
     cancel_challenge,
     get_challenge,
     get_challenges,
+    get_leaderboard,
     get_participants,
     join_challenge,
     leave_challenge,
+    list_submissions,
     mark_participant_complete,
+    review_submission,
+    set_participant_score,
+    submit_evidence,
 
 )
 from app.services.challenge._helpers import check_challenge_scope, check_challenge_visibility
@@ -65,7 +77,7 @@ from app.services.challenge.progress_service import submit_progress
 from app.services.challenge.stats_service import get_challenge_stats
 from datetime import date as date_type
 
-from app.core.constants import CHALLENGE_STATUSES
+from app.core.constants import CHALLENGE_STATUSES, SUBMISSION_REVIEW_STATUSES
 
 router = APIRouter(prefix="/organizations/{org_id}/challenges", tags=["challenges"])
 
@@ -122,6 +134,8 @@ async def create_challenge_route(
             start_date=body.start_date, end_date=body.end_date, metric_type=body.metric_type,
             target_type=body.target_type, target_value=body.target_value,
             created_by=current_user.user_id,
+            tracking_method=body.tracking_method, activity_label=body.activity_label,
+            evidence_required=body.evidence_required, requires_approval=body.requires_approval,
         )
         await db.commit()
         return ChallengeResponse.model_validate(challenge)
@@ -248,6 +262,8 @@ async def edit_challenge_route(
             start_date=body.start_date, end_date=body.end_date,
             metric_type=body.metric_type, target_type=body.target_type, target_value=body.target_value,
             status_=body.status,
+            tracking_method=body.tracking_method, activity_label=body.activity_label,
+            evidence_required=body.evidence_required, requires_approval=body.requires_approval,
         )
         await db.commit()
         return ChallengeResponse.model_validate(updated)
@@ -364,7 +380,7 @@ async def list_participants_route(
         items = [
             ParticipantInfo(
                 user_id=u.id, first_name=u.first_name, last_name=u.last_name,
-                rank=p.rank, completed_at=p.completed_at, joined_at=p.joined_at,
+                rank=p.rank, score=p.score, completed_at=p.completed_at, joined_at=p.joined_at,
             )
             for p, u in rows
         ]
@@ -395,7 +411,8 @@ async def mark_participant_complete_route(
         user = user_result.scalar_one()
         return ParticipantInfo(
             user_id=user.id, first_name=user.first_name, last_name=user.last_name,
-            rank=participant.rank, completed_at=participant.completed_at, joined_at=participant.joined_at,
+            rank=participant.rank, score=participant.score,
+            completed_at=participant.completed_at, joined_at=participant.joined_at,
         )
 
 @router.post(
@@ -470,3 +487,162 @@ async def participant_progress_route(
             session=db, organization_id=org_id, challenge_id=challenge_id, user_id=user_id,
         )
         return ParticipantProgressResponse(**progress)
+
+
+# ── Evidence submissions ─────────────────────────────────────────────────────
+
+@router.post(
+    "/{challenge_id}/submissions",
+    response_model=SubmissionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit evidence for today",
+    description=(
+        "Evidence-based challenges only (`tracking_method='evidence_based'`). "
+        "Counts toward progress immediately if the challenge's "
+        "`requires_approval` is False; otherwise sits `pending` until an "
+        "admin reviews it via the submissions review endpoints."
+    ),
+)
+async def submit_evidence_route(
+    org_id: str, challenge_id: str, body: SubmissionCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_active_subscription),
+) -> SubmissionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/submissions"):
+        entry = await submit_evidence(
+            session=db, organization_id=org_id, challenge_id=challenge_id,
+            user_id=current_user.user_id, photo_url=body.photo_url, note=body.note,
+        )
+        await db.commit()
+        return SubmissionResponse.model_validate(entry)
+
+
+SubmissionReviewStatus = Literal[*SUBMISSION_REVIEW_STATUSES]
+
+@router.get(
+    "/{challenge_id}/submissions",
+    response_model=SubmissionListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Review queue for evidence submissions",
+    description="Admin review queue. Requires `challenge.update` scoped to the challenge's branch. Defaults to pending submissions only.",
+)
+async def list_submissions_route(
+    org_id: str, challenge_id: str,
+    review_status: SubmissionReviewStatus | None = Query(default="pending", alias="status"),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+) -> SubmissionListResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/submissions"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
+
+        rows, total = await list_submissions(
+            session=db, organization_id=org_id, challenge_id=challenge_id,
+            review_status=review_status, offset=offset, limit=limit,
+        )
+        items = [
+            SubmissionReviewerInfo(
+                id=entry.id, user_id=user.id, first_name=user.first_name, last_name=user.last_name,
+                entry_date=entry.entry_date, photo_url=entry.photo_url, note=entry.note,
+                review_status=entry.review_status, rejection_reason=entry.rejection_reason,
+            )
+            for entry, user in rows
+        ]
+        return SubmissionListResponse(items=items, total=total, offset=offset, limit=limit)
+
+
+@router.post(
+    "/{challenge_id}/submissions/{entry_id}/review",
+    response_model=SubmissionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Approve or reject an evidence submission",
+    description=(
+        "Requires `challenge.update` scoped to the challenge's branch. "
+        "Approving counts the entry toward progress (and may trigger "
+        "challenge completion); rejecting requires a `reason`, which the "
+        "participant is notified with."
+    ),
+)
+async def review_submission_route(
+    org_id: str, challenge_id: str, entry_id: str, body: SubmissionReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+) -> SubmissionResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/submissions/{entry_id}/review"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
+
+        entry = await review_submission(
+            session=db, organization_id=org_id, challenge_id=challenge_id, entry_id=entry_id,
+            reviewer_id=current_user.user_id, action=body.action, reason=body.reason,
+        )
+        await db.commit()
+        return SubmissionResponse.model_validate(entry)
+
+
+# ── Scoring & leaderboard ─────────────────────────────────────────────────────
+
+@router.patch(
+    "/{challenge_id}/participants/{user_id}/score",
+    response_model=ParticipantInfo,
+    status_code=status.HTTP_200_OK,
+    description=(
+        "Admin-assigned quality score (0-100) for competition-style "
+        "challenges judged on submission quality, not just completion "
+        "count. Requires `challenge.update` scoped to the challenge's branch."
+    ),
+)
+async def set_participant_score_route(
+    org_id: str, challenge_id: str, user_id: str, body: ParticipantScoreRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("challenge.update")),
+) -> ParticipantInfo:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/participants/{user_id}/score"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        await check_challenge_scope(db=db, current_user=current_user, permission="challenge.update", branch_id=challenge.branch_id)
+
+        participant = await set_participant_score(
+            session=db, organization_id=org_id, challenge_id=challenge_id, user_id=user_id, score=body.score,
+        )
+        await db.commit()
+
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one()
+        return ParticipantInfo(
+            user_id=user.id, first_name=user.first_name, last_name=user.last_name,
+            rank=participant.rank, score=participant.score,
+            completed_at=participant.completed_at, joined_at=participant.joined_at,
+        )
+
+
+@router.get(
+    "/{challenge_id}/leaderboard",
+    response_model=LeaderboardResponse,
+    status_code=status.HTTP_200_OK,
+    description=(
+        "Ranked by admin-assigned score where set, otherwise by approved "
+        "progress value, then by who completed first."
+    ),
+)
+async def leaderboard_route(
+    org_id: str, challenge_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LeaderboardResponse:
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/challenges/{challenge_id}/leaderboard"):
+        challenge = await get_challenge(session=db, organization_id=org_id, challenge_id=challenge_id)
+        check_challenge_visibility(current_user=current_user, challenge=challenge)
+
+        items, total = await get_leaderboard(
+            session=db, organization_id=org_id, challenge_id=challenge_id, offset=offset, limit=limit,
+        )
+        return LeaderboardResponse(items=items, total=total, offset=offset, limit=limit)

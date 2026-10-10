@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import logging
 
-
+from datetime import datetime, timezone
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.sql import Select
 from fastapi import HTTPException, status
@@ -19,6 +20,16 @@ from app.auth.dependencies import CurrentUser, require_scoped_permission
 from app.models import Branch, Challenge, Organization, ChallengeProgressEntry
 
 logger = logging.getLogger(__name__)
+
+WAT = ZoneInfo("Africa/Lagos")
+
+
+def today_wat():
+    """The WAT (Africa/Lagos) calendar date 'today' — the entry_date every
+    ChallengeProgressEntry (manual or evidence-based) is stamped with,
+    computed server-side so it's consistent across devices/timezones."""
+    return datetime.now(timezone.utc).astimezone(WAT).date()
+
 
 async def get_challenge_or_404(*, session: AsyncSession, organization_id: str, challenge_id: str) -> Challenge:
     result = await session.execute(
@@ -104,6 +115,7 @@ async def check_challenge_completion(*, session: AsyncSession, challenge, partic
             select(func.sum(ChallengeProgressEntry.value)).where(
                 ChallengeProgressEntry.challenge_id == challenge.id,
                 ChallengeProgressEntry.user_id == participant.user_id,
+                ChallengeProgressEntry.review_status == "approved",
             )
         )
         total = total_result.scalar_one() or 0
@@ -119,6 +131,7 @@ async def check_challenge_completion(*, session: AsyncSession, challenge, partic
                 ChallengeProgressEntry.challenge_id == challenge.id,
                 ChallengeProgressEntry.user_id == participant.user_id,
                 ChallengeProgressEntry.entry_date == today,
+                ChallengeProgressEntry.review_status == "approved",
             )
         )
         today_value = today_entry_result.scalar_one_or_none()
@@ -203,6 +216,19 @@ def apply_challenge_visibility_filter(
         return query.where(or_(Challenge.branch_id.is_(None), Challenge.branch_id == viewer_branch_id))
     return query
 
+
+
+def confirm_submission_photo(photo_url: str | None) -> None:
+    """Same pattern as confirm_challenge_image — verify the uploaded photo
+    actually exists in S3 before trusting the client-provided URL."""
+    if not photo_url:
+        return
+    object_key = urlparse(photo_url).path.lstrip("/")
+    if not confirm_upload(object_key=object_key):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Photo upload not found — upload may have failed or not completed yet.",
+        )
 
 
 def confirm_challenge_image(image_url: str | None) -> None:

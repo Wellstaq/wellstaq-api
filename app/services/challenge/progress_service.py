@@ -5,8 +5,7 @@ app/services/challenge/progress_service.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, date
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -14,25 +13,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChallengeParticipant, ChallengeProgressEntry
 from app.schemas.activity_log import AUTOMATIC_ACTIVITY_METRICS
-from app.services.challenge._helpers import check_challenge_completion, get_challenge_or_404
+from app.services.challenge._helpers import check_challenge_completion, get_challenge_or_404, today_wat
 
 logger = logging.getLogger(__name__)
-
-WAT = ZoneInfo("Africa/Lagos")
-
-
-def _today_wat():
-    return datetime.now(timezone.utc).astimezone(WAT).date()
 
 async def submit_progress(
     *, session: AsyncSession, organization_id: str, challenge_id: str, user_id: str, value: float, source: str = "manual"
 ) -> ChallengeProgressEntry | None:
     challenge = await get_challenge_or_404(session=session, organization_id=organization_id, challenge_id=challenge_id)
 
-    if challenge.metric_type in AUTOMATIC_ACTIVITY_METRICS:
+    if challenge.metric_type in AUTOMATIC_ACTIVITY_METRICS or challenge.tracking_method == "automatic":
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Steps, running, and calories are updated automatically from the connected health provider.",
+        )
+
+    if challenge.tracking_method == "evidence_based":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "This challenge requires photo evidence — submit via POST .../submissions instead.",
+        )
+
+    if challenge.tracking_method == "platform_recorded":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Wellstaq records participation in this challenge automatically — manual progress cannot be submitted.",
         )
 
     if challenge.status != "active":
@@ -54,7 +59,7 @@ async def submit_progress(
         return None
 
     
-    entry_date = _today_wat()
+    entry_date = today_wat()
 
     existing = await session.execute(
         select(ChallengeProgressEntry).where(
@@ -121,27 +126,32 @@ async def get_participant_progress(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "You are not a participant of this challenge.")
 
     entries_result = await session.execute(
-        select(ChallengeProgressEntry.entry_date, ChallengeProgressEntry.value)
+        select(ChallengeProgressEntry.entry_date, ChallengeProgressEntry.value, ChallengeProgressEntry.review_status)
         .where(ChallengeProgressEntry.challenge_id == challenge_id, ChallengeProgressEntry.user_id == user_id)
         .order_by(ChallengeProgressEntry.entry_date.asc())
     )
     entries = entries_result.all()
 
-    current_value = sum((value for _date, value in entries), start=0)
+    # Only 'approved' entries count toward the official total/target check —
+    # 'pending' (awaiting evidence review) and 'rejected' entries are still
+    # shown per-day below so the participant can see their submission's
+    # status, but they haven't earned progress yet.
+    approved_entries = [(d, v) for d, v, review_status in entries if review_status == "approved"]
+    current_value = sum((value for _date, value in approved_entries), start=0)
     days_logged = len(entries)
 
     daily_entries = []
     days_met_target = None
     if challenge.target_type == "daily_minimum" and challenge.target_value is not None:
         days_met_target = 0
-        for entry_date, value in entries:
-            met = value >= challenge.target_value
+        for entry_date, value, review_status in entries:
+            met = review_status == "approved" and value >= challenge.target_value
             if met:
                 days_met_target += 1
-            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": met})
+            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": met, "review_status": review_status})
     else:
-        for entry_date, value in entries:
-            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": None})
+        for entry_date, value, review_status in entries:
+            daily_entries.append({"entry_date": entry_date, "value": value, "met_target": None, "review_status": review_status})
 
     percent_complete = None
     if challenge.target_type == "cumulative" and challenge.target_value:
