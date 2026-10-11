@@ -43,9 +43,11 @@ from app.schemas.platform_admin import (
     PlatformOverviewResponse,
     SuspendOrganizationRequest,
     SuspendUserRequest,
+    UpdateAdminProfileRequest,
     UpdateAdminRoleRequest,
 )
-from app.services.platform_admin import admin_team_service, auth_service, organization_service, payment_service, platform_event_service
+from app.schemas.storage import UploadRequestSchema, UploadResponse
+from app.services.platform_admin import admin_team_service, auth_service, organization_service, payment_service, platform_event_service, storage_service
 from app.services.platform_admin.audit_service import log_admin_audit
 
 router = APIRouter(prefix="/app-admin", tags=["platform-admin"])
@@ -98,6 +100,43 @@ async def admin_me_route(db: AsyncSession = Depends(get_db), current_admin: Curr
         id=admin.id, email=admin.email, first_name=admin.first_name, last_name=admin.last_name,
         role=admin.role, permissions=current_admin.permissions, avatar_url=admin.avatar_url, two_fa_enabled=admin.two_fa_enabled,
     )
+
+
+@router.patch("/auth/me", response_model=AdminMeResponse)
+async def update_admin_profile_route(
+    body: UpdateAdminProfileRequest, db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(get_current_admin),
+):
+    """Self-service only: always the caller's own row (current_admin.admin_id
+    from the access token), never a path param — see
+    UpdateAdminProfileRequest's docstring for why that's deliberate."""
+    async with request_guard(db, "/app-admin/auth/me"):
+        admin = (await db.execute(select(AdminUser).where(AdminUser.id == current_admin.admin_id))).scalar_one()
+        admin.first_name = body.first_name.strip()
+        admin.last_name = body.last_name.strip()
+        admin.avatar_url = body.avatar_url
+        await db.commit()
+        await db.refresh(admin)
+        return AdminMeResponse(
+            id=admin.id, email=admin.email, first_name=admin.first_name, last_name=admin.last_name,
+            role=admin.role, permissions=current_admin.permissions, avatar_url=admin.avatar_url, two_fa_enabled=admin.two_fa_enabled,
+        )
+
+
+@router.post("/storage/upload-url", response_model=UploadResponse)
+async def request_admin_upload_url_route(
+    body: UploadRequestSchema, db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(get_current_admin),
+):
+    """Any authenticated admin can request an 'admin-avatars' upload URL
+    (self-only — nothing is attributed until PATCH /auth/me stores it on
+    their own row). 'platform-events' additionally requires events.manage,
+    matching the permission already required to create/edit the event
+    that will reference it."""
+    if body.domain == "platform-events" and not current_admin.has_permission("events.manage"):
+        from fastapi import HTTPException
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your admin role doesn't allow this action.")
+    async with request_guard(db, "/app-admin/storage/upload-url"):
+        result = storage_service.request_admin_upload(domain=body.domain, content_type=body.content_type)
+        return UploadResponse(**result)
 
 
 @router.post("/auth/password/forgot", status_code=status.HTTP_204_NO_CONTENT)

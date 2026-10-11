@@ -68,6 +68,15 @@ class AdminMeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UpdateAdminProfileRequest(BaseModel):
+    """Self-service only — the router derives which admin from the
+    access token, never a path param, so there's no way for one admin
+    to edit another's name or photo through this endpoint."""
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    avatar_url: str | None = None
+
+
 # ── Overview ─────────────────────────────────────────────────────────────────
 
 class OverviewCount(BaseModel):

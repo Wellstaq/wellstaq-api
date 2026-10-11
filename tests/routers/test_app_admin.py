@@ -49,6 +49,79 @@ class TestAdminAuthRoutes:
         response = await client.post("/app-admin/auth/login", json={"email": "owner@wellstaq.test", "password": "wrong"})
         assert response.status_code == 401
 
+    @pytest.mark.asyncio
+    async def test_update_own_profile(self, client, db_session: AsyncSession):
+        admin, admin_headers = await _admin_context(db_session, first_name="Old", last_name="Name")
+
+        response = await client.patch(
+            "/app-admin/auth/me", headers=admin_headers,
+            json={"first_name": "New", "last_name": "Name", "avatar_url": "https://cdn.example.com/avatars/me.jpg"},
+        )
+        assert response.status_code == 200
+        assert response.json()["first_name"] == "New"
+        assert response.json()["avatar_url"] == "https://cdn.example.com/avatars/me.jpg"
+
+        me = await client.get("/app-admin/auth/me", headers=admin_headers)
+        assert me.json()["first_name"] == "New"
+
+    @pytest.mark.asyncio
+    async def test_update_profile_requires_authentication(self, client):
+        response = await client.patch("/app-admin/auth/me", json={"first_name": "New", "last_name": "Name"})
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_update_profile_rejects_empty_name(self, client, db_session: AsyncSession):
+        _, admin_headers = await _admin_context(db_session)
+        response = await client.patch("/app-admin/auth/me", headers=admin_headers, json={"first_name": "", "last_name": "Name"})
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_admin_cannot_update_another_admins_profile(self, client, db_session: AsyncSession):
+        """There is no path-param variant of this route — it always
+        updates the caller's own row — so this just confirms updating
+        'my' profile while authenticated as a different admin leaves
+        the other admin untouched."""
+        other, _ = await _admin_context(db_session, email="other@wellstaq.test", first_name="Untouched")
+        _, admin_headers = await _admin_context(db_session, email="me@wellstaq.test", first_name="Mine")
+
+        response = await client.patch("/app-admin/auth/me", headers=admin_headers, json={"first_name": "Changed", "last_name": "Name"})
+        assert response.status_code == 200
+
+        await db_session.refresh(other)
+        assert other.first_name == "Untouched"
+
+
+class TestAdminStorageRoute:
+    @pytest.mark.asyncio
+    async def test_request_avatar_upload_url(self, client, db_session: AsyncSession, monkeypatch):
+        from app.services.platform_admin import storage_service
+
+        monkeypatch.setattr(storage_service, "generate_presigned_upload_url", lambda *, object_key, content_type: f"https://upload.test/{object_key}")
+        monkeypatch.setattr(storage_service, "get_object_url", lambda *, object_key: f"https://cdn.test/{object_key}")
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.post("/app-admin/storage/upload-url", headers=admin_headers, json={"domain": "admin-avatars", "content_type": "image/png"})
+        assert response.status_code == 200
+        assert response.json()["object_key"].startswith("admin-avatars/")
+        assert response.json()["object_key"].endswith(".png")
+
+    @pytest.mark.asyncio
+    async def test_request_upload_url_rejects_unknown_domain(self, client, db_session: AsyncSession):
+        _, admin_headers = await _admin_context(db_session)
+        response = await client.post("/app-admin/storage/upload-url", headers=admin_headers, json={"domain": "posts", "content_type": "image/png"})
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_platform_events_upload_requires_events_manage(self, client, db_session: AsyncSession):
+        _, support_headers = await _admin_context(db_session, email="support@wellstaq.test", role="support")
+        response = await client.post("/app-admin/storage/upload-url", headers=support_headers, json={"domain": "platform-events", "content_type": "image/png"})
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_request_upload_url_requires_authentication(self, client):
+        response = await client.post("/app-admin/storage/upload-url", json={"domain": "admin-avatars", "content_type": "image/png"})
+        assert response.status_code == 403
+
 
 class TestPlansRoute:
     @pytest.mark.asyncio
