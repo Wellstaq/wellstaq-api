@@ -121,6 +121,59 @@ class TestAdminOrganizationRoutes:
         assert response.status_code == 401
 
 
+class TestPaymentRoutes:
+    @pytest.mark.asyncio
+    async def test_list_org_transactions(self, client, db_session: AsyncSession):
+        from app.models.payment import OrganizationSubscription, PaymentTransaction, SubscriptionPlan
+        from sqlalchemy import select
+
+        org, _owner = await make_org_with_owner(db_session)
+        plan = SubscriptionPlan(name="Paid", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True)
+        db_session.add(plan)
+        await db_session.flush()
+        sub = (await db_session.execute(select(OrganizationSubscription).where(OrganizationSubscription.organization_id == org.id))).scalar_one()
+        sub.plan_id = plan.id
+        db_session.add(PaymentTransaction(
+            organization_id=org.id, subscription_id=sub.id, plan_id=plan.id,
+            amount=plan.amount, currency=plan.currency, status="succeeded", external_reference="PSK_test_ref",
+        ))
+        await db_session.flush()
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.get(f"/app-admin/organizations/{org.id}/transactions", headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["items"][0]["external_reference"] == "PSK_test_ref"
+
+    @pytest.mark.asyncio
+    async def test_search_payments_by_reference(self, client, db_session: AsyncSession):
+        from app.models.payment import OrganizationSubscription, PaymentTransaction, SubscriptionPlan
+        from sqlalchemy import select
+
+        org, _owner = await make_org_with_owner(db_session)
+        plan = SubscriptionPlan(name="Paid", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True)
+        db_session.add(plan)
+        await db_session.flush()
+        sub = (await db_session.execute(select(OrganizationSubscription).where(OrganizationSubscription.organization_id == org.id))).scalar_one()
+        sub.plan_id = plan.id
+        db_session.add(PaymentTransaction(
+            organization_id=org.id, subscription_id=sub.id, plan_id=plan.id,
+            amount=plan.amount, currency=plan.currency, status="succeeded", external_reference="PSK_findme_001",
+        ))
+        await db_session.flush()
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.get("/app-admin/payments/search", headers=admin_headers, params={"q": "findme"})
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["items"][0]["organization_id"] == org.id
+
+    @pytest.mark.asyncio
+    async def test_search_payments_requires_authentication(self, client):
+        response = await client.get("/app-admin/payments/search", params={"q": "abc"})
+        assert response.status_code == 403
+
+
 class TestUserSearchAndActionsRoutes:
     @pytest.mark.asyncio
     async def test_search_requires_authentication(self, client):

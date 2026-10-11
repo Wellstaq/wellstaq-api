@@ -44,7 +44,7 @@ from app.schemas.platform_admin import (
     SuspendUserRequest,
     UpdateAdminRoleRequest,
 )
-from app.services.platform_admin import admin_team_service, auth_service, organization_service, platform_event_service
+from app.services.platform_admin import admin_team_service, auth_service, organization_service, payment_service, platform_event_service
 from app.services.platform_admin.audit_service import log_admin_audit
 
 router = APIRouter(prefix="/app-admin", tags=["platform-admin"])
@@ -274,6 +274,28 @@ async def list_org_events_route(
 ):
     async with request_guard(db, "/app-admin/organizations/{org_id}/events"):
         items, total = await organization_service.list_org_events(session=db, org_id=org_id, q=q, status_filter=status_filter, sort=sort, offset=offset, limit=limit)
+        return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
+
+
+@router.get("/organizations/{org_id}/transactions", response_model=PaginatedResponse)
+async def list_org_transactions_route(
+    org_id: str, offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.read")),
+):
+    async with request_guard(db, "/app-admin/organizations/{org_id}/transactions"):
+        items, total = await payment_service.list_org_transactions(session=db, org_id=org_id, offset=offset, limit=limit)
+        return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
+
+
+# ── Payments ─────────────────────────────────────────────────────────────
+
+@router.get("/payments/search", response_model=PaginatedResponse)
+async def search_payments_route(
+    q: str = Query(min_length=3), offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.read")),
+):
+    async with request_guard(db, "/app-admin/payments/search"):
+        items, total = await payment_service.search_transactions(session=db, q=q, offset=offset, limit=limit)
         return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
 
 
