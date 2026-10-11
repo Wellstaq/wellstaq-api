@@ -109,6 +109,51 @@ async def test_suspend_and_comp_are_independent(db_session):
 
 
 @pytest.mark.asyncio
+async def test_manually_activate_subscription_sets_plan_and_active_status(db_session):
+    from datetime import datetime, timezone
+    from app.core.datetime import ensure_utc
+    from app.models.payment import SubscriptionPlan
+
+    org, _owner = await make_org_with_owner(db_session)
+    plan = SubscriptionPlan(name="Standard", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True)
+    db_session.add(plan)
+    await db_session.flush()
+
+    result = await organization_service.manually_activate_subscription(session=db_session, org_id=org.id, plan_id=plan.id)
+
+    assert result["plan_name"] == "Standard"
+    assert result["subscription_status"] == "active"
+    await db_session.refresh(org.subscription)
+    assert ensure_utc(org.subscription.current_period_end) > datetime.now(timezone.utc)
+    assert org.subscription.cancelled_at is None
+
+
+@pytest.mark.asyncio
+async def test_manually_activate_subscription_annual_plan_sets_year_long_period(db_session):
+    from datetime import datetime, timedelta, timezone
+    from app.core.datetime import ensure_utc
+    from app.models.payment import SubscriptionPlan
+
+    org, _owner = await make_org_with_owner(db_session)
+    plan = SubscriptionPlan(name="Annual", billing_interval="annual", amount=5_000_000, currency="NGN", features={}, is_active=True)
+    db_session.add(plan)
+    await db_session.flush()
+
+    await organization_service.manually_activate_subscription(session=db_session, org_id=org.id, plan_id=plan.id)
+
+    await db_session.refresh(org.subscription)
+    assert ensure_utc(org.subscription.current_period_end) > datetime.now(timezone.utc) + timedelta(days=300)
+
+
+@pytest.mark.asyncio
+async def test_manually_activate_subscription_unknown_plan_404s(db_session):
+    org, _owner = await make_org_with_owner(db_session)
+    with pytest.raises(HTTPException) as exc:
+        await organization_service.manually_activate_subscription(session=db_session, org_id=org.id, plan_id="does-not-exist")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_get_organization_detail_not_found(db_session):
     with pytest.raises(HTTPException) as exc:
         await organization_service.get_organization_detail(session=db_session, org_id="does-not-exist")

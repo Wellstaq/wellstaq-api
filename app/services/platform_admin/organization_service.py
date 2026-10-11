@@ -16,7 +16,7 @@ deleted — see Organization model's own docstring on is_active.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -32,6 +32,7 @@ from app.models import (
     EventParticipant,
     Organization,
     OrganizationSubscription,
+    SubscriptionPlan,
     User,
 )
 from app.services.payment.cancel_service import cancel_auto_renew
@@ -218,6 +219,32 @@ async def revoke_free_access(*, session: AsyncSession, org_id: str) -> dict:
     if org.subscription is None or not org.subscription.platform_comped:
         raise HTTPException(status.HTTP_409_CONFLICT, "This organization is not on free access.")
     org.subscription.platform_comped = False
+    await session.flush()
+    return await get_organization_detail(session=session, org_id=org_id)
+
+
+async def manually_activate_subscription(*, session: AsyncSession, org_id: str, plan_id: str) -> dict:
+    """Reconciliation tool: marks an org's subscription active on a given
+    plan without going through Paystack checkout — for when a payment was
+    taken (confirmed directly with Paystack) but the webhook that should
+    have activated it never arrived or was lost. Does not touch
+    platform_comped or any Paystack reference fields — if a real
+    recurring subscription already exists for this org, use the
+    org's own checkout/auto-renew flow instead of this.
+    """
+    org = await get_organization_or_404(session=session, org_id=org_id)
+    plan = (await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id))).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found.")
+    if org.subscription is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This organization has no subscription record to activate.")
+
+    now = datetime.now(timezone.utc)
+    org.subscription.plan = plan
+    org.subscription.status = "active"
+    org.subscription.current_period_start = now
+    org.subscription.current_period_end = now + timedelta(days=365 if plan.billing_interval == "annual" else 30)
+    org.subscription.cancelled_at = None
     await session.flush()
     return await get_organization_detail(session=session, org_id=org_id)
 

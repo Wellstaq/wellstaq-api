@@ -24,6 +24,7 @@ from app.core.database import get_db
 from app.core.guards import request_guard
 from app.models import AdminUser
 from app.schemas.platform_admin import (
+    ActivateSubscriptionRequest,
     AdminForgotPasswordRequest,
     AdminLoginRequest,
     AdminMeResponse,
@@ -220,6 +221,22 @@ async def revoke_free_access_route(
         await log_admin_audit(
             session=db, actor_admin_id=current_admin.admin_id, action="organization.free_access_revoked",
             target_type="organization", target_id=org_id, target_label=result["name"], ip_address=ip, user_agent=ua,
+        )
+        await db.commit()
+        return result
+
+
+@router.post("/organizations/{org_id}/subscription/activate", response_model=OrganizationDetailOut)
+async def manually_activate_subscription_route(
+    org_id: str, body: ActivateSubscriptionRequest, request: Request, db: AsyncSession = Depends(get_db),
+    current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.manage")),
+):
+    ip, ua = _client_meta(request)
+    async with request_guard(db, "/app-admin/organizations/{org_id}/subscription/activate"):
+        result = await organization_service.manually_activate_subscription(session=db, org_id=org_id, plan_id=body.plan_id)
+        await log_admin_audit(
+            session=db, actor_admin_id=current_admin.admin_id, action="organization.subscription_manually_activated",
+            target_type="organization", target_id=org_id, target_label=result["name"], reason=body.reason, ip_address=ip, user_agent=ua,
         )
         await db.commit()
         return result

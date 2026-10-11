@@ -108,6 +108,44 @@ class TestAdminOrganizationRoutes:
         assert revoked.json()["platform_comped"] is False
 
     @pytest.mark.asyncio
+    async def test_manually_activate_subscription(self, client, db_session: AsyncSession):
+        from app.models.payment import SubscriptionPlan
+
+        org, _owner = await make_org_with_owner(db_session)
+        plan = SubscriptionPlan(name="Standard", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True)
+        db_session.add(plan)
+        await db_session.flush()
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/activate", headers=admin_headers,
+            json={"plan_id": plan.id, "reason": "Paystack confirmed payment; webhook never arrived."},
+        )
+        assert response.status_code == 200
+        assert response.json()["plan_name"] == "Standard"
+        assert response.json()["subscription_status"] == "active"
+
+        log = await client.get("/app-admin/audit-log", headers=admin_headers)
+        actions = {item["action"] for item in log.json()["items"]}
+        assert "organization.subscription_manually_activated" in actions
+
+    @pytest.mark.asyncio
+    async def test_manually_activate_subscription_requires_a_reason(self, client, db_session: AsyncSession):
+        from app.models.payment import SubscriptionPlan
+
+        org, _owner = await make_org_with_owner(db_session)
+        plan = SubscriptionPlan(name="Standard", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True)
+        db_session.add(plan)
+        await db_session.flush()
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/activate", headers=admin_headers,
+            json={"plan_id": plan.id, "reason": "short"},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_list_organizations_requires_authentication(self, client):
         response = await client.get("/app-admin/organizations")
         assert response.status_code == 403

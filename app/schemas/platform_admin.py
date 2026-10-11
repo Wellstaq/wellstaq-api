@@ -134,6 +134,11 @@ class SuspendOrganizationRequest(BaseModel):
     reason: str = Field(..., min_length=10)
 
 
+class ActivateSubscriptionRequest(BaseModel):
+    plan_id: str
+    reason: str = Field(..., min_length=10, description="Why this is being activated manually, outside the normal checkout flow — e.g. a Paystack-confirmed payment whose webhook never arrived.")
+
+
 class OrganizationMemberOut(BaseModel):
     id: str
     first_name: str | None
