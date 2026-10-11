@@ -36,6 +36,26 @@ async def test_invite_admin_rejects_duplicate_email(db_session):
 
 
 @pytest.mark.asyncio
+async def test_invite_admin_resurrects_a_disabled_row_instead_of_409ing(db_session):
+    """Regression: a removed admin (or cancelled invite) is soft-disabled
+    and excluded from the roster (see list_admins), so from the inviting
+    admin's point of view that email looks free. Re-inviting it must
+    work, not 409 on a row they can't even see."""
+    inviter = await _persisted_admin(db_session, email="owner@wellstaq.test")
+    removed = await _persisted_admin(db_session, email="gone@wellstaq.test", role="support", status="disabled", first_name="Old", last_name="Name")
+
+    admin = await admin_team_service.invite_admin(session=db_session, email="gone@wellstaq.test", role="admin", invited_by=inviter.id)
+
+    assert admin.id == removed.id
+    assert admin.status == "invited"
+    assert admin.role == "admin"
+    assert admin.invited_by == inviter.id
+    assert admin.hashed_password is None
+    assert admin.first_name is None
+    assert admin.last_name is None
+
+
+@pytest.mark.asyncio
 async def test_invite_admin_rejects_invalid_role(db_session):
     inviter = await _persisted_admin(db_session, email="owner@wellstaq.test")
     with pytest.raises(HTTPException) as exc:

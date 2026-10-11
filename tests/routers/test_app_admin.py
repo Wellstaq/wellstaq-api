@@ -311,6 +311,29 @@ class TestAdminTeamRoutes:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_can_reinvite_an_email_after_removing_them(self, client, db_session: AsyncSession):
+        """Regression: inviting, removing, then re-inviting the same email
+        previously 409'd forever — the removed admin is soft-disabled and
+        invisible in the roster, so it looked like a bug with no way out."""
+        _, admin_headers = await _admin_context(db_session)
+
+        invited = await client.post("/app-admin/admins/invite", headers=admin_headers, json={"email": "redo@wellstaq.test", "role": "support"})
+        assert invited.status_code == 200
+        admin_id = invited.json()["id"]
+
+        removed = await client.delete(f"/app-admin/admins/{admin_id}", headers=admin_headers)
+        assert removed.status_code == 204
+
+        reinvited = await client.post("/app-admin/admins/invite", headers=admin_headers, json={"email": "redo@wellstaq.test", "role": "admin"})
+        assert reinvited.status_code == 200
+        assert reinvited.json()["status"] == "invited"
+        assert reinvited.json()["role"] == "admin"
+
+        roster = await client.get("/app-admin/admins", headers=admin_headers)
+        emails = {item["email"] for item in roster.json()["items"]}
+        assert "redo@wellstaq.test" in emails
+
+    @pytest.mark.asyncio
     async def test_invite_is_recorded_in_audit_log_with_inviting_admin_as_actor(self, client, db_session: AsyncSession):
         inviter, admin_headers = await _admin_context(db_session, email="inviter@wellstaq.test")
 

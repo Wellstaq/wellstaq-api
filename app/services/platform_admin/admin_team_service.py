@@ -47,11 +47,33 @@ async def invite_admin(*, session: AsyncSession, email: str, role: str, invited_
 
     email = email.lower().strip()
     existing = (await session.execute(select(AdminUser).where(AdminUser.email == email))).scalar_one_or_none()
-    if existing is not None:
+    if existing is not None and existing.status != "disabled":
         raise HTTPException(status.HTTP_409_CONFLICT, "This email is already an admin.")
 
-    admin = AdminUser(email=email, role=role, status="invited", invited_by=invited_by)
-    session.add(admin)
+    if existing is not None:
+        # A disabled row (removed admin or a cancelled invite) is excluded
+        # from the roster — see list_admins' docstring — so from the
+        # inviting admin's point of view that email looks free. Re-inviting
+        # it should work, not 409 on a row they can't even see. Resurrect
+        # the row rather than inserting a new one: AdminUser.email is
+        # unique, and this keeps the audit log's actor_admin_id references
+        # to the old AdminUser.id intact.
+        admin = existing
+        admin.role = role
+        admin.status = "invited"
+        admin.invited_by = invited_by
+        admin.hashed_password = None
+        admin.first_name = None
+        admin.last_name = None
+        admin.avatar_url = None
+        admin.two_fa_enabled = False
+        admin.two_fa_method = None
+        admin.two_fa_secret = None
+        admin.last_login_at = None
+    else:
+        admin = AdminUser(email=email, role=role, status="invited", invited_by=invited_by)
+        session.add(admin)
+
     await session.flush()
     await session.refresh(admin)
 
