@@ -143,6 +143,21 @@ async def overview_route(db: AsyncSession = Depends(get_db), current_admin: Curr
         )
 
 
+# ── Plans ────────────────────────────────────────────────────────────────
+
+@router.get("/plans")
+async def list_plans_route(
+    db: AsyncSession = Depends(get_db), current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.read")),
+):
+    """The platform-wide plan catalogue — used to populate the plan picker
+    for manual subscription activation. Mirrors GET /plans (org-facing),
+    which admin tokens can't call since it requires an org-user token."""
+    from app.services.payment.get_subscription import get_available_plans
+    async with request_guard(db, "/app-admin/plans"):
+        plans = await get_available_plans(session=db)
+        return {"items": [{"id": p.id, "name": p.name, "billing_interval": p.billing_interval, "amount": p.amount, "currency": p.currency} for p in plans]}
+
+
 # ── Organizations ──────────────────────────────────────────────────────────
 
 @router.get("/organizations", response_model=PaginatedResponse)

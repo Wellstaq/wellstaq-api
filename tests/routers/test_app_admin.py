@@ -50,6 +50,28 @@ class TestAdminAuthRoutes:
         assert response.status_code == 401
 
 
+class TestPlansRoute:
+    @pytest.mark.asyncio
+    async def test_list_plans_requires_authentication(self, client):
+        response = await client.get("/app-admin/plans")
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_list_plans_returns_active_plans(self, client, db_session: AsyncSession):
+        from app.models.payment import SubscriptionPlan
+
+        db_session.add(SubscriptionPlan(name="Standard", billing_interval="monthly", amount=500_000, currency="NGN", features={}, is_active=True))
+        db_session.add(SubscriptionPlan(name="Archived", billing_interval="monthly", amount=100_000, currency="NGN", features={}, is_active=False))
+        await db_session.flush()
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.get("/app-admin/plans", headers=admin_headers)
+        assert response.status_code == 200
+        names = {item["name"] for item in response.json()["items"]}
+        assert "Standard" in names
+        assert "Archived" not in names
+
+
 class TestAdminOrganizationRoutes:
     @pytest.mark.asyncio
     async def test_suspend_requires_organizations_manage_permission(self, client, db_session: AsyncSession):
