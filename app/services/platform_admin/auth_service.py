@@ -268,6 +268,7 @@ async def reset_password(*, session: AsyncSession, reset_token: str, new_passwor
     admin.hashed_password = hash_password(new_password)
     if admin.status == "invited":
         admin.status = "active"
+        admin.invited_at = None
     await session.flush()
 
     remaining_seconds = await redis.ttl(token_key)

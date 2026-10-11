@@ -9,6 +9,8 @@ themselves, and the last super_admin can't be demoted or removed.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,8 +52,11 @@ async def invite_admin(*, session: AsyncSession, email: str, role: str, invited_
     if existing is not None and existing.status != "disabled":
         raise HTTPException(status.HTTP_409_CONFLICT, "This email is already an admin.")
 
+    invited_at = datetime.now(timezone.utc)
     if existing is not None:
-        # A disabled row (removed admin or a cancelled invite) is excluded
+        # A disabled row (removed admin, a cancelled invite, or one swept
+        # by expire_admin_invites after INVITE_TTL_DAYS — see
+        # app/jobs/platform_admin/expire_admin_invites.py) is excluded
         # from the roster — see list_admins' docstring — so from the
         # inviting admin's point of view that email looks free. Re-inviting
         # it should work, not 409 on a row they can't even see. Resurrect
@@ -62,6 +67,7 @@ async def invite_admin(*, session: AsyncSession, email: str, role: str, invited_
         admin.role = role
         admin.status = "invited"
         admin.invited_by = invited_by
+        admin.invited_at = invited_at
         admin.hashed_password = None
         admin.first_name = None
         admin.last_name = None
@@ -71,7 +77,7 @@ async def invite_admin(*, session: AsyncSession, email: str, role: str, invited_
         admin.two_fa_secret = None
         admin.last_login_at = None
     else:
-        admin = AdminUser(email=email, role=role, status="invited", invited_by=invited_by)
+        admin = AdminUser(email=email, role=role, status="invited", invited_by=invited_by, invited_at=invited_at)
         session.add(admin)
 
     await session.flush()

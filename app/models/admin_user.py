@@ -54,6 +54,14 @@ class AdminUser(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     invited_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True,
     )
+    # Set (and reset) every time invite_admin issues a link — both for a
+    # brand-new row and when resurrecting a disabled one (see
+    # admin_team_service.invite_admin's docstring). Deliberately separate
+    # from created_at/updated_at: those are generic row-edit timestamps
+    # and would make a resurrected invite's age ambiguous. Cleared once
+    # status moves past "invited" (see auth_service.reset_password).
+    # Read by app/jobs/platform_admin/expire_admin_invites.py.
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     sessions: Mapped[list["AdminSession"]] = relationship(

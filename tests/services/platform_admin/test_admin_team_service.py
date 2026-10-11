@@ -24,6 +24,7 @@ async def test_invite_admin_creates_invited_row(db_session):
     assert admin.role == "admin"
     assert admin.hashed_password is None
     assert admin.invited_by == inviter.id
+    assert admin.invited_at is not None
 
 
 @pytest.mark.asyncio
@@ -50,6 +51,7 @@ async def test_invite_admin_resurrects_a_disabled_row_instead_of_409ing(db_sessi
     assert admin.status == "invited"
     assert admin.role == "admin"
     assert admin.invited_by == inviter.id
+    assert admin.invited_at is not None
     assert admin.hashed_password is None
     assert admin.first_name is None
     assert admin.last_name is None

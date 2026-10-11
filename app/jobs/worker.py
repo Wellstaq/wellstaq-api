@@ -30,6 +30,7 @@ from app.jobs.wellbeing.window_lifecycle import close_survey_windows, open_surve
 from app.jobs.wellbeing.pulse_snapshot import compute_pulse_snapshots
 from app.jobs.payment.stale_transactions import expire_stale_pending_transactions
 from app.jobs.media.asset_sweep import sweep_pending_media_assets, sweep_orphaned_media_assets
+from app.jobs.platform_admin.expire_admin_invites import expire_admin_invites
 
 
 class WorkerSettings:
@@ -82,4 +83,7 @@ class WorkerSettings:
         #media assets
         cron(sweep_pending_media_assets, hour=set(range(24)), minute=20),   # hourly, catches abandoned uploads
         cron(sweep_orphaned_media_assets, hour=4, minute=0),                # once daily, catches delete-path misses
+
+        #platform admin
+        cron(expire_admin_invites, hour=5, minute=0),   # once daily
     ]

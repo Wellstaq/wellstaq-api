@@ -173,7 +173,8 @@ async def test_reset_password_activates_an_invited_admin(db_session, monkeypatch
     """Also covers the invite flow (admin_team_service.invite_admin reuses
     this exact mechanism — see its docstring) since the reset-link token
     IS the invited admin's way to set their first password."""
-    admin = await _persisted_admin(db_session, email="invited@wellstaq.test", status="invited", hashed_password=None)
+    from datetime import datetime, timezone
+    admin = await _persisted_admin(db_session, email="invited@wellstaq.test", status="invited", hashed_password=None, invited_at=datetime.now(timezone.utc))
 
     captured = {}
     async def _capture(*, email, reset_token):
@@ -185,6 +186,7 @@ async def test_reset_password_activates_an_invited_admin(db_session, monkeypatch
     await db_session.refresh(admin)
     assert admin.status == "active"
     assert admin.hashed_password is not None
+    assert admin.invited_at is None
 
 
 @pytest.mark.asyncio
