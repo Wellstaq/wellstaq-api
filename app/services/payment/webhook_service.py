@@ -140,7 +140,7 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
     reference = str(reference)
 
     result = await session.execute(
-        select(PaymentTransaction).where(PaymentTransaction.external_reference == reference)
+        select(PaymentTransaction).where(PaymentTransaction.external_reference == reference).with_for_update()
     )
     transaction = result.scalar_one_or_none()
     is_recurring_charge = transaction is None
@@ -210,6 +210,7 @@ async def handle_charge_success(*, session: AsyncSession, event_data: dict) -> N
         return
 
     transaction.status = "succeeded"
+    transaction.failure_reason = None
     authorization = event_data.get("authorization")
     authorization = authorization if isinstance(authorization, dict) else {}
     card_type = authorization.get("card_type")

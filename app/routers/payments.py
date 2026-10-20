@@ -51,6 +51,7 @@ from app.services.payment import (get_subscription,
 )
 
 from app.services.payment.paystack_client import verify_transaction, PaystackError
+from app.services.payment.pending_checkout import cancel_pending_checkout
 
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,20 @@ async def verify_transaction_by_reference_route(
             provider_status=provider_status,
             reconciled=transaction.status != previous_status,
         )
+
+
+@router.post("/transactions/{reference}/cancel", response_model=TransactionResponse)
+async def cancel_pending_checkout_route(
+    org_id: str, reference: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(require_permission("org.billing.manage")),
+):
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/transactions/{reference}/cancel"):
+        transaction = await cancel_pending_checkout(session=db, organization_id=org_id, reference=reference)
+        await db.commit()
+        await db.refresh(transaction)
+        return TransactionResponse.model_validate(transaction)
 
 
 @router.post("/checkout", response_model=CheckoutResponse, status_code=status.HTTP_200_OK)
