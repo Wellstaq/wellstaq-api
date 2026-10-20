@@ -8,7 +8,10 @@ as tests/routers/test_challenges.py.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.security import hash_password
@@ -237,6 +240,85 @@ class TestAdminOrganizationRoutes:
         response = await client.post(
             f"/app-admin/organizations/{org.id}/subscription/activate", headers=admin_headers,
             json={"plan_id": plan.id, "reason": "short"},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_super_admin_can_cancel_subscription_immediately(self, client, db_session: AsyncSession):
+        from app.models.payment import OrganizationSubscription
+
+        org, _owner = await make_org_with_owner(db_session)
+        _, admin_headers = await _admin_context(db_session)
+        comped = await client.post(f"/app-admin/organizations/{org.id}/comp", headers=admin_headers)
+        assert comped.status_code == 200
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/cancel", headers=admin_headers,
+            json={"reason": "The organization must complete a fresh payment."},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["subscription_status"] == "cancelled"
+        assert response.json()["platform_comped"] is False
+        subscription = (await db_session.execute(
+            select(OrganizationSubscription).where(OrganizationSubscription.organization_id == org.id)
+        )).scalar_one()
+        assert subscription.cancelled_at is not None
+        assert subscription.current_period_end == subscription.cancelled_at
+        assert subscription.trial_ends_at is None
+
+        log = await client.get("/app-admin/audit-log", headers=admin_headers)
+        actions = {item["action"] for item in log.json()["items"]}
+        assert "organization.subscription_cancelled" in actions
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_requires_manage_permission(self, client, db_session: AsyncSession):
+        org, _owner = await make_org_with_owner(db_session)
+        _, support_headers = await _admin_context(db_session, email="support-cancel@wellstaq.test", role="support")
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/cancel", headers=support_headers,
+            json={"reason": "Testing subscription cancellation permissions."},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_disables_paystack_auto_renew(self, client, db_session: AsyncSession, monkeypatch):
+        from app.models.payment import OrganizationSubscription
+        from app.services.platform_admin import organization_service
+
+        org, _owner = await make_org_with_owner(db_session)
+        subscription = (await db_session.execute(
+            select(OrganizationSubscription).where(OrganizationSubscription.organization_id == org.id)
+        )).scalar_one()
+        subscription.auto_renew = True
+        subscription.external_subscription_id = "SUB_live"
+        subscription.email_token = "email-token"
+        await db_session.flush()
+        cancel_auto_renew = AsyncMock()
+        monkeypatch.setattr(organization_service, "cancel_auto_renew", cancel_auto_renew)
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/cancel", headers=admin_headers,
+            json={"reason": "Ending the paid subscription at the gateway."},
+        )
+
+        assert response.status_code == 200
+        cancel_auto_renew.assert_awaited_once_with(session=db_session, organization_id=org.id)
+        await db_session.refresh(subscription)
+        assert subscription.auto_renew is False
+        assert subscription.external_subscription_id is None
+        assert subscription.email_token is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_requires_a_reason(self, client, db_session: AsyncSession):
+        org, _owner = await make_org_with_owner(db_session)
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.post(
+            f"/app-admin/organizations/{org.id}/subscription/cancel", headers=admin_headers,
+            json={"reason": "short"},
         )
         assert response.status_code == 422
 

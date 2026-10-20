@@ -249,6 +249,37 @@ async def manually_activate_subscription(*, session: AsyncSession, org_id: str, 
     return await get_organization_detail(session=session, org_id=org_id)
 
 
+async def cancel_subscription_immediately(*, session: AsyncSession, org_id: str) -> dict:
+    """End an organization's access now and require a fresh checkout.
+
+    The subscription row and transaction ledger are retained for audit and
+    support history. If Paystack auto-renew is active, it is disabled before
+    the local subscription is cancelled so an organization cannot be locked
+    out locally while the gateway continues charging it.
+    """
+    org = await get_organization_or_404(session=session, org_id=org_id)
+    subscription = org.subscription
+    if subscription is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This organization has no subscription record to cancel.")
+    if subscription.status == "cancelled" and not subscription.platform_comped:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This organization's subscription is already cancelled.")
+
+    if subscription.auto_renew:
+        await cancel_auto_renew(session=session, organization_id=org_id)
+
+    now = datetime.now(timezone.utc)
+    subscription.status = "cancelled"
+    subscription.current_period_end = now
+    subscription.cancelled_at = now
+    subscription.trial_ends_at = None
+    subscription.auto_renew = False
+    subscription.platform_comped = False
+    subscription.external_subscription_id = None
+    subscription.email_token = None
+    await session.flush()
+    return await get_organization_detail(session=session, org_id=org_id)
+
+
 async def list_members(*, session: AsyncSession, org_id: str, q: str | None, status_filter: str | None, offset: int, limit: int) -> tuple[list[dict], int]:
     await get_organization_or_404(session=session, org_id=org_id)
     query = select(User).options(

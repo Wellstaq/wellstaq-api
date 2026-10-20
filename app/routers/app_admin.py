@@ -34,6 +34,7 @@ from app.schemas.platform_admin import (
     AdminUserOut,
     AuditActorOut,
     AuditEntryOut,
+    CancelSubscriptionRequest,
     InviteAdminRequest,
     OrganizationDetailOut,
     PaginatedResponse,
@@ -290,6 +291,22 @@ async def manually_activate_subscription_route(
         result = await organization_service.manually_activate_subscription(session=db, org_id=org_id, plan_id=body.plan_id)
         await log_admin_audit(
             session=db, actor_admin_id=current_admin.admin_id, action="organization.subscription_manually_activated",
+            target_type="organization", target_id=org_id, target_label=result["name"], reason=body.reason, ip_address=ip, user_agent=ua,
+        )
+        await db.commit()
+        return result
+
+
+@router.post("/organizations/{org_id}/subscription/cancel", response_model=OrganizationDetailOut)
+async def cancel_subscription_route(
+    org_id: str, body: CancelSubscriptionRequest, request: Request, db: AsyncSession = Depends(get_db),
+    current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.manage")),
+):
+    ip, ua = _client_meta(request)
+    async with request_guard(db, "/app-admin/organizations/{org_id}/subscription/cancel"):
+        result = await organization_service.cancel_subscription_immediately(session=db, org_id=org_id)
+        await log_admin_audit(
+            session=db, actor_admin_id=current_admin.admin_id, action="organization.subscription_cancelled",
             target_type="organization", target_id=org_id, target_label=result["name"], reason=body.reason, ip_address=ip, user_agent=ua,
         )
         await db.commit()
