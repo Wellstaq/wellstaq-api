@@ -17,10 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import User
 from app.models.payment import PaymentTransaction, SubscriptionPlan
 from app.services.payment._helpers import get_subscription_or_404
-from app.services.payment.paystack_client import PaystackError, initialize_transaction
+from app.services.payment.paystack_client import (
+    PaystackError,
+    create_plan,
+    fetch_plan,
+    initialize_transaction,
+)
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+TRUSTED_PAYMENT_CALLBACK_ORIGINS = {
+    "https://appwellstaq.vercel.app",
+    "https://appwellstaq6.vercel.app",
+    "https://app.wellstaq.com",
+}
 
 
 def _generate_reference() -> str:
@@ -32,12 +43,48 @@ def _validate_callback_url(callback_url: str | None) -> str | None:
         return None
     parsed = urlparse(callback_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    allowed_origins = settings.PAYMENT_CALLBACK_ALLOWED_ORIGINS or settings.CORS_ORIGINS
+    allowed_origins = {
+        value.rstrip("/")
+        for value in [
+            *settings.PAYMENT_CALLBACK_ALLOWED_ORIGINS,
+            *settings.CORS_ORIGINS,
+            settings.PUBLIC_APP_ORIGIN,
+        ]
+        if value
+    } | TRUSTED_PAYMENT_CALLBACK_ORIGINS
     if parsed.scheme not in {"https", "http"} or not parsed.netloc or origin not in allowed_origins:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payment callback URL is not an approved application origin.")
     if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payment callback URL must use HTTPS.")
     return callback_url
+
+
+async def _ensure_paystack_plan(*, session: AsyncSession, plan: SubscriptionPlan) -> str:
+    """Return a plan code belonging to the currently configured Paystack account."""
+    if plan.external_plan_id:
+        try:
+            await fetch_plan(plan.external_plan_id)
+            return plan.external_plan_id
+        except PaystackError as exc:
+            # A key/account change leaves the old account's plan codes in our
+            # database. Only recreate on a genuine not-found response; auth or
+            # network failures must remain visible instead of creating plans.
+            if exc.status_code not in {status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND}:
+                raise
+
+    interval = "annually" if plan.billing_interval == "annual" else "monthly"
+    created = await create_plan(
+        name=plan.name,
+        amount=plan.amount,
+        interval=interval,
+        currency=plan.currency,
+    )
+    plan_code = created.get("plan_code")
+    if not isinstance(plan_code, str) or not plan_code:
+        raise PaystackError("Paystack did not return a plan code.")
+    plan.external_plan_id = plan_code
+    await session.flush()
+    return plan_code
 
 async def initiate_checkout(
     *, session: AsyncSession, organization_id: str, plan_id: str, initiating_user: User,
@@ -98,12 +145,14 @@ async def initiate_checkout(
 
     plan_code = None
     if auto_renew:
-        if not plan.external_plan_id:
+        try:
+            plan_code = await _ensure_paystack_plan(session=session, plan=plan)
+        except PaystackError as exc:
+            logger.error("Paystack recurring plan preparation failed", extra={"plan_id": plan.id})
             raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                "This plan is not linked to a Paystack plan — recurring billing cannot be initiated.",
-            )
-        plan_code = plan.external_plan_id
+                status.HTTP_502_BAD_GATEWAY,
+                f"Could not prepare automatic renewal: {exc.message}",
+            ) from exc
 
     reference = _generate_reference()
 

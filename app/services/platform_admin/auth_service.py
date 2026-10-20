@@ -182,16 +182,18 @@ async def refresh(*, session: AsyncSession, refresh_token: str) -> dict:
 
     admin = (await session.execute(select(AdminUser).where(AdminUser.id == admin_id))).scalar_one()
 
-    new_raw_refresh = create_admin_refresh_token(admin.id)
-    # Rotation: a leaked refresh token is single-use — overwrite the hash
-    # so the superseded raw token is unrecognisable on its next use.
-    admin_session.refresh_token_hash = hash_refresh_token(new_raw_refresh)
+    # Keep the current refresh token for this short (12 hour) admin session.
+    # Dashboard pages issue several requests in parallel after a reload. If
+    # each request rotates the same token, the first response invalidates the
+    # others and a later 401 can clear the newly valid browser cookies. The
+    # session row remains individually revocable and access tokens stay
+    # short-lived, without that destructive concurrency race.
     admin_session.last_seen_at = datetime.now(timezone.utc)
     new_access = create_admin_access_token(
         admin_id=admin.id, role=admin.role, permissions=_permissions_for(admin.role), session_id=admin_session.id,
     )
     await session.flush()
-    return {"access_token": new_access, "refresh_token": new_raw_refresh, "token_type": "bearer", "expires_in": 900}
+    return {"access_token": new_access, "refresh_token": refresh_token, "token_type": "bearer", "expires_in": 900}
 
 
 async def logout(*, session: AsyncSession, session_id: str) -> None:

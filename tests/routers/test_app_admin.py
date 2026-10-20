@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.security import hash_password
-from tests.conftest import authenticate_admin, authenticate_user, make_admin_user, make_org_with_owner
+from tests.conftest import authenticate_admin, authenticate_user, make_admin_user, make_org_with_owner, make_user_with_role
 
 
 async def _admin_context(db_session: AsyncSession, **overrides):
@@ -77,6 +77,21 @@ class TestAdminAuthRoutes:
         _, admin_headers = await _admin_context(db_session)
         response = await client.patch("/app-admin/auth/me", headers=admin_headers, json={"first_name": "", "last_name": "Name"})
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_same_refresh_token_survives_parallel_dashboard_requests(self, client, db_session: AsyncSession):
+        admin = make_admin_user(email="refresh-race@wellstaq.test")
+        db_session.add(admin)
+        await db_session.flush()
+        _headers, tokens = await authenticate_admin(db_session, admin)
+
+        first = await client.post("/app-admin/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+        second = await client.post("/app-admin/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["refresh_token"] == tokens["refresh_token"]
+        assert second.json()["refresh_token"] == tokens["refresh_token"]
 
     @pytest.mark.asyncio
     async def test_admin_cannot_update_another_admins_profile(self, client, db_session: AsyncSession):
@@ -443,6 +458,46 @@ class TestUserSearchAndActionsRoutes:
 
         response = await client.post(f"/app-admin/users/{owner.id}/suspend", headers=support_headers, json={"reason": "Should be blocked."})
         assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_delete_anonymizes_user_but_keeps_the_record(self, client, db_session: AsyncSession):
+        from app.models import UserDevice
+
+        org, owner = await make_org_with_owner(db_session)
+        member = await make_user_with_role(
+            db_session, org.id, role_name="member", branch_id=owner.branch_id,
+            email="delete-me@example.com", first_name="Delete", last_name="Me", status="active",
+        )
+        db_session.add(member)
+        await db_session.flush()
+        _member_headers, _tokens = await authenticate_user(db_session, member)
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.request(
+            "DELETE", f"/app-admin/users/{member.id}", headers=admin_headers,
+            json={"reason": "The organization requested permanent account removal."},
+        )
+
+        assert response.status_code == 204
+        await db_session.refresh(member)
+        assert (member.first_name, member.last_name, member.status) == ("Deleted", "User", "inactive")
+        assert member.email == f"deleted-{member.id}@deleted.wellstaq.invalid"
+        assert member.hashed_password is None
+        devices = (await db_session.execute(select(UserDevice).where(UserDevice.user_id == member.id))).scalars().all()
+        assert devices and all(device.revoked and device.refresh_token_hash is None for device in devices)
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_the_organization_owner(self, client, db_session: AsyncSession):
+        _org, owner = await make_org_with_owner(db_session)
+        _, admin_headers = await _admin_context(db_session)
+
+        response = await client.request(
+            "DELETE", f"/app-admin/users/{owner.id}", headers=admin_headers,
+            json={"reason": "This should never remove the organization owner."},
+        )
+
+        assert response.status_code == 409
+        assert owner.email == "owner@example.com"
 
 
 class TestAdminTeamRoutes:

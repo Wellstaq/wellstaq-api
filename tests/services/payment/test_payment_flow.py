@@ -81,6 +81,10 @@ async def test_checkout_allows_expired_active_subscription_and_sends_metadata(db
         captured.update(kwargs)
         return {"authorization_url": "https://checkout.test/x", "access_code": "ac"}
 
+    async def fake_fetch_plan(plan_code):
+        return {"plan_code": plan_code}
+
+    monkeypatch.setattr("app.services.payment.checkout_service.fetch_plan", fake_fetch_plan)
     monkeypatch.setattr("app.services.payment.checkout_service.initialize_transaction", fake_initialize)
     response = await initiate_checkout(
         session=db_session, organization_id=org.id, plan_id=plan.id,
@@ -94,6 +98,40 @@ async def test_checkout_allows_expired_active_subscription_and_sends_metadata(db
         "plan_id": plan.id,
         "auto_renew": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_recurring_checkout_replaces_plan_code_from_previous_paystack_account(db_session, monkeypatch):
+    org, owner, plan, _ = await setup_billing(db_session, status="cancelled")
+    captured = {}
+
+    async def fake_fetch_plan(plan_code):
+        from app.services.payment.paystack_client import PaystackError
+        raise PaystackError("Plan not found", 404)
+
+    async def fake_create_plan(**kwargs):
+        assert kwargs["interval"] == "monthly"
+        return {"plan_code": "PLN_new_account"}
+
+    async def fake_initialize(**kwargs):
+        captured.update(kwargs)
+        return {"authorization_url": "https://checkout.test/new", "access_code": "ac"}
+
+    monkeypatch.setattr("app.services.payment.checkout_service.fetch_plan", fake_fetch_plan)
+    monkeypatch.setattr("app.services.payment.checkout_service.create_plan", fake_create_plan)
+    monkeypatch.setattr("app.services.payment.checkout_service.initialize_transaction", fake_initialize)
+
+    response = await initiate_checkout(
+        session=db_session,
+        organization_id=org.id,
+        plan_id=plan.id,
+        initiating_user=owner,
+        auto_renew=True,
+    )
+
+    assert response["authorization_url"] == "https://checkout.test/new"
+    assert captured["plan_code"] == "PLN_new_account"
+    assert plan.external_plan_id == "PLN_new_account"
 
 
 @pytest.mark.asyncio

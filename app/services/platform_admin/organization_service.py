@@ -281,7 +281,7 @@ async def cancel_subscription_immediately(*, session: AsyncSession, org_id: str)
 
 
 async def list_members(*, session: AsyncSession, org_id: str, q: str | None, status_filter: str | None, offset: int, limit: int) -> tuple[list[dict], int]:
-    await get_organization_or_404(session=session, org_id=org_id)
+    organization = await get_organization_or_404(session=session, org_id=org_id)
     query = select(User).options(
         selectinload(User.branch),
         selectinload(User.department_memberships).selectinload(DepartmentMember.department),
@@ -298,10 +298,14 @@ async def list_members(*, session: AsyncSession, org_id: str, q: str | None, sta
     total = (await session.execute(count_query)).scalar_one()
     rows = (await session.execute(query.order_by(User.created_at.desc()).offset(offset).limit(limit))).scalars().all()
     items = [{
-        "id": u.id, "first_name": u.first_name, "last_name": u.last_name, "email": u.email,
+        "id": u.id, "first_name": u.first_name, "last_name": u.last_name,
+        "email": "—" if u.email.endswith("@deleted.wellstaq.invalid") else u.email,
         "avatar_url": u.avatar_url, "branch_name": u.branch.name if u.branch else None,
         "department_name": u.department_memberships[0].department.name if u.department_memberships else None,
-        "role": u.role.name if u.role else None, "status": u.status, "joined_at": u.created_at,
+        "role": u.role.name if u.role else None,
+        "status": "deactivated" if u.email.endswith("@deleted.wellstaq.invalid") else u.status,
+        "joined_at": u.created_at,
+        "is_owner": u.id == organization.owner_id,
     } for u in rows]
     return items, total
 
@@ -318,10 +322,12 @@ async def search_users(*, session: AsyncSession, q: str, offset: int, limit: int
     total = (await session.execute(count_query)).scalar_one()
     rows = (await session.execute(query.order_by(User.created_at.desc()).offset(offset).limit(limit))).scalars().all()
     items = [{
-        "id": u.id, "first_name": u.first_name, "last_name": u.last_name, "email": u.email,
-        "avatar_url": u.avatar_url, "status": u.status,
+        "id": u.id, "first_name": u.first_name, "last_name": u.last_name,
+        "email": "—" if u.email.endswith("@deleted.wellstaq.invalid") else u.email,
+        "avatar_url": u.avatar_url,
+        "status": "deactivated" if u.email.endswith("@deleted.wellstaq.invalid") else u.status,
         "organization_id": u.organization_id, "organization_name": u.organization.business_name if u.organization else None,
-        "joined_at": u.created_at,
+        "joined_at": u.created_at, "is_owner": bool(u.organization and u.organization.owner_id == u.id),
     } for u in rows]
     return items, total
 

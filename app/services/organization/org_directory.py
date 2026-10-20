@@ -6,7 +6,7 @@ Read-only "organization directory" queries — members, clubs, and
 
 Branches and departments already have first-class list endpoints
 (GET /organizations/{org_id}/branches, GET /organizations/{org_id}/departments)
-in their own routers 
+in their own routers
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ async def get_organization_members(
     limit: int = 50,
 ) -> tuple[list[dict], int]:
     """Members with the role belonging to the requested org/branch slot."""
-    await _require_org(session, organization_id)
+    organization = await _require_org(session, organization_id)
 
     member_filters = [User.organization_id == organization_id]
     if branch_id is not None:
@@ -75,8 +75,15 @@ async def get_organization_members(
         .limit(limit)
     )
     members = [
-        {**user.__dict__, "department_id": department_id, "role_id": scoped_role_id, "role_name": role_name,
-         "public_profile": bool(public_profile)}
+        {
+            **user.__dict__,
+            "email": "—" if user.email.endswith("@deleted.wellstaq.invalid") else user.email,
+            "department_id": department_id,
+            "role_id": scoped_role_id,
+            "role_name": role_name,
+            "public_profile": bool(public_profile),
+            "is_owner": user.id == organization.owner_id,
+        }
         for user, department_id, scoped_role_id, role_name, public_profile in result.all()
     ]
     if branch_id is not None:

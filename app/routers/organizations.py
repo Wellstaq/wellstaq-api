@@ -52,6 +52,12 @@ from app.schemas.organization import (
 )
 from app.services.organization.invite_service import send_invite
 from app.services.organization.org_directory import get_organization_members
+from app.services.user_account_lifecycle import (
+    anonymize_user,
+    get_user_for_lifecycle,
+    reinstate_user,
+    suspend_user,
+)
 
 from app.services.organization.org_stats import get_branch_stats, get_org_stats
 
@@ -274,6 +280,83 @@ async def list_organization_members_route(
             offset=offset,
             limit=limit,
         )
+
+
+@router.post("/members/{user_id}/suspend", status_code=status.HTTP_204_NO_CONTENT)
+async def suspend_organization_member_route(
+    org_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/members/{user_id}/suspend"):
+        user, organization = await get_user_for_lifecycle(
+            session=db, user_id=user_id, organization_id=org_id,
+        )
+        if user.id == current_user.user_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "You cannot suspend your own account.")
+        if organization.owner_id == user.id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Organization administrators cannot suspend the organization owner.")
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.suspend",
+            target_branch_id=user.branch_id,
+        )
+        await suspend_user(session=db, user=user, organization=organization)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/members/{user_id}/reinstate", status_code=status.HTTP_204_NO_CONTENT)
+async def reinstate_organization_member_route(
+    org_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/members/{user_id}/reinstate"):
+        user, organization = await get_user_for_lifecycle(
+            session=db, user_id=user_id, organization_id=org_id,
+        )
+        if organization.owner_id == user.id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Organization administrators cannot reinstate the organization owner.")
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.reinstate",
+            target_branch_id=user.branch_id,
+        )
+        await reinstate_user(session=db, user=user, organization=organization)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_organization_member_route(
+    org_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_same_organization(org_id, current_user)
+    async with request_guard(db, "/organizations/{org_id}/members/{user_id}"):
+        user, organization = await get_user_for_lifecycle(
+            session=db, user_id=user_id, organization_id=org_id,
+        )
+        if user.id == current_user.user_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "You cannot delete your own account.")
+        await require_scoped_permission(
+            db=db,
+            current_user=current_user,
+            permission="member.remove",
+            target_branch_id=user.branch_id,
+        )
+        await anonymize_user(session=db, user=user, organization=organization)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────

@@ -46,6 +46,18 @@ async def initialize_transaction(*, email: str, amount: int, currency: str, refe
     return await _request("POST", "/transaction/initialize", payload=payload)
 
 
+async def fetch_plan(plan_code: str) -> dict:
+    return await _request("GET", f"/plan/{plan_code}")
+
+
+async def create_plan(*, name: str, amount: int, interval: str, currency: str) -> dict:
+    return await _request(
+        "POST",
+        "/plan",
+        payload={"name": name, "amount": amount, "interval": interval, "currency": currency},
+    )
+
+
 async def verify_transaction(*, reference: str) -> dict:
     return await _request("GET", f"/transaction/verify/{reference}")
 

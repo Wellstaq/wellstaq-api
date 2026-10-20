@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     # ── CORS ─────────────────────────────────────────────
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
+        "https://appwellstaq.vercel.app",
         "https://appwellstaq6.vercel.app",
+        "https://app.wellstaq.com",
         "https://wellstaqemployee.vercel.app",
     ]
     PUBLIC_APP_ORIGIN: str = "http://localhost:3000"

@@ -50,6 +50,12 @@ from app.schemas.platform_admin import (
 from app.schemas.storage import UploadRequestSchema, UploadResponse
 from app.services.platform_admin import admin_team_service, auth_service, organization_service, payment_service, platform_event_service, storage_service
 from app.services.platform_admin.audit_service import log_admin_audit
+from app.services.user_account_lifecycle import (
+    anonymize_user,
+    get_user_for_lifecycle,
+    reinstate_user,
+    suspend_user,
+)
 
 router = APIRouter(prefix="/app-admin", tags=["platform-admin"])
 
@@ -404,18 +410,14 @@ async def suspend_user_route(
     user_id: str, body: SuspendUserRequest, request: Request, db: AsyncSession = Depends(get_db),
     current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.manage")),
 ):
-    from app.models import User, UserDevice
     ip, ua = _client_meta(request)
     async with request_guard(db, "/app-admin/users/{user_id}/suspend"):
-        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-        if user is None:
-            from fastapi import HTTPException
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-        user.status = "suspended"
-        await db.execute(UserDevice.__table__.update().where(UserDevice.user_id == user_id).values(revoked=True, refresh_token_hash=None))
+        user, organization = await get_user_for_lifecycle(session=db, user_id=user_id)
+        target_label = f"{user.first_name} {user.last_name}".strip() or user.email
+        await suspend_user(session=db, user=user, organization=organization)
         await log_admin_audit(
             session=db, actor_admin_id=current_admin.admin_id, action="user.suspended", target_type="user",
-            target_id=user_id, target_label=f"{user.first_name} {user.last_name}".strip() or user.email, reason=body.reason, ip_address=ip, user_agent=ua,
+            target_id=user_id, target_label=target_label, reason=body.reason, ip_address=ip, user_agent=ua,
         )
         await db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -426,17 +428,31 @@ async def reactivate_user_route(
     user_id: str, request: Request, db: AsyncSession = Depends(get_db),
     current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.manage")),
 ):
-    from app.models import User
     ip, ua = _client_meta(request)
     async with request_guard(db, "/app-admin/users/{user_id}/reactivate"):
-        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-        if user is None:
-            from fastapi import HTTPException
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-        user.status = "active"
+        user, organization = await get_user_for_lifecycle(session=db, user_id=user_id)
+        await reinstate_user(session=db, user=user, organization=organization)
         await log_admin_audit(
             session=db, actor_admin_id=current_admin.admin_id, action="user.reactivated", target_type="user",
             target_id=user_id, target_label=f"{user.first_name} {user.last_name}".strip() or user.email, ip_address=ip, user_agent=ua,
+        )
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_route(
+    user_id: str, body: SuspendUserRequest, request: Request, db: AsyncSession = Depends(get_db),
+    current_admin: CurrentAdmin = Depends(require_admin_permission("organizations.manage")),
+):
+    ip, ua = _client_meta(request)
+    async with request_guard(db, "/app-admin/users/{user_id}"):
+        user, organization = await get_user_for_lifecycle(session=db, user_id=user_id)
+        target_label = f"{user.first_name} {user.last_name}".strip() or user.email
+        await anonymize_user(session=db, user=user, organization=organization)
+        await log_admin_audit(
+            session=db, actor_admin_id=current_admin.admin_id, action="user.deleted", target_type="user",
+            target_id=user_id, target_label=target_label, reason=body.reason, ip_address=ip, user_agent=ua,
         )
         await db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)

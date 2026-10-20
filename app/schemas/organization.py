@@ -84,6 +84,7 @@ class OrganizationMemberInfo(BaseModel):
     organization_role_name: str | None = None
     branch_roles: list[BranchRoleInfo] = Field(default_factory=list)
     public_profile: bool = False
+    is_owner: bool = False
 
 
 class OrganizationMembersListResponse(BaseModel):
