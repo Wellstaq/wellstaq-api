@@ -190,6 +190,8 @@ NOTIFICATION_TYPES = (
     "event_reminder",
     "challenge_completed",
     "challenge_daily_goal_met", 
+    "challenge_submission_approved",
+    "challenge_submission_rejected",
     "announcement",
 )
 

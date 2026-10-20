@@ -315,7 +315,7 @@ class ChallengeProgressEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     reviewed_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     challenge: Mapped["Challenge"] = relationship(
         "Challenge", back_populates="progress_entries", foreign_keys=[challenge_id],
