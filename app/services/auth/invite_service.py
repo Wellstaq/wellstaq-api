@@ -354,7 +354,7 @@ async def invite_register(
     # pushed the org over its limit before this invite was accepted.
     
     current_member_count = (await session.execute(
-        select(func.count()).select_from(User).where(User.organization_id == invite.organization_id)
+        select(func.count()).select_from(User).where(User.organization_id == invite.organization_id, User.email.notlike("%@deleted.wellstaq.invalid"))
     )).scalar_one()
     await enforce_plan_limit(
         session=session, organization_id=invite.organization_id, limit_key="max_employees",

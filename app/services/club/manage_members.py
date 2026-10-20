@@ -62,6 +62,7 @@ async def join_club(
     user_result = await session.execute(
         select(User).where(
             User.id == user_id,
+            User.email.notlike("%@deleted.wellstaq.invalid"),
             User.organization_id == organization_id,
             User.branch_id == club.branch_id,
         )
@@ -202,14 +203,14 @@ async def get_club_members(
         raise AppError("Club not found.", status.HTTP_404_NOT_FOUND)
 
     count_result = await session.execute(
-        select(func.count()).select_from(ClubMember).where(
+        select(func.count()).select_from(ClubMember).join(User, User.id == ClubMember.user_id).where(
             ClubMember.club_id == club_id
-        )
+        ).where(User.email.notlike("%@deleted.wellstaq.invalid"))
     )
     total = count_result.scalar_one()
 
     result = await session.execute(
-        select(User)
+        select(User).where(User.email.notlike("%@deleted.wellstaq.invalid"))
         .join(ClubMember, ClubMember.user_id == User.id)
         .where(ClubMember.club_id == club_id)
         .order_by(User.first_name)

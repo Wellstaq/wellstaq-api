@@ -46,7 +46,7 @@ async def get_organization_members(
     """Members with the role belonging to the requested org/branch slot."""
     organization = await _require_org(session, organization_id)
 
-    member_filters = [User.organization_id == organization_id]
+    member_filters = [User.organization_id == organization_id, User.email.notlike("%@deleted.wellstaq.invalid")]
     if branch_id is not None:
         # Team directories contain home-branch members only. Cross-branch role
         # holders are resolved explicitly from UserRoleAssignment queries.

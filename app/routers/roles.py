@@ -570,7 +570,7 @@ async def change_member_system_role(
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/members/{user_id}/system-role"):
-        target = (await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id))).scalar_one_or_none()
+        target = (await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid")))).scalar_one_or_none()
         role = (await db.execute(select(Role).where(
             Role.id == body.role_id, Role.organization_id == org_id, Role.template_role_id.is_not(None),
         ))).scalar_one_or_none()
@@ -592,7 +592,7 @@ async def change_member_custom_role(
 ):
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/members/{user_id}/custom-role"):
-        target = (await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id))).scalar_one_or_none()
+        target = (await db.execute(select(User).where(User.id == user_id, User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid")))).scalar_one_or_none()
         if target is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
         if body.role_id:
@@ -621,7 +621,7 @@ async def revoke_member_role(
     require_same_organization(org_id, current_user)
     async with request_guard(db, "/organizations/{org_id}/members/{user_id}/role"):
         target = (await db.execute(select(User).where(
-            User.id == user_id, User.organization_id == org_id,
+            User.id == user_id, User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid"),
         ))).scalar_one_or_none()
         if target is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")

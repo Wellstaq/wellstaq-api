@@ -68,6 +68,14 @@ from app.routers.user_settings import(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.jobs.shared import get_job_session
+    from app.services.payment.live_test_plan import ensure_live_test_plan
+    from app.services.user_account_lifecycle import cleanup_previously_deleted_memberships
+
+    async with get_job_session() as session:
+        await ensure_live_test_plan(session)
+        await cleanup_previously_deleted_memberships(session=session)
+        await session.commit()
     yield
     
     # Shutdown logic (if you need to clean up resources later, put it here)

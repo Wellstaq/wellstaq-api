@@ -62,7 +62,9 @@ async def get_department_members(
     count_result = await session.execute(
         select(func.count())
         .select_from(DepartmentMember)
+        .join(User, User.id == DepartmentMember.user_id)
         .where(DepartmentMember.department_id == department_id)
+        .where(User.email.notlike("%@deleted.wellstaq.invalid"))
     )
     total = count_result.scalar_one()
 
@@ -77,6 +79,7 @@ async def get_department_members(
         .where(
             DepartmentMember.department_id == department_id,
             User.organization_id == organization_id,
+            User.email.notlike("%@deleted.wellstaq.invalid"),
         )
         .order_by(User.first_name, User.last_name)
         .offset(offset)

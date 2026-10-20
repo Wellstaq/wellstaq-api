@@ -270,6 +270,7 @@ async def assign_user_to_branch(
     user_result = await session.execute(
         select(User).where(
             User.id == user_id,
+            User.email.notlike("%@deleted.wellstaq.invalid"),
             User.organization_id == organization_id,
         )
     )
@@ -477,6 +478,7 @@ async def assign_branch_manager(
     manager_result = await session.execute(
         select(User).where(
             User.id == manager_id,
+            User.email.notlike("%@deleted.wellstaq.invalid"),
             User.organization_id == organization_id,
         )
     )

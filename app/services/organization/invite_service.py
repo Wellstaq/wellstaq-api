@@ -149,7 +149,7 @@ async def send_invite(
     # Checked early, before any other work — no point validating
     # branch/role/department if the org can't add another member at all.
     current_member_count = (await session.execute(
-        select(func.count()).select_from(User).where(User.organization_id == org_id)
+        select(func.count()).select_from(User).where(User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid"))
     )).scalar_one()
 
     # Pending invites also count toward the seat limit — otherwise an

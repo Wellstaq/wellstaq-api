@@ -65,6 +65,7 @@ async def assign_department_head(
     user_result = await session.execute(
         select(User).where(
             User.id == user_id,
+            User.email.notlike("%@deleted.wellstaq.invalid"),
             User.organization_id == organization_id,
         )
     )

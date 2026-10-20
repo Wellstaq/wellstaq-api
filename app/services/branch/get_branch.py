@@ -99,13 +99,13 @@ async def get_branch_members(
     count_result = await session.execute(
         select(func.count())
         .select_from(User)
-        .where(User.branch_id == branch_id, User.organization_id == organization_id)
+        .where(User.branch_id == branch_id, User.organization_id == organization_id, User.email.notlike("%@deleted.wellstaq.invalid"))
     )
     total = count_result.scalar_one()
 
     result = await session.execute(
         select(User)
-        .where(User.branch_id == branch_id, User.organization_id == organization_id)
+        .where(User.branch_id == branch_id, User.organization_id == organization_id, User.email.notlike("%@deleted.wellstaq.invalid"))
         .order_by(User.first_name, User.last_name)
         .offset(offset)
         .limit(limit)

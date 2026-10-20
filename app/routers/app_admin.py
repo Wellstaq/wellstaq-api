@@ -467,7 +467,7 @@ async def admin_trigger_user_password_reset_route(
     from app.services.user_setting.password_service import request_password_reset as request_org_user_password_reset
     ip, ua = _client_meta(request)
     async with request_guard(db, "/app-admin/users/{user_id}/password-reset"):
-        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        user = (await db.execute(select(User).where(User.id == user_id, User.email.notlike("%@deleted.wellstaq.invalid")))).scalar_one_or_none()
         if user is None:
             from fastapi import HTTPException
             raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")

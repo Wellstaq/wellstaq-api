@@ -35,7 +35,7 @@ TRUSTED_PAYMENT_CALLBACK_ORIGINS = {
 
 
 def _generate_reference() -> str:
-    return f"wellstaq_{secrets.token_urlsafe(16)}"
+    return f"wellstaq-{secrets.token_hex(16)}"
 
 
 def _validate_callback_url(callback_url: str | None) -> str | None:

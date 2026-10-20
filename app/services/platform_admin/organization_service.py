@@ -115,7 +115,7 @@ async def list_organizations(
     items = []
     for org in orgs:
         employee_count = (await session.execute(
-            select(func.count()).select_from(User).where(User.organization_id == org.id)
+            select(func.count()).select_from(User).where(User.organization_id == org.id, User.email.notlike("%@deleted.wellstaq.invalid"))
         )).scalar_one()
         branch_count = (await session.execute(
             select(func.count()).select_from(Branch).where(Branch.organization_id == org.id)
@@ -126,7 +126,7 @@ async def list_organizations(
 
 async def get_organization_detail(*, session: AsyncSession, org_id: str) -> dict:
     org = await get_organization_or_404(session=session, org_id=org_id)
-    employee_count = (await session.execute(select(func.count()).select_from(User).where(User.organization_id == org_id))).scalar_one()
+    employee_count = (await session.execute(select(func.count()).select_from(User).where(User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid")))).scalar_one()
     branch_count = (await session.execute(select(func.count()).select_from(Branch).where(Branch.organization_id == org_id))).scalar_one()
     department_count = (await session.execute(select(func.count()).select_from(Department).where(Department.organization_id == org_id))).scalar_one()
     club_count = (await session.execute(select(func.count()).select_from(Club).where(Club.organization_id == org_id))).scalar_one()
@@ -286,8 +286,8 @@ async def list_members(*, session: AsyncSession, org_id: str, q: str | None, sta
         selectinload(User.branch),
         selectinload(User.department_memberships).selectinload(DepartmentMember.department),
         selectinload(User.role),
-    ).where(User.organization_id == org_id)
-    count_query = select(func.count()).select_from(User).where(User.organization_id == org_id)
+    ).where(User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid"))
+    count_query = select(func.count()).select_from(User).where(User.organization_id == org_id, User.email.notlike("%@deleted.wellstaq.invalid"))
     if q:
         pattern = f"%{q}%"
         clause = or_(User.first_name.ilike(pattern), User.last_name.ilike(pattern), User.email.ilike(pattern))
@@ -315,7 +315,7 @@ async def search_users(*, session: AsyncSession, q: str, offset: int, limit: int
     act on a user (suspend/reactivate/password-reset — see the User account
     actions routes) before knowing which organization they belong to."""
     pattern = f"%{q}%"
-    clause = or_(User.first_name.ilike(pattern), User.last_name.ilike(pattern), User.email.ilike(pattern))
+    clause = or_(User.first_name.ilike(pattern), User.last_name.ilike(pattern), User.email.ilike(pattern)) & User.email.notlike("%@deleted.wellstaq.invalid")
     query = select(User).options(selectinload(User.organization)).where(clause)
     count_query = select(func.count()).select_from(User).where(clause)
 
@@ -342,7 +342,7 @@ async def list_branches(*, session: AsyncSession, org_id: str, q: str | None, of
     rows = (await session.execute(query.order_by(Branch.name.asc()).offset(offset).limit(limit))).scalars().all()
     items = []
     for b in rows:
-        member_count = (await session.execute(select(func.count()).select_from(User).where(User.branch_id == b.id))).scalar_one()
+        member_count = (await session.execute(select(func.count()).select_from(User).where(User.branch_id == b.id, User.email.notlike("%@deleted.wellstaq.invalid")))).scalar_one()
         items.append({
             "id": b.id, "name": b.name, "city": None, "country": None,
             "member_count": member_count,
