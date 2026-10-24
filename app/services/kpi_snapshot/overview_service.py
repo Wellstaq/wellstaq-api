@@ -72,7 +72,12 @@ async def get_kpi_overview(*, session: AsyncSession, organization_id: str, perio
     # is safe and correct, and stops pulling the org's ENTIRE wellbeing
     # history on every request (the previous version had no date filter
     # at all here).
-    score_query = select(WellbeingScore.score, WellbeingScore.period, WellbeingScore.user_id).join(User, User.id == WellbeingScore.user_id).where(
+    score_query = select(
+        WellbeingScore.score,
+        WellbeingScore.period,
+        WellbeingScore.user_id,
+        WellbeingScore.dimension_id,
+    ).join(User, User.id == WellbeingScore.user_id).where(
         WellbeingScore.organization_id == organization_id,
         WellbeingScore.period >= previous_start.isoformat(),
         WellbeingScore.period <= today.isoformat(),
@@ -81,23 +86,27 @@ async def get_kpi_overview(*, session: AsyncSession, organization_id: str, perio
         score_query = score_query.where(User.branch_id == branch_id)
     score_rows = (await session.execute(score_query)).all()
     parsed_scores = []
-    for score, score_period, user_id in score_rows:
+    for score, score_period, user_id, dimension_id in score_rows:
         try:
             score_date = date.fromisoformat(score_period)
         except (TypeError, ValueError):
             continue
-        parsed_scores.append((float(score), score_date, user_id))
+        parsed_scores.append((float(score), score_date, user_id, dimension_id))
 
-    current_score_rows = [r for r in parsed_scores if r[1] == max((x[1] for x in parsed_scores if x[1] <= today), default=date.min)]
+    current_score_rows = [r for r in parsed_scores if start <= r[1] <= today]
     previous_score_rows = [r for r in parsed_scores if previous_start <= r[1] <= previous_end]
-    if previous_score_rows:
-        previous_latest = max(r[1] for r in previous_score_rows)
-        previous_score_rows = [r for r in previous_score_rows if r[1] == previous_latest]
-    def per_user_averages(rows: list[tuple[float, date, str]]) -> list[float]:
-        scores_by_user: dict[str, list[float]] = defaultdict(list)
-        for score, _, user_id in rows:
-            scores_by_user[user_id].append(score)
-        return [sum(scores) / len(scores) for scores in scores_by_user.values()]
+    def per_user_averages(rows: list[tuple[float, date, str, str]]) -> list[float]:
+        # Average repeated observations within each dimension first so a daily
+        # signal (for example Social) cannot outweigh less frequent dimensions.
+        scores_by_user_dimension: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+        for score, _, user_id, dimension_id in rows:
+            scores_by_user_dimension[user_id][dimension_id].append(score)
+
+        averages = []
+        for dimensions in scores_by_user_dimension.values():
+            dimension_averages = [sum(scores) / len(scores) for scores in dimensions.values()]
+            averages.append(sum(dimension_averages) / len(dimension_averages))
+        return averages
 
     current_scores = per_user_averages(current_score_rows)
     previous_scores = per_user_averages(previous_score_rows)

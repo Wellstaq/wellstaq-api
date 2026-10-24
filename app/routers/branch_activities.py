@@ -45,6 +45,8 @@ async def branch_activity_summary_route(
     async with request_guard(db, "/organizations/{org_id}/branches/{branch_id}/activities/summary"):
         total, by_type = await get_branch_activity_summary(session=db, organization_id=org_id, branch_id=branch_id)
         trend = await get_activity_trend(session=db, organization_id=org_id, branch_id=branch_id, period=period, start_date=start_date, end_date=end_date)
+        if trend is not None:
+            total = trend["current"]
         return ActivitySummaryResponse(
             total_count=total, by_type=[ActivityTypeCount(activity_type=t, count=c) for t, c in by_type], trend=trend,
         )
